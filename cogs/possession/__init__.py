@@ -6,11 +6,18 @@ mend each other, spend one class signature per fight, and keep acting as
 spirits after they fall. When the fight ends, the raiders vote on which Game
 Master it was before the identity is revealed; correct guesses earn a crate
 the Possessor picks.
+
+Each turn is shown as a rendered card (card.py), with the plain embed as a
+fallback. The vessel speaks through an embed with its portrait; the Possessor
+picks the face by starting a message with <anger>, <sinister> or <laugh>.
+Art lives in assets/possession/<vessel>/ (sinister, anger, laugh, underling).
 """
 
 import asyncio
 import random
+import re
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from typing import Optional
 
 import discord
@@ -21,16 +28,19 @@ from classes.classes import from_string as class_from_string
 from utils import misc as rpgtools
 from utils.checks import is_gm
 
-from . import ui
+from . import card, ui
 from .engine import (
     ABILITIES,
+    CLASS_SIGNATURES,
     DREAD_MAX,
     MAX_RAIDERS,
     MAX_ROUNDS,
     MIN_RAIDERS,
     PLAYER_ACTIONS,
     SIGNATURES,
+    SINGLE_TARGET_HITS as SINGLE_TARGET,
     SPIRIT_ACTIONS,
+    UNBROKEN_RITE,
     Encounter,
     Raider,
     signature_for,
@@ -38,13 +48,11 @@ from .engine import (
 )
 from .lore import (
     ABILITY_RULES,
-    DOMINATE_OUTCOMES,
     PLAYER_ACTION_FLAVOR,
     SIGNATURE_LORE,
     SPIRIT_FLAVOR,
     VESSELS,
     line,
-    render,
 )
 
 JOIN_SECONDS = 300
@@ -57,19 +65,23 @@ GUESS_PICK_SECONDS = 120
 GUESS_FALLBACK_CRATE = "rare"
 CRATE_TYPES = ("common", "uncommon", "rare", "magic", "legendary", "mystery", "fortune", "divine")
 DEFAULT_PING_ROLE_ID = 1404803970572226760
-RAIDER_EMOJI_BUDGET = 2600  # Above this many characters, raider bars fall back to text.
-PROMPT_EMOJI_BUDGET = 1800  # The Possessor's prompt also carries the powers list.
+CARD_FILENAME = "possession_turn.jpg"
+EMOTION_TAG = re.compile(r"^\s*<\s*([a-z]+)\s*>\s*", re.IGNORECASE)
+EMOTION_ALIASES = {
+    "anger": "anger", "angry": "anger", "rage": "anger",
+    "sinister": "sinister", "smirk": "sinister", "calm": "sinister",
+    "laugh": "laugh", "laughing": "laugh", "lol": "laugh",
+}
+BAR_LENGTH = 10       # Same bar length as the battle cog.
+BAR_RAIDER_LIMIT = 8  # Above this many living raiders, bars give way to a compact list.
 NO_MENTIONS = discord.AllowedMentions.none()
 
-HOW_IT_WORKS = (
-    "🏆 **Win:** destroy the vessel, or complete the 🕯️ **Severance**.\n"
-    f"☠️ **Lose:** everyone falls, or {MAX_ROUNDS} turns pass.\n"
-    "🎯 **Each turn:** ⚔️ Strike · 🛡️ Guard yourself or an ally · ✨ Mend · 🕯️ Rite · "
-    "💫 your class **Signature**, once per fight.\n"
-    "👻 **The fallen** fight on as spirits: Haunt, Echo or Foresee.\n"
-    "⚠️ **Watch for omens.** Its Cataclysm gathers for a turn before it lands, "
-    "and the vessel grows deadlier as it breaks.\n"
-    "🎭 **Afterwards,** guess which GM was the Possessor for a crate."
+HOW_TO_PLAY = (
+    "Destroy the vessel or complete the 🕯️ **Severance** before "
+    f"{MAX_ROUNDS} turns pass. Each turn, pick one action:\n"
+    "⚔️ **Strike** · 🛡️ **Guard** you or an ally · ✨ **Mend** · 🕯️ **Rite** · "
+    "💫 **Signature** (your class power, once per fight)\n"
+    "The fallen keep helping as spirits. Afterwards, guess which GM was the Possessor."
 )
 OUTCOME_TITLES = {
     "slain": "The vessel is destroyed!",
@@ -77,14 +89,14 @@ OUTCOME_TITLES = {
     "wiped": "The raid has fallen.",
     "withdrawn": "The possession endures.",
 }
-PHASE_RULES = {
-    2: "Its armor is gone, and the circle holds one more voice.",
-    3: "It hits harder, its Dread builds faster, and it can now use **{execute}**. The circle holds one more voice.",
-}
 
 
 def upper_first(text):
     return text[:1].upper() + text[1:]
+
+
+def plural(count, word, suffix="s"):
+    return f"{count} {word}{'' if count == 1 else suffix}"
 
 
 def clip(text, limit=1024):
@@ -104,6 +116,18 @@ def chunk_lines(lines, limit=1024):
     if current:
         chunks.append(current)
     return chunks
+
+
+def speech_emotion(content):
+    """Split a leading <emotion> tag off the Possessor's message: (emotion, text)."""
+    match = EMOTION_TAG.match(content)
+    if match and match.group(1).lower() in EMOTION_ALIASES:
+        return EMOTION_ALIASES[match.group(1).lower()], content[match.end():].strip()
+    return card.DEFAULT_EMOTION, content
+
+
+def image_file(data, filename):
+    return discord.File(BytesIO(data), filename=filename)
 
 
 def class_lines(names):
@@ -484,8 +508,14 @@ class GuessView(discord.ui.View):
 
 
 class CratePickSelect(discord.ui.Select):
-    def __init__(self):
-        options = [discord.SelectOption(label=f"{crate.title()} Crate", value=crate) for crate in CRATE_TYPES]
+    def __init__(self, session):
+        options = [
+            discord.SelectOption(
+                label=f"{crate.title()} crate", value=crate,
+                emoji=discord.PartialEmoji.from_str(session.crate_emoji(crate)),
+            )
+            for crate in CRATE_TYPES
+        ]
         super().__init__(placeholder="Choose their reward…", options=options)
 
     async def callback(self, interaction):
@@ -498,7 +528,7 @@ class CratePickSelect(discord.ui.Select):
             child.disabled = True
         await interaction.response.edit_message(view=view)
         await interaction.followup.send(
-            f"*{view.session.underling['name']}:* A **{view.choice.title()} Crate** each. "
+            f"*{view.session.underling['name']}:* {view.session.crate_label(view.choice)} each. "
             f"How generous, {view.session.underling['master']}."
         )
 
@@ -508,7 +538,7 @@ class CratePickView(discord.ui.View):
         super().__init__(timeout=GUESS_PICK_SECONDS)
         self.session = session
         self.choice = None
-        self.add_item(CratePickSelect())
+        self.add_item(CratePickSelect(session))
 
     async def interaction_check(self, interaction):
         return interaction.user.id == self.session.gm.id
@@ -532,6 +562,7 @@ class PossessionSession:
         self.join_ends = None
         self.plain_names = {}
         self.signatures = {}
+        self.class_lines = {}     # user_id -> class line shown on the turn card
         self.raider_choices = {}   # user_id -> (action, target_id, pending)
         self.spirit_choices = {}   # user_id -> spirit action
         self.foreseen = set()
@@ -642,146 +673,227 @@ class PossessionSession:
             return None
 
     # ---- shared embed pieces -------------------------------------------
-    def effects_line(self):
-        enc = self.encounter
-        effects = []
-        if enc.phase >= 2:
-            effects.append(f"Phase {ui.roman(enc.phase)}: armor broken")
-        if enc.mark_turns:
-            effects.append("🏹 Marked: strikes +30%")
-        if enc.vulnerability:
-            effects.append(f"⚓ Sundered: strikes +{enc.vulnerability:.0%}")
-        return " · ".join(effects)
+    def crate_emoji(self, rarity):
+        """The Crates cog's emoji for a rarity, so crates look the same everywhere."""
+        emotes = getattr(self.bot.cogs.get("Crates"), "emotes", None)
+        return getattr(emotes, rarity, "📦")
 
-    def vessel_field(self, embed, length=12):
+    def crate_label(self, rarity):
+        return f"{self.crate_emoji(rarity)} **{rarity.title()} crate**"
+
+    def hp_block(self, current, total, colour):
+        """The battle cog's layout: an HP line over a 10-tile bar."""
+        return (
+            f"HP: {ui.compact(current)}/{ui.compact(total)} ({ui.percent(current, total)}%)\n"
+            f"{ui.bar(current, total, BAR_LENGTH, colour)}"
+        )
+
+    def status_fields(self, embed):
+        """Severance, Dread and the raid's damage bonus as three inline boxes."""
+        enc = self.encounter
+        embed.add_field(name="🕯️ Severance", value=f"{enc.rite}/{enc.rite_goal}", inline=True)
+        dread = f"{enc.vessel.dread}/{DREAD_MAX}"
+        if enc.charging:
+            dread += " · gathering"
+        elif enc.vessel.dread >= DREAD_MAX:
+            dread += " · ready"
+        embed.add_field(name="🌘 Dread", value=dread, inline=True)
+        embed.add_field(name="⚔️ Damage bonus", value=f"+{enc.strike_bonus:.0%}", inline=True)
+
+    def raider_title(self, raider):
+        return f"{SIGNATURE_LORE[raider.signature][1]} {self.plain_name(raider.user_id)[:40]}"
+
+    def compact_raider_line(self, raider, with_actions=False):
+        """One raider as a single line; the Possessor also sees last actions and unused signatures."""
+        line_ = (
+            f"{SIGNATURE_LORE[raider.signature][1]} **{self.name(raider.user_id, 24)}** · "
+            f"{ui.percent(raider.hp, raider.max_hp)}% ({ui.compact(raider.hp)})"
+        )
+        if with_actions and raider.user_id in self.encounter.last_actions:
+            action = self.encounter.last_actions[raider.user_id]
+            line_ += f" · last: {PLAYER_ACTION_FLAVOR.get(action, ('?',))[0]}"
+        if with_actions and not raider.signature_used:
+            line_ += " · 💫"
+        return line_
+
+    def add_raider_fields(self, embed):
+        """One field per raider with an HP bar, like the battle cog; a compact list for big raids."""
+        living = sorted(self.encounter.living(), key=lambda r: r.hp_ratio)
+        if len(living) <= BAR_RAIDER_LIMIT:
+            for raider in living:
+                embed.add_field(
+                    name=self.raider_title(raider),
+                    value=self.hp_block(raider.hp, raider.max_hp, "blue"),
+                    inline=False,
+                )
+            return
+        lines = [self.compact_raider_line(raider) for raider in living]
+        for index, chunk in enumerate(chunk_lines(lines)):
+            embed.add_field(name=f"Raiders ({len(living)})" if index == 0 else "​", value=chunk, inline=False)
+
+    def add_fallen_field(self, embed):
+        fallen = self.encounter.fallen()
+        if fallen:
+            embed.add_field(
+                name=f"👻 Fallen ({len(fallen)})",
+                value=clip(", ".join(self.name(r.user_id, 24) for r in fallen)),
+                inline=False,
+            )
+
+    # ---- art -----------------------------------------------------------
+    def vessel_mood(self):
+        enc = self.encounter
+        if enc and enc.charging:
+            return "laugh"
+        if enc and enc.phase >= 3:
+            return "anger"
+        return card.DEFAULT_EMOTION
+
+    def portrait_file(self, path, filename):
+        """(attachment url, discord.File) for a portrait, or (None, None) if there's no art."""
+        data = card.portrait_png(str(path)) if path else None
+        if data is None:
+            return None, None
+        return f"attachment://{filename}", image_file(data, filename)
+
+    def underling_embed(self, description, *, thumbnail=False):
+        """An embed voiced by the underling, with their portrait when the art exists."""
+        embed = discord.Embed(description=description, color=self.vessel["color"])
+        url, file = self.portrait_file(card.underling_path(self.vessel_key), "underling.png")
+        author = f"{self.underling['name']}, {self.underling['title']}"
+        if url and thumbnail:
+            embed.set_author(name=author)
+            embed.set_thumbnail(url=url)
+        else:
+            embed.set_author(name=author, icon_url=url)
+        return embed, file
+
+    def speech_embed(self, text, emotion):
+        """The vessel speaking aloud, with the matching portrait."""
+        embed = discord.Embed(description=f"*{text}*", color=self.vessel["color"])
+        embed.set_author(name=f"{self.vessel['emoji']} {self.vessel['voice']}")
+        url, file = self.portrait_file(card.portrait_path(self.vessel_key, emotion), "speaker.png")
+        if url:
+            embed.set_thumbnail(url=url)
+        return embed, file
+
+    def card_data(self):
         enc = self.encounter
         vessel = enc.vessel
-        embed.add_field(
-            name=f"{self.vessel['emoji']} {upper_first(self.vessel['name'])} · Phase {ui.roman(enc.phase)}",
-            value=f"{ui.bar(vessel.hp, vessel.max_hp, length, 'red')}\n"
-                  f"**{ui.compact(vessel.hp)}** / {ui.compact(vessel.max_hp)} · "
-                  f"{ui.percent(vessel.hp, vessel.max_hp)}%",
-            inline=False,
-        )
-
-    def rite_field(self, embed, length=12):
-        enc = self.encounter
-        embed.add_field(
-            name="🕯️ Severance",
-            value=f"{ui.bar(enc.rite, enc.rite_goal, length, 'yellow')}\n"
-                  f"**{enc.rite}** / {enc.rite_goal} · the circle holds **{enc.rite_capacity}** "
-                  f"voice(s) · strikes **+{enc.grip_bonus:.0%}**",
-            inline=False,
-        )
-
-    def dread_field(self, embed):
-        enc = self.encounter
-        cataclysm = self.vessel["abilities"]["cataclysm"][0]
+        warning = None
         if enc.charging:
-            status = f" · ⚠️ **{cataclysm} is gathering!**"
-        elif enc.vessel.dread >= DREAD_MAX:
-            status = f" · **{cataclysm} is ready!**"
-        else:
-            status = ""
-        embed.add_field(
-            name="🌘 Dread",
-            value=f"{ui.pips(enc.vessel.dread, DREAD_MAX)} **{enc.vessel.dread}**/{DREAD_MAX}{status}",
-            inline=False,
-        )
+            name = self.vessel["abilities"]["cataclysm"][0].upper()
+            warning = f"{name} IS GATHERING  ·  deal {enc.interrupt_threshold:,.0f} damage this turn to break it, or Guard"
+        return {
+            "accent": tuple(self.vessel["color"].to_bytes(3, "big")),
+            "turn": enc.round_no,
+            "max_turns": enc.max_rounds,
+            "rite": enc.rite,
+            "rite_goal": enc.rite_goal,
+            "dread": vessel.dread,
+            "dread_max": DREAD_MAX,
+            "bonus": enc.strike_bonus,
+            "warning": warning,
+            "vessel": {
+                "name": self.vessel["name"],
+                "hp": vessel.hp,
+                "max_hp": vessel.max_hp,
+                "phase": ui.roman(enc.phase),
+                "portrait": card.portrait_path(self.vessel_key, self.vessel_mood()),
+            },
+            "raiders": [
+                {
+                    "name": self.plain_name(raider.user_id),
+                    "hp": raider.hp,
+                    "max_hp": raider.max_hp,
+                    "alive": raider.alive,
+                    "portrait": card.class_art_path(self.class_lines.get(raider.user_id)),
+                    "signature": SIGNATURE_LORE[raider.signature][0],
+                    "signature_ready": not raider.signature_used,
+                }
+                for raider in enc.raiders.values()
+            ],
+        }
 
-    def raider_lines(self, with_actions=False, budget=RAIDER_EMOJI_BUDGET):
-        """One line per living raider, with emoji bars when they fit the embed budget."""
+    def card_embed(self, deadline):
+        """The slim embed that frames the rendered turn card."""
         enc = self.encounter
-        living = sorted(enc.living(), key=lambda r: r.hp_ratio)
+        description = f"Turn **{enc.round_no}/{enc.max_rounds}** · ends <t:{int(deadline.timestamp())}:R>"
+        if enc.charging:
+            name = self.vessel["abilities"]["cataclysm"][0]
+            description += (
+                f"\n⚠️ **{name} is gathering.** Deal **{ui.compact(enc.interrupt_threshold)}** damage "
+                "this turn to break it, or Guard to halve it."
+            )
+        embed = discord.Embed(description=description, color=self.vessel["color"])
+        embed.set_image(url=f"attachment://{CARD_FILENAME}")
+        footer = "No choice means Strike"
+        if enc.fallen():
+            footer += " · the fallen can Haunt, Echo or Foresee"
+        embed.set_footer(text=footer)
+        return embed
 
-        def build(emoji_bars):
-            lines = []
-            for raider in living:
-                if emoji_bars:
-                    bar = ui.bar(raider.hp, raider.max_hp, 6, "blue")
-                else:
-                    bar = f"`{ui.text_bar(raider.hp, raider.max_hp, 8)}`"
-                extra = " 💫" if not raider.signature_used else ""
-                if with_actions and raider.user_id in enc.last_actions:
-                    last = PLAYER_ACTION_FLAVOR.get(enc.last_actions[raider.user_id], ("", "❔"))[1]
-                    extra += f" · last {last}"
-                lines.append(
-                    f"{bar} {SIGNATURE_LORE[raider.signature][1]} **{self.name(raider.user_id, 20)}** "
-                    f"`{ui.compact(raider.hp)}`{extra}"
-                )
-            return lines
-
-        lines = build(True)
-        if sum(len(text) + 1 for text in lines) > budget:
-            lines = build(False)
-        return lines or ["*No one is left standing.*"]
-
-    def add_raider_fields(self, embed, title, with_actions=False, budget=RAIDER_EMOJI_BUDGET):
-        for index, chunk in enumerate(chunk_lines(self.raider_lines(with_actions, budget))):
-            embed.add_field(name=title if index == 0 else "​", value=chunk, inline=False)
+    async def send_turn(self, deadline, view):
+        """Post the turn as a rendered card, or as the plain embed if rendering fails."""
+        try:
+            buffer = await asyncio.to_thread(card.render_turn_card, self.card_data())
+        except Exception:
+            self.bot.logger.exception("Possession turn card failed to render; using the embed")
+            return await self.channel.send(embed=self.round_embed(deadline), view=view)
+        return await self.channel.send(
+            embed=self.card_embed(deadline), view=view, file=discord.File(buffer, filename=CARD_FILENAME)
+        )
 
     # ---- embeds --------------------------------------------------------
     def join_embed(self, joined):
         embed = discord.Embed(
             title=f"{self.vessel['emoji']} {upper_first(self.vessel['name'])} has been possessed",
-            description=f"{self.vessel['arrival']}\n\n⏳ The vessel moves <t:{int(self.join_ends.timestamp())}:R>.",
+            description=f"{self.vessel['arrival']}\n\nThe vessel moves <t:{int(self.join_ends.timestamp())}:R>.",
             color=self.vessel["color"],
         )
-        embed.add_field(name="📜 How it works", value=HOW_IT_WORKS, inline=False)
-        rewards = []
+        embed.add_field(name="How to play", value=HOW_TO_PLAY, inline=False)
+        bounty = []
         if self.gold:
-            rewards.append(f"💰 **${self.gold:,}** split among those who stand, more for survivors")
+            bounty.append(f"💰 **${self.gold:,}** shared, more for survivors")
         if self.crate:
-            rewards.append(f"📦 a **{self.crate.title()} Crate** for the most valiant")
-        if rewards:
-            embed.add_field(name="🎁 Bounty", value="\n".join(rewards), inline=False)
-        roster = [
-            f"{SIGNATURE_LORE[self.signatures.get(member.id, 'last_stand')][1]} {self.name(member.id)}"
+            bounty.append(f"{self.crate_label(self.crate)} for the most valiant")
+        bounty.append("🎭 A crate for guessing the Possessor")
+        embed.add_field(name="Bounty", value="\n".join(bounty), inline=False)
+        roster = ", ".join(
+            f"{SIGNATURE_LORE[self.signatures.get(member.id, 'last_stand')][1]} {self.name(member.id, 24)}"
             for member in joined
-        ]
-        value = "\n".join(roster) if roster else "*No one has stepped forward yet…*"
+        )
         needed = MIN_RAIDERS - len(joined)
         if needed > 0:
-            value += f"\n*{needed} more needed to begin.*"
-        embed.add_field(
-            name=f"⚔️ Standing against it ({len(joined)}/{MAX_RAIDERS})", value=clip(value), inline=False
-        )
-        embed.set_footer(text="Its will is not the vessel's own. Someone is watching through its eyes.")
+            roster = f"{roster}\n*{needed} more needed.*" if roster else f"*{needed} more needed.*"
+        embed.add_field(name=f"Raiders ({len(joined)}/{MAX_RAIDERS})", value=clip(roster), inline=False)
+        embed.set_footer(text="Someone is watching through its eyes.")
         return embed
 
     def round_embed(self, deadline):
         enc = self.encounter
-        lines = []
+        phase = f" · Phase {ui.roman(enc.phase)}" if enc.phase > 1 else ""
+        description = f"Turn **{enc.round_no}/{enc.max_rounds}**{phase} · ends <t:{int(deadline.timestamp())}:R>"
         if enc.charging:
-            lines += [
-                f"⚠️ {self.vessel['omen']}",
-                f"It falls on the **whole raid** when this turn ends. Deal **{ui.compact(enc.interrupt_threshold)}** "
-                "damage this turn to break it, 🛡️ Guard to halve it, or 🗝️ Pilfer it away.\n",
-            ]
-        lines.append(
-            f"⏳ Choose your action. The turn ends <t:{int(deadline.timestamp())}:R>, or once everyone has chosen."
-        )
-        effects = self.effects_line()
-        if effects:
-            lines.append(f"*{effects}*")
+            name = self.vessel["abilities"]["cataclysm"][0]
+            description += (
+                f"\n\n⚠️ **{name} is gathering.** It hits everyone when this turn ends.\n"
+                f"Deal **{ui.compact(enc.interrupt_threshold)}** damage this turn to break it, "
+                "or Guard to halve it."
+            )
         embed = discord.Embed(
-            title=f"{self.vessel['emoji']} Turn {enc.round_no}/{enc.max_rounds}",
-            description="\n".join(lines),
+            title=f"{self.vessel['emoji']} {upper_first(self.vessel['name'])}",
+            description=description,
             color=self.vessel["color"],
         )
-        self.vessel_field(embed)
-        self.rite_field(embed)
-        self.dread_field(embed)
-        self.add_raider_fields(embed, f"⚔️ Raiders ({len(enc.living())})")
-        fallen = enc.fallen()
-        if fallen:
-            names = ", ".join(self.name(raider.user_id, 20) for raider in fallen)
-            embed.add_field(
-                name=f"👻 Spirits ({len(fallen)})",
-                value=clip(f"{names}\n*The fallen can 👻 Haunt, 🔔 Echo or 👁️ Foresee.*"),
-                inline=False,
-            )
-        embed.set_footer(text="No choice means Strike · 💫 signature still unused · 🛡️ and ✨ let you pick an ally")
+        embed.add_field(name="Vessel", value=self.hp_block(enc.vessel.hp, enc.vessel.max_hp, "red"), inline=False)
+        self.status_fields(embed)
+        self.add_raider_fields(embed)
+        self.add_fallen_field(embed)
+        footer = "No choice means Strike"
+        if enc.fallen():
+            footer += " · the fallen can Haunt, Echo or Foresee"
+        embed.set_footer(text=footer)
         return embed
 
     def prompt_embed(self, deadline):
@@ -789,226 +901,210 @@ class PossessionSession:
         fields = self.fields()
         parts = [line(self.underling["prompt"], **fields)]
         if self.phase_note:
-            note = f"💥 *{self.vessel['phases'][self.phase_note]}*"
-            if self.phase_note >= 3:
-                note += f"\n**New power:** {self.ability_label('execute')}"
-            parts.append(note)
+            parts.append(f"💥 *{self.vessel['phases'][self.phase_note]}*")
         for fallen in self.recent_deaths:
             parts.append(line(self.underling["kill"], fallen=f"**{self.name(fallen)}**"))
         if enc.charging:
             parts.append(
-                f"⚠️ {self.underling['charging']}\n"
-                f"They need **{ui.compact(enc.interrupt_threshold)}** damage this turn to break it."
+                f"{self.underling['charging']} They need **{ui.compact(enc.interrupt_threshold)}** "
+                "damage this turn to break it."
             )
         elif enc.rite >= enc.rite_goal / 2:
             parts.append(line(self.underling["rite_warning"], **fields))
-        if enc.vessel.hp <= enc.vessel.max_hp * 0.3:
-            parts.append(line(self.underling["vessel_low"], **fields))
         if enc.ability_ready("cataclysm"):
             parts.append(line(self.underling["dread_full"], **fields))
         embed = discord.Embed(description="\n\n".join(parts), color=self.vessel["color"])
         embed.set_author(name=f"{self.underling['name']}, {self.underling['title']}")
-        self.vessel_field(embed, length=10)
         embed.add_field(
-            name="🕯️ Severance",
-            value=f"`{ui.text_bar(enc.rite, enc.rite_goal, 8)}` {enc.rite}/{enc.rite_goal} · holds {enc.rite_capacity}",
-            inline=True,
+            name=f"Vessel · Phase {ui.roman(enc.phase)}" if enc.phase > 1 else "Vessel",
+            value=self.hp_block(enc.vessel.hp, enc.vessel.max_hp, "red"),
+            inline=False,
         )
-        embed.add_field(
-            name="🌘 Dread",
-            value=f"`{ui.text_bar(enc.vessel.dread, DREAD_MAX, 8)}` {enc.vessel.dread}/{DREAD_MAX}",
-            inline=True,
-        )
-        self.add_raider_fields(
-            embed, f"Raiders (answer <t:{int(deadline.timestamp())}:R>)", with_actions=True,
-            budget=PROMPT_EMOJI_BUDGET,
-        )
+        self.status_fields(embed)
+        lines = [self.compact_raider_line(r, with_actions=True) for r in sorted(enc.living(), key=lambda r: r.hp_ratio)]
+        for index, chunk in enumerate(chunk_lines(lines)):
+            embed.add_field(
+                name=f"Raiders · answer <t:{int(deadline.timestamp())}:R>" if index == 0 else "​",
+                value=chunk,
+                inline=False,
+            )
         if enc.charging:
-            embed.set_footer(text="The gathered power falls on its own this turn. Your words still reach them.")
+            embed.set_footer(text="It falls on its own this turn. Type here to speak as the vessel.")
             return embed
         powers = []
-        for ability in ABILITIES:
-            spec = ABILITIES[ability]
+        for ability, spec in ABILITIES.items():
             cooldown = enc.vessel.cooldowns.get(ability, 0)
             if cooldown:
-                status = f" *(ready in {cooldown})*"
+                status = f" · *ready in {cooldown}*"
             elif enc.phase < spec.get("phase", 1):
-                status = f" *(Phase {ui.roman(spec['phase'])})*"
+                status = f" · *Phase {ui.roman(spec['phase'])}*"
             elif not enc.ability_ready(ability):
-                status = f" *(needs {DREAD_MAX} Dread)*"
+                status = f" · *needs {DREAD_MAX} Dread*"
             else:
                 status = ""
-            powers.append(f"{self.ability_label(ability)}{status}: {ABILITY_RULES[ability]}")
-        for index, chunk in enumerate(chunk_lines(powers)):
-            embed.add_field(name="Your powers" if index == 0 else "​", value=chunk, inline=False)
+            powers.append(f"{self.ability_label(ability)} · {ABILITY_RULES[ability]}{status}")
+        embed.add_field(name="Powers", value=clip("\n".join(powers)), inline=False)
         embed.set_footer(
-            text=f"Pick a target, then a power. No target means the weakest. "
-                 f"Anything you type here, the vessel speaks aloud. If you stay silent, "
-                 f"{self.underling['name']} improvises. 💫 = signature unused."
+            text="Pick a target, then a power (no target = weakest) · 💫 = Signature unused · "
+                 "type here to speak as the vessel; start with <anger>, <sinister> or <laugh> to change its face"
         )
         return embed
 
+    def _signature_line(self, uid, key, target_id, amount):
+        name, emoji, _rule, _story = SIGNATURE_LORE[key]
+        who = self.name(uid)
+        target = "themselves" if target_id == uid else self.name(target_id)
+        detail = {
+            "bulwark": "(everyone takes half damage)",
+            "hunters_mark": "(+30% damage for 2 turns)",
+            "unbroken_circle": f"(+{UNBROKEN_RITE} Severance, circle sealed)",
+            "sunder": f"for **{ui.compact(amount)}** (+10% damage taken for the rest of the fight)",
+            "pilfer": f"stealing **{ui.compact(amount)}** Dread",
+            "ballad": f"healing the raid for **{ui.compact(amount)}**",
+            "gift": f"healing {target} for **{ui.compact(amount)}**",
+            "resurrection": f"raising **{target}**",
+            "paragons_will": f"for **{ui.compact(amount)}**, plus a mend and a chant",
+        }.get(key, f"for **{ui.compact(amount)}**")
+        return f"{emoji} {who} used **{name}** {detail}"
+
+    def _dominate_line(self, dom):
+        name, emoji, _narration = self.vessel["abilities"]["dominate"]
+        who = self.name(dom["target_id"])
+        amount = dom.get("amount", 0)
+        effect = {
+            "strike": f"their strike hit {self.name(dom.get('victim_id'))} for **{ui.compact(amount or 0)}**",
+            "mend": f"their heal went to the vessel (+{ui.compact(amount)})" if amount else "their heal fizzled",
+            "rite": "their chant reversed the Severance (-1)" if amount else "their chant fell silent",
+            "guard": "their guard dropped",
+            "signature": "their Signature was wasted",
+        }.get(dom.get("action"), "nothing happened")
+        return f"{emoji} **{name}** seized {who}: {effect}."
+
     def report_embed(self, report, improvised):
         enc = self.encounter
-        ability_name, emoji, narration = self.vessel["abilities"][report.ability]
-        target = f"**{self.name(report.target_id)}**" if report.target_id else ""
-        sections = []
+        ability_name, emoji, _narration = self.vessel["abilities"][report.ability]
+        raid, vessel = [], []
 
         if report.dominated:
-            dom = report.dominated
-            amount = dom.get("amount", 0)
-            action = "mend_wasted" if dom.get("action") == "mend" and not amount else dom.get("action")
-            outcome = DOMINATE_OUTCOMES.get(action, DOMINATE_OUTCOMES[None])
-            sections.append(
-                f"{emoji} *{render(narration, target=target)}*\n" + render(
-                    outcome,
-                    target=target,
-                    victim=f"**{self.name(dom.get('victim_id'))}**",
-                    amount=ui.compact(amount) if isinstance(amount, float) else amount,
-                )
-            )
-
-        spirits = []
-        if report.haunts:
-            spirits.append(f"👻 {report.haunts} spirit(s) haunt the vessel (**−{report.haunt_drain}** Dread)")
-        if report.echoes:
-            gained = f"**+{report.echo_gain}** Severance" if report.echo_gain else "the circle stirs"
-            spirits.append(f"🔔 {report.echoes} echo(es) from beyond ({gained})")
-        if spirits:
-            sections.append("\n".join(spirits))
-
-        raid = []
+            raid.append(self._dominate_line(report.dominated))
         for uid, key, target_id, amount in report.signatures:
-            name, sig_emoji, _rule, story = SIGNATURE_LORE[key]
-            raid.append(f"{sig_emoji} **{name}!** " + render(
-                story,
-                actor=f"**{self.name(uid)}**",
-                target="themselves" if target_id == uid else f"**{self.name(target_id)}**" if target_id else "",
-                amount=ui.compact(amount),
-            ))
-        strikes = [(uid, amount) for uid, amount, tag in report.strikes if tag is None]
+            raid.append(self._signature_line(uid, key, target_id, amount))
+        strikes = sorted(
+            ((uid, amount) for uid, amount, tag in report.strikes if tag is None), key=lambda s: -s[1]
+        )
         if strikes:
-            top_uid, top = max(strikes, key=lambda s: s[1])
-            warded = " *(halved by the ward)*" if report.ward else ""
-            raid.append(
-                f"⚔️ {len(strikes)} strike(s) land for **{ui.compact(sum(a for _u, a in strikes))}**{warded}. "
-                f"Deepest cut: {self.name(top_uid)} ({ui.compact(top)})."
-            )
+            total = ui.compact(sum(amount for _uid, amount in strikes))
+            halved = " (halved by the ward)" if report.ward else ""
+            if len(strikes) <= 4:
+                named = " · ".join(f"{self.name(uid)} {ui.compact(amount)}" for uid, amount in strikes)
+                raid.append(f"⚔️ {named}" + (f" (**{total}**)" if len(strikes) > 1 else "") + halved)
+            else:
+                top_uid, top = strikes[0]
+                raid.append(
+                    f"⚔️ {len(strikes)} strikes for **{total}**{halved} · top: {self.name(top_uid)} {ui.compact(top)}"
+                )
         shields = [(guard, ward) for guard, ward in report.guards if guard != ward]
         braced = len(report.guards) - len(shields)
-        guard_bits = [f"{self.name(guard)} shields {self.name(ward)}" for guard, ward in shields[:4]]
-        if len(shields) > 4:
-            guard_bits.append(f"{len(shields) - 4} more stand guard")
+        guard_bits = [f"{self.name(guard)} guarded {self.name(ward)}" for guard, ward in shields[:3]]
+        if len(shields) > 3:
+            guard_bits.append(f"+{len(shields) - 3} more")
         if braced:
-            guard_bits.append(f"{braced} brace themselves")
+            guard_bits.append(f"{braced} braced")
         if guard_bits:
-            raid.append("🛡️ " + " · ".join(guard_bits) + ".")
+            raid.append("🛡️ " + " · ".join(guard_bits))
         mends = [(h, t, a) for h, t, a in report.mends if a > 0]
-        for healer, ally, amount in mends[:4]:
-            who = "themselves" if ally == healer else self.name(ally)
-            raid.append(f"✨ {self.name(healer)} mends {who} for **{ui.compact(amount)}**.")
-        if len(mends) > 4:
-            raid.append(f"✨ …and {len(mends) - 4} more mend(s).")
+        if mends:
+            bits = [
+                f"{self.name(h)} healed {'themselves' if t == h else self.name(t)} for {ui.compact(a)}"
+                for h, t, a in mends[:3]
+            ]
+            if len(mends) > 3:
+                bits.append(f"+{len(mends) - 3} more")
+            raid.append("✨ " + " · ".join(bits))
+        if report.haunts:
+            raid.append(f"👻 {plural(report.haunts, 'spirit')} drained **{report.haunt_drain}** Dread")
+        if report.echoes:
+            raid.append(f"🔔 {plural(report.echoes, 'spirit')} echoed the chant")
         if report.total_rite:
             reached = enc.rite + (report.total_rite if report.rite_broken else 0)
-            raid.append(f"🕯️ The Severance advances **+{report.total_rite}** ({reached}/{enc.rite_goal}).")
-        if report.rite_unheard:
-            raid.append(f"🕯️ The circle is full. {report.rite_unheard} voice(s) go unheard.")
-        if raid:
-            sections.append("\n".join(raid))
+            unheard = f" · {report.rite_unheard} unheard" if report.rite_unheard else ""
+            raid.append(f"🕯️ Severance **+{report.total_rite}** ({reached}/{enc.rite_goal}){unheard}")
+        if report.phase_change == 2:
+            raid.append("💥 **Phase II:** the vessel's armor breaks.")
+        elif report.phase_change == 3:
+            raid.append(f"💥 **Phase III:** the vessel grows desperate and unlocks {self.ability_label('execute')}.")
 
-        if report.phase_change:
-            rule = PHASE_RULES[report.phase_change].format(execute=self.vessel["abilities"]["execute"][0])
-            sections.append(
-                f"💥 **PHASE {ui.roman(report.phase_change)}**\n*{self.vessel['phases'][report.phase_change]}*\n{rule}"
-            )
-
-        vessel = []
-        acted = bool(report.dominated) or report.ability == "ward" or bool(report.hits)
         if report.charge_started:
-            acted = True
-            vessel.append(f"{emoji} {self.vessel['omen']}\n⚠️ It falls on the **whole raid** at the end of next turn!")
+            vessel.append(f"{emoji} **{ability_name}** is gathering. It hits everyone at the end of next turn.")
         elif report.releasing and report.interrupted:
-            acted = True
-            reason = "Pilfered away!" if report.pilfered else f"**{ui.compact(report.total_strike)}** damage broke it!"
-            vessel.append(f"💥 *{self.vessel['interrupted']}* {reason}")
-        elif report.ability == "ward":
-            vessel.append(f"{emoji} *{render(narration, target=target)}*")
-        elif report.hits:
-            vessel.append(f"{emoji} *{render(narration, target=target)}*")
-        for uid, amount, halved, shielded in report.hits[:10]:
-            if shielded:
-                note = f" *(shielding {self.name(shielded)})*"
-            elif halved:
-                note = " *(guarded)*"
+            cause = "a Pilfer" if report.pilfered else f"{ui.compact(report.total_strike)} damage"
+            vessel.append(f"💥 **{ability_name}** was broken by {cause}!")
+        elif report.ability == "ward" and not enc.victorious:
+            vessel.append(f"{emoji} **{ability_name}** halved the raid's damage.")
+        if report.hits:
+            if report.ability in SINGLE_TARGET:
+                uid, amount, halved, shielded = report.hits[0]
+                note = f" (shielding {self.name(shielded)})" if shielded else " (guarded)" if halved else ""
+                text = f"{emoji} **{ability_name}** hit {self.name(uid)} for **{ui.compact(amount)}**{note}"
+                if report.vessel_healed:
+                    text += f" and healed the vessel for {ui.compact(report.vessel_healed)}"
+                vessel.append(text)
             else:
-                note = ""
-            vessel.append(f"• {self.name(uid)} takes **{ui.compact(amount)}**{note}")
-        if len(report.hits) > 10:
-            vessel.append(f"• …and {len(report.hits) - 10} more.")
+                total = sum(amount for _uid, amount, _h, _s in report.hits)
+                vessel.append(f"{emoji} **{ability_name}** hit {plural(len(report.hits), 'raider')} for **{ui.compact(total)}**")
+                parts = [
+                    f"{self.name(uid, 16)} {ui.compact(amount)}{' 🛡️' if halved else ''}"
+                    for uid, amount, halved, _shielded in report.hits[:8]
+                ]
+                more = f" · +{len(report.hits) - 8} more" if len(report.hits) > 8 else ""
+                vessel.append("╰ " + " · ".join(parts) + more)
         for uid in report.executed:
-            vessel.append(f"{emoji} **{self.name(uid)}** is executed where they stand!")
-        if report.vessel_healed:
-            vessel.append(f"🩸 The vessel restores **{ui.compact(report.vessel_healed)}**.")
+            vessel.append(f"⚰️ {self.name(uid)} was executed.")
         if report.rite_broken:
             names = ", ".join(self.name(uid) for uid in report.rite_broken)
-            vessel.append(
-                f"🕯️💥 **The circle shatters!** {names} was struck mid-chant. "
-                f"This turn's Severance is lost ({enc.rite}/{enc.rite_goal})."
-            )
-        if vessel:
-            sections.append("\n".join(vessel))
-
-        fates = [f"🔆 **{self.name(uid)}** returns to the fight!" for uid in report.revived]
-        fates += [f"☠️ **{self.name(uid)}** has fallen. Their spirit lingers." for uid in report.deaths]
-        if not acted and enc.outcome in ("slain", "exorcised"):
-            fates.append("*The vessel's final command dies unspoken.*")
-        if fates:
-            sections.append("\n".join(fates))
+            vessel.append(f"💥 The circle shattered on {names}. This turn's Severance was lost.")
+        for uid in report.revived:
+            vessel.append(f"🔆 {self.name(uid)} returned to the fight.")
+        for uid in report.deaths:
+            vessel.append(f"☠️ {self.name(uid)} fell.")
+        if not (report.dominated or report.hits or report.charge_started or report.releasing
+                or report.ability == "ward") and not enc.outcome:
+            vessel.append("The vessel falters.")
 
         if report.charge_started:
-            title = f"{emoji} {ability_name} gathers…"
+            title = f"{ability_name} gathers…"
         elif report.releasing:
-            title = f"{emoji} {ability_name}" + (" is broken!" if report.interrupted else "")
-        elif acted:
-            title = f"{emoji} {ability_name}"
+            title = f"{ability_name}" + (" is broken!" if report.interrupted else "")
         else:
-            title = "The vessel falters!"
-        if improvised:
-            title += f" (chosen by {self.underling['name']})"
+            title = ability_name
         embed = discord.Embed(
-            title=f"Turn {report.round_no} · {title}",
-            description=clip("\n\n".join(sections) or "*A tense stillness.*", 4000),
+            title=f"Turn {report.round_no} · {emoji} {title}",
+            description=clip("\n".join(raid + ([""] if raid and vessel else []) + vessel) or "Nothing happens.", 4000),
             color=self.vessel["color"],
         )
         vessel_state = enc.vessel
-        embed.add_field(
-            name="​",
-            value=f"{ui.bar(vessel_state.hp, vessel_state.max_hp, 10, 'red')} "
-                  f"**{ui.percent(vessel_state.hp, vessel_state.max_hp)}%** · "
-                  f"🕯️ {enc.rite}/{enc.rite_goal} · 🌘 {vessel_state.dread}",
-            inline=False,
+        footer = (
+            f"Vessel {ui.percent(vessel_state.hp, vessel_state.max_hp)}% · "
+            f"Severance {enc.rite}/{enc.rite_goal} · Dread {vessel_state.dread}"
         )
+        if improvised:
+            footer = f"{self.underling['name']} chose for the silent Possessor · {footer}"
+        embed.set_footer(text=footer)
         return embed
 
     def honours(self):
         raiders = list(self.encounter.raiders.values())
         lines = []
-        cutters = [r for r in sorted(raiders, key=lambda r: r.dealt, reverse=True)[:3] if r.dealt > 0]
-        if cutters:
-            lines.append("🗡️ **Deepest cuts:** " + " · ".join(
-                f"{self.name(r.user_id, 20)} ({ui.compact(r.dealt)})" for r in cutters
-            ))
         for attr, emoji, title, fmt in (
-            ("healed", "✨", "Lifeline", lambda r: f"{ui.compact(r.healed)} mended"),
-            ("rites", "🕯️", "Voice of the Severance", lambda r: f"{r.rites} rite(s)"),
+            ("dealt", "⚔️", "Top damage", lambda r: ui.compact(r.dealt)),
+            ("healed", "✨", "Top healer", lambda r: ui.compact(r.healed)),
+            ("rites", "🕯️", "Most chants", lambda r: str(r.rites)),
             ("absorbed", "🛡️", "Bodyguard", lambda r: f"{ui.compact(r.absorbed)} taken for others"),
-            ("revives", "🔆", "Miracle worker", lambda r: f"{r.revives} raised"),
-            ("spirit_acts", "👻", "Restless spirit", lambda r: f"{r.spirit_acts} act(s) from beyond"),
+            ("spirit_acts", "👻", "Restless spirit", lambda r: f"{r.spirit_acts} acts"),
         ):
             best = max(raiders, key=lambda r: getattr(r, attr))
             if getattr(best, attr) > 0:
-                lines.append(f"{emoji} **{title}:** {self.name(best.user_id, 20)} ({fmt(best)})")
+                lines.append(f"{emoji} {title}: **{self.name(best.user_id, 24)}** ({fmt(best)})")
         return lines
 
     # ---- flow ----------------------------------------------------------
@@ -1083,9 +1179,13 @@ class PossessionSession:
                     + profile["stathp"] * rpgtools.STAT_HEALTH_PER_POINT
                 )
                 self.remember(member)
+                lines = class_lines(profile["class"])
+                signature = signature_for(lines)
+                self.class_lines[member.id] = next(
+                    (line_ for line_ in lines if CLASS_SIGNATURES.get(line_) == signature), lines[0] if lines else None
+                )
                 raiders.append(Raider(
-                    member.id, member.display_name, hp, hp, float(damage), float(armor),
-                    signature=signature_for(class_lines(profile["class"])),
+                    member.id, member.display_name, hp, hp, float(damage), float(armor), signature=signature,
                 ))
         return raiders
 
@@ -1102,10 +1202,16 @@ class PossessionSession:
         deadline = datetime.now(timezone.utc) + timedelta(seconds=ROUND_SECONDS)
 
         raider_view = RaiderActionView(self, self.turn_token)
-        public = await self.channel.send(embed=self.round_embed(deadline), view=raider_view)
+        public = await self.send_turn(deadline, raider_view)
         panel = None if enc.charging else PossessorPanel(self)
         prompt = self.prompt_embed(deadline)
-        private = await (self.say_to_gm(embed=prompt, view=panel) if panel else self.say_to_gm(embed=prompt))
+        url, file = self.portrait_file(card.underling_path(self.vessel_key), "underling.png")
+        if url:
+            prompt.set_author(name=prompt.author.name, icon_url=url)
+        extras = {"view": panel} if panel else {}
+        if file:
+            extras["file"] = file
+        private = await self.say_to_gm(embed=prompt, **extras)
         self.recent_deaths = []
         self.phase_note = None
 
@@ -1129,7 +1235,8 @@ class PossessionSession:
         improvised = self.gm_choice is None
         ability, target_id = self.gm_choice or enc.improvise()
         if improvised:
-            await self._safe_send(self.channel, line(self.underling["improvise_public"]))
+            embed, file = self.underling_embed(line(self.underling["improvise_public"]))
+            await self._safe_send(self.channel, embed=embed, **({"file": file} if file else {}))
             await self.say_to_gm(f"*{self.underling['name']}:* {self.underling['improvise_private']}")
         actions = {uid: (action, target) for uid, (action, target, _pending) in self.raider_choices.items()}
         report = enc.resolve_round(actions, ability, target_id, dict(self.spirit_choices))
@@ -1173,41 +1280,43 @@ class PossessionSession:
 
         embed = discord.Embed(
             title=f"{self.vessel['emoji']} {OUTCOME_TITLES[enc.outcome]}",
-            description=(
-                f"*{self.vessel['endings'][enc.outcome]}*\n\n"
-                "The connection breaks, but whose will was it?"
-            ),
+            description=f"*{self.vessel['endings'][enc.outcome]}*",
             color=self.vessel["color"],
         )
-        self.vessel_field(embed)
+        embed.add_field(name="Turns", value=str(enc.round_no), inline=True)
+        embed.add_field(name="Survivors", value=f"{len(survivors)}/{len(participants)}", inline=True)
+        embed.add_field(name="Vessel HP", value=f"{ui.percent(enc.vessel.hp, enc.vessel.max_hp)}%", inline=True)
         if mvp and mvp.valor(enc.vessel.attack) > 0:
+            feats = [
+                text for value, text in (
+                    (mvp.dealt, f"{ui.compact(mvp.dealt)} damage"),
+                    (mvp.healed, f"{ui.compact(mvp.healed)} healed"),
+                    (mvp.rites, plural(mvp.rites, "chant")),
+                    (mvp.absorbed, f"{ui.compact(mvp.absorbed)} taken for others"),
+                    (mvp.revives, plural(mvp.revives, "revive")),
+                ) if value
+            ]
             embed.add_field(
-                name="⭐ Most Valiant",
-                value=f"{SIGNATURE_LORE[mvp.signature][1]} **{self.name(mvp.user_id)}**: "
-                      f"{ui.compact(mvp.dealt)} dealt · {ui.compact(mvp.healed)} mended · {mvp.rites} rite(s)",
+                name="Most Valiant",
+                value=f"{SIGNATURE_LORE[mvp.signature][1]} **{self.name(mvp.user_id)}** · " + " · ".join(feats),
                 inline=False,
             )
         honours = self.honours()
         if honours:
-            embed.add_field(name="🏅 Honours", value=clip("\n".join(honours)), inline=False)
-        embed.add_field(
-            name="📜 Standing",
-            value=f"**{len(survivors)}/{len(participants)}** raiders survived {enc.round_no} turn(s).",
-            inline=False,
-        )
+            embed.add_field(name="Honours", value=clip("\n".join(honours)), inline=False)
         reward_lines = []
         if payouts:
-            if survivors:
+            if survivors and min(payouts.values()) != max(payouts.values()):
                 reward_lines.append(
-                    f"💰 Each raider received **${min(payouts.values()):,}**; "
-                    f"survivors received **${max(payouts.values()):,}**."
+                    f"💰 **${min(payouts.values()):,}** each, **${max(payouts.values()):,}** for survivors"
                 )
             else:
-                reward_lines.append(f"💰 Each raider received **${max(payouts.values()):,}**.")
+                reward_lines.append(f"💰 **${max(payouts.values()):,}** each")
         if crate_winner:
-            reward_lines.append(f"📦 **{self.name(crate_winner)}** claims a **{self.crate.title()} Crate**.")
+            reward_lines.append(f"{self.crate_label(self.crate)} for **{self.name(crate_winner)}**")
         if reward_lines:
-            embed.add_field(name="🎁 Rewards", value="\n".join(reward_lines), inline=False)
+            embed.add_field(name="Rewards", value="\n".join(reward_lines), inline=False)
+        embed.set_footer(text="Whose will was it? Vote below.")
         await self._safe_send(self.channel, embed=embed)
 
         guesses, correct, names, held = await self._guess_vote(participants)
@@ -1257,10 +1366,10 @@ class PossessionSession:
         embed = discord.Embed(
             title="🎭 Who was the Possessor?",
             description=(
-                "One of these Game Masters was watching through the vessel's eyes. "
-                f"Name them before the vote closes <t:{int(deadline.timestamp())}:R>.\n\n"
-                "Everyone who guesses right receives a crate, chosen by the Possessor themselves. "
-                "Only raiders from this fight may guess, and you can change your guess until it closes."
+                "One of these Game Masters was controlling the vessel. "
+                f"Voting closes <t:{int(deadline.timestamp())}:R>.\n"
+                "Guess right and you get a crate, picked by the Possessor. "
+                "Only this fight's raiders can vote, and you can change your vote."
             ),
             color=self.vessel["color"],
         )
@@ -1296,13 +1405,13 @@ class PossessionSession:
         lines = []
         for candidate in order:
             voters = by_candidate[candidate]
-            mark = "🗳️" if hidden else "✅" if candidate == self.gm.id else "❌"
+            mark = "" if hidden else "✅ " if candidate == self.gm.id else "❌ "
             label = discord.utils.escape_markdown(names.get(candidate, "someone"))
-            who = ", ".join(self.name(uid, 20) for uid in voters) or "*no one*"
-            lines.append(f"{mark} **{label}** · {len(voters)} vote(s)\n╰ {who}")
+            who = ", ".join(self.name(uid, 20) for uid in voters) or "no one"
+            lines.append(f"{mark}**{label}** · {plural(len(voters), 'vote')}: {who}")
         silent = [uid for uid in participants if uid not in guesses]
         if silent:
-            lines.append(f"🤐 **Didn't vote:** {', '.join(self.name(uid, 20) for uid in silent)}")
+            lines.append(f"*Didn't vote: {', '.join(self.name(uid, 20) for uid in silent)}*")
         return lines
 
     async def _reveal(self, participants, guesses, correct, names, hidden=False):
@@ -1326,15 +1435,15 @@ class PossessionSession:
         if guesses:
             breakdown = self.vote_breakdown(participants, guesses, names, hidden)
             for index, chunk in enumerate(chunk_lines(breakdown)):
-                embed.add_field(name="🗳️ The votes" if index == 0 else "​", value=chunk, inline=False)
+                embed.add_field(name="Votes" if index == 0 else "​", value=chunk, inline=False)
             if correct:
                 value = (
                     f"**{len(correct)}/{len(guesses)}** saw through the vessel.\n"
                     "📦 The Possessor is choosing their reward…"
                 )
             else:
-                value = f"None of the {len(guesses)} guess(es) were right. The Possessor keeps their secret."
-            embed.add_field(name="🎭 The verdict", value=value, inline=False)
+                value = f"None of the {plural(len(guesses), 'guess', 'es')} were right. The Possessor keeps their secret."
+            embed.add_field(name="Verdict", value=value, inline=False)
         if correct:
             await self._safe_send(
                 self.channel,
@@ -1352,8 +1461,8 @@ class PossessionSession:
             description=(
                 f"*{self.underling['name']}:* {winners} of them saw through you, "
                 f"{self.underling['master']}. What shall they be given?\n\n"
-                f"Choose within {GUESS_PICK_SECONDS // 60} minutes, or they each receive a "
-                f"**{GUESS_FALLBACK_CRATE.title()} Crate**."
+                f"Choose within {GUESS_PICK_SECONDS // 60} minutes, or they each get a "
+                f"{self.crate_label(GUESS_FALLBACK_CRATE)}."
             ),
             color=self.vessel["color"],
         )
@@ -1394,11 +1503,11 @@ class PossessionSession:
             return []
         names = ", ".join(f"**{self.name(uid)}**" for uid in correct)
         source = (
-            f"chosen by {discord.utils.escape_markdown(self.gm.display_name)}" if chosen
-            else "the Possessor didn't choose in time"
+            f"picked by {discord.utils.escape_markdown(self.gm.display_name)}" if chosen
+            else "the Possessor didn't pick in time"
         )
         await self._safe_send(
-            self.channel, clip(f"📦 {names} each receive a **{crate.title()} Crate** ({source}).", 2000)
+            self.channel, clip(f"{self.crate_label(crate)} for {names} ({source}).", 2000)
         )
         return correct
 
@@ -1406,8 +1515,9 @@ class PossessionSession:
         crate_text = f", {self.crate} crate to {crate_winner}" if crate_winner else ""
         content = (
             f"**{self.gm}** possessed {self.vessel['name']} in <#{self.channel.id}>. "
-            f"Outcome: **{enc.outcome}** after {enc.round_no} turn(s), {len(enc.raiders)} raider(s). "
-            f"Paid **${sum(payouts.values()):,}** to {len(payouts)} player(s){crate_text}. "
+            f"Outcome: **{enc.outcome}** after {plural(enc.round_no, 'turn')}, "
+            f"{plural(len(enc.raiders), 'raider')}. "
+            f"Paid **${sum(payouts.values()):,}** to {plural(len(payouts), 'player')}{crate_text}. "
             f"{len(correct)}/{len(guesses)} guessed the Possessor"
             f"{f' ({guess_crate} crate each)' if correct else ''}."
         )
@@ -1486,11 +1596,14 @@ class Possession(commands.Cog):
         )
         try:
             session.dm = await ctx.author.create_dm()
-            greeting = discord.Embed(
-                description=random.choice(session.underling["greeting"]), color=session.vessel["color"]
+            greeting, portrait = session.underling_embed(random.choice(session.underling["greeting"]), thumbnail=True)
+            greeting.add_field(
+                name="Speaking as the vessel",
+                value="Anything you type here, the vessel says aloud. Start a message with `<anger>`, "
+                      "`<sinister>` or `<laugh>` to choose its face; with no tag it looks sinister.",
+                inline=False,
             )
-            greeting.set_author(name=f"{session.underling['name']}, {session.underling['title']}")
-            await session.dm.send(embed=greeting)
+            await session.dm.send(embed=greeting, **({"file": portrait} if portrait else {}))
             role = target.guild.get_role(self.ping_role_id) if self.ping_role_id else None
             if role and not role.mentionable and not bot_perms.mention_everyone:
                 await session.dm.send(
@@ -1546,10 +1659,12 @@ class Possession(commands.Cog):
                 pass
             return
         session.last_relay = now
+        emotion, content = speech_emotion(content)
+        if not content:
+            return
         text = discord.utils.escape_mentions(discord.utils.escape_markdown(content[:RELAY_MAX_CHARS]))
-        sent = await session._safe_send(
-            session.channel, f"{session.vessel['emoji']} **{session.vessel['voice']}:** *{text}*"
-        )
+        embed, portrait = session.speech_embed(text, emotion)
+        sent = await session._safe_send(session.channel, embed=embed, **({"file": portrait} if portrait else {}))
         try:
             await message.add_reaction("🗣️" if sent else "❌")
         except discord.HTTPException:

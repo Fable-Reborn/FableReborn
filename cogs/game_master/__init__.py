@@ -210,6 +210,13 @@ class GameMaster(commands.Cog):
             "consumable_type": "weapon_element_scroll",
             "display_name": "Weapon Element Scroll",
         },
+        **{
+            alias: {"consumable_type": "theme_trade_contract", "display_name": "Theme Trade-In Contract"}
+            for alias in (
+                "tradein", "trade in", "contract", "themecontract", "theme contract", "tradeincontract",
+                "trade in contract", "theme trade contract", "theme trade in contract",
+            )
+        },
     }
 
     def __init__(self, bot):
@@ -1871,7 +1878,7 @@ class GameMaster(commands.Cog):
     ):
         _(
             """`<target>` - A discord User with character
-            `<item>` - One of: petage, petspeed, petxp, petmindwipe, petelement, weapelement, or a NewWerewolf talisman such as `werewolf talisman`
+            `<item>` - One of: petage, petspeed, petxp, petmindwipe, petelement, weapelement, tradein, or a NewWerewolf talisman such as `werewolf talisman`
             `[amount]` - Optional amount to grant, defaults to 1
             `[reason]` - The reason this action was done, defaults to the command message link
 
@@ -1889,6 +1896,7 @@ class GameMaster(commands.Cog):
                 "petmindwipe, mindwipe, pet mind wipe, pet_mind_wipe, "
                 "petelement, petelementscroll, pet element scroll, pet element change, pet_element_scroll, "
                 "weapelement, elementscroll, weapon element scroll, weapon_element_scroll, "
+                "tradein, contract, theme_trade_contract, "
                 "or quoted role talismans such as \"werewolf talisman\" / \"aura seer talisman\""
             )
             return await ctx.send(
@@ -4498,6 +4506,62 @@ class GameMaster(commands.Cog):
         await ctx.send(
             f"✅ Gave **1 Reset Potion** to **{int(granted or 0):,}** player(s)."
         )
+
+    @is_gm()
+    @commands.command(
+        hidden=True,
+        name="giveallcontracts",
+        aliases=["giveallcontract", "contractall", "gmcontractall"],
+        brief=_("Give every player Theme Trade-In Contracts"),
+    )
+    async def giveallcontracts(self, ctx, amount: IntGreaterThan(0) = 1, *, reason: str = None):
+        """`[amount]` - Contracts per player, defaults to 1
+        `[reason]` - Logged with the grant, defaults to the command message link
+
+        Give every player profile the same number of Theme Trade-In Contracts.
+
+        Only Game Masters can use this command."""
+        label = f"{amount:,} Theme Trade-In Contract{'s' if amount != 1 else ''}"
+        if not await ctx.confirm(f"Give **{label}** to every player profile?"):
+            return await ctx.send("Contract grant cancelled.")
+
+        async with self.bot.pool.acquire() as conn:
+            async with conn.transaction():
+                # Players can hold duplicate rows for one type; add to the oldest one only.
+                await conn.execute(
+                    """
+                    UPDATE user_consumables SET quantity = quantity + $2
+                    WHERE id IN (
+                        SELECT MIN(id) FROM user_consumables WHERE consumable_type = $1 GROUP BY user_id
+                    );
+                    """,
+                    "theme_trade_contract",
+                    amount,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO user_consumables (user_id, consumable_type, quantity)
+                    SELECT p."user", $1, $2 FROM profile p
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM user_consumables uc
+                        WHERE uc.user_id = p."user" AND uc.consumable_type = $1
+                    );
+                    """,
+                    "theme_trade_contract",
+                    amount,
+                )
+                players = await conn.fetchval("SELECT COUNT(*) FROM profile;")
+
+        await ctx.send(f"✅ Gave **{label}** to **{int(players or 0):,}** players.")
+        with handle_message_parameters(
+                content="**{gm}** gave **{label}** to every player ({players:,}).\n\nReason: *{reason}*".format(
+                    gm=ctx.author,
+                    label=label,
+                    players=int(players or 0),
+                    reason=reason or f"<{ctx.message.jump_url}>",
+                )
+        ) as params:
+            await self.bot.http.send_message(self.bot.config.game.gm_log_channel, params=params)
 
     @is_gm()
     @commands.command(

@@ -480,13 +480,14 @@ class Transaction(commands.Cog):
             "pet_element_scroll",
             "splice_final_potion",
             "weapon_element_scroll",
+            "theme_trade_contract",
         }
         return normalized in valid_types
 
     def _valid_consumable_type_display(self) -> str:
         return (
             "pet_age_potion, pet_speed_growth_potion, pet_xp_potion, pet_mind_wipe, "
-            "pet_element_scroll, splice_final_potion, weapon_element_scroll"
+            "pet_element_scroll, splice_final_potion, weapon_element_scroll, theme_trade_contract"
         )
 
     @staticmethod
@@ -1011,7 +1012,7 @@ class Transaction(commands.Cog):
                 await self.transfer_crafting_resources(conn, user1, user2, user1_gives.get("resources", {}), user2_gives.get("resources", {}))
 
                 # Transfer premium consumables
-                for ctype in ["pet_age_potion", "pet_speed_growth_potion", "pet_xp_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll"]:
+                for ctype in ["pet_age_potion", "pet_speed_growth_potion", "pet_xp_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll", "theme_trade_contract"]:
                     qty1 = user1_gives.get("consumables", {}).get(ctype, 0)
                     qty2 = user2_gives.get("consumables", {}).get(ctype, 0)
                     if qty1 > 0:
@@ -1319,7 +1320,7 @@ class Transaction(commands.Cog):
     @locale_doc
     async def add_consumable(self, ctx, ctype: str, amount: IntGreaterThan(0)):
         """
-        `<ctype>` - The type of premium consumable (pet_age_potion, pet_speed_growth_potion, pet_xp_potion, pet_mind_wipe, pet_element_scroll, splice_final_potion, weapon_element_scroll)
+        `<ctype>` - The type of premium consumable (pet_age_potion, pet_speed_growth_potion, pet_xp_potion, pet_mind_wipe, pet_element_scroll, splice_final_potion, weapon_element_scroll, theme_trade_contract)
         `<amount>` - The amount to add
         """
         ctype = ctype.lower()

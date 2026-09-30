@@ -257,15 +257,13 @@ VESSELS = {
 }
 
 ABILITY_RULES = {
-    "smite": "Heavy blow on one raider. Shatters their chant.",
-    "sweep": "Hits about a third of the raid at random. Can't shatter chants. 1-turn cooldown.",
-    "siphon": "Hit one raider and heal the vessel. Shatters their chant. 2-turn cooldown.",
-    "dominate": "Hijack one raider's action this turn. 3-turn cooldown.",
-    "ward": "Halve the damage the vessel takes this turn. 3-turn cooldown.",
-    "execute": "Phase III only. Slays a raider under 25% health unless they are guarded; "
-               "otherwise a heavy blow. 3-turn cooldown.",
-    "cataclysm": "Costs 100 Dread. Gathers for a turn while everyone is warned, then hits the whole raid. "
-                 "Heavy damage or a Thief's Pilfer can break it.",
+    "smite": "heavy hit on one raider, breaks their chant",
+    "sweep": "hits a third of the raid at random",
+    "siphon": "hit one raider and heal from it, breaks their chant",
+    "dominate": "turn one raider's action against the raid",
+    "ward": "halve the damage you take this turn",
+    "execute": "kill a raider under 25% HP unless they're guarded",
+    "cataclysm": "hits everyone after a one-turn warning",
 }
 
 PLAYER_ACTION_FLAVOR = {
@@ -274,14 +272,6 @@ PLAYER_ACTION_FLAVOR = {
     "mend": ("Mend", "✨", "You prepare to tend {target}."),
     "rite": ("Rite", "🕯️", "You join the Severance chant."),
     "signature": ("Signature", "💫", "You gather yourself for **{target}**."),
-}
-
-PLAYER_ACTION_RULES = {
-    "strike": "Damage the vessel.",
-    "guard": "Guard yourself (half damage) or an ally: blows aimed at them hit you instead, halved.",
-    "mend": "Heal an ally, or the most wounded, for 25% of their health.",
-    "rite": "Advance the Severance. Only a few voices fit in the circle each turn.",
-    "signature": "Your class's once-per-fight power.",
 }
 
 SPIRIT_FLAVOR = {
@@ -321,14 +311,4 @@ SIGNATURE_LORE = {
              "{actor} hands {target} a gift, restoring **{amount}** health!"),
     "last_stand": ("Last Stand", "✊", "Strike for 2× damage.",
                    "{actor} throws everything into one blow: **{amount}**!"),
-}
-
-DOMINATE_OUTCOMES = {
-    "strike": "{target}'s weapon turns in their hands and strikes **{victim}** for **{amount}**!",
-    "mend": "{target}'s healing light bends toward the vessel, restoring **{amount}** of its strength!",
-    "rite": "{target}'s voice cracks mid-chant, and the words come out *backwards*. The Severance slips by **{amount}**!",
-    "guard": "{target}'s guard falls slack. Whoever they meant to protect stands exposed.",
-    "mend_wasted": "{target}'s healing light bends toward the vessel, but it has no wounds to close.",
-    "signature": "{target}'s signature power sputters out in their hands, wasted!",
-    None: "{target} fights the pull, and nothing happens.",
 }

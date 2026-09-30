@@ -1,4 +1,4 @@
-"""Visual building blocks for Possession embeds: bars, meters and numbers.
+"""Visual building blocks for Possession embeds: bars and numbers.
 
 HP bars reuse the battle cog's emoji tiles so the event matches the rest of
 the bot. If the battle cog cannot be imported, bars fall back to text.
@@ -54,11 +54,6 @@ def bar(current, total, length=10, colour="red"):
         units = max(0, min(2, halves - index * 2))
         out.append((empty, half, full)[units][edge])
     return "".join(out)
-
-
-def pips(current, total, count=10, on="🟪", off="⬛"):
-    filled = round(count * ratio(current, total))
-    return on * filled + off * (count - filled)
 
 
 def compact(number):

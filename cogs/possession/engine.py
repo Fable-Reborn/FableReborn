@@ -18,8 +18,12 @@ from dataclasses import dataclass, field
 
 VESSEL_ARMOR = 200
 DEFENSE_SCALE = 1_500
-VESSEL_STRIKE_ROUNDS = 8      # Turns an all-Strike raid needs to fell an auto-scaled vessel.
-VESSEL_HIT_SHARE = 0.18       # A base hit takes this share of an average raider's health.
+VESSEL_STRIKE_ROUNDS = 5.5    # Turns an all-Strike raid would need; real raids mix actions and take ~9-11.
+VESSEL_HIT_SHARE = 0.22       # A base hit takes this share of an average raider's health.
+SIZE_BASE = 5                 # Raids beyond this size face a tougher vessel, since they
+SIZE_HP_SCALE = 0.03          # bring more healers and guards: +3% health and damage
+SIZE_ATTACK_SCALE = 0.03      # per extra raider.
+SIZE_RITE_SCALE = 0.04        # The Severance also runs longer for big raids.
 MAX_ROUNDS = 15
 MIN_RAIDERS = 3
 MAX_RAIDERS = 25  # Discord select menus hold 25 options.
@@ -31,7 +35,7 @@ DREAD_MAX = 100
 MEND_RATIO = 0.25
 GUARD_FACTOR = 0.5
 WARD_FACTOR = 0.5
-RITE_ROUNDS = 7               # Uninterrupted turns of a full circle needed to exorcise.
+RITE_ROUNDS = 8               # Uninterrupted turns of a full circle needed to exorcise.
 RITE_GRIP_MAX = 0.4           # A complete Severance would add +40% strike damage.
 FOCUS_PARTY = 6               # Single-target powers scale with party size around this.
 FOCUS_BOUNDS = (0.75, 2.5)
@@ -40,6 +44,7 @@ INTERRUPT_SHARE = 0.10        # Damage (share of max health) in the release turn
 PHASE_THRESHOLDS = (2 / 3, 1 / 3)  # Health shares that begin phases II and III.
 PHASE3_ATTACK_BONUS = 0.25
 PHASE3_DREAD_PER_ROUND = 30
+CIRCLE_GROWTH_PER_PHASE = 0   # Extra chanting slots per phase; more made the Severance too easy.
 EXECUTE_THRESHOLD = 0.25
 
 HAUNT_DREAD = 5
@@ -121,7 +126,7 @@ def incoming_damage(attack, armor):
 
 
 def rite_goal(raider_count):
-    return rite_capacity(raider_count) * RITE_ROUNDS
+    return round(rite_capacity(raider_count) * RITE_ROUNDS * size_factor(raider_count, SIZE_RITE_SCALE))
 
 
 def rite_capacity(raider_count):
@@ -173,15 +178,24 @@ class Raider:
         )
 
 
+def size_factor(raider_count, per_raider):
+    return 1 + per_raider * max(0, raider_count - SIZE_BASE)
+
+
 def scaled_vessel_hp(raiders):
-    return VESSEL_STRIKE_ROUNDS * sum(max(1.0, r.damage - VESSEL_ARMOR) for r in raiders)
+    return (
+        VESSEL_STRIKE_ROUNDS
+        * sum(max(1.0, r.damage - VESSEL_ARMOR) for r in raiders)
+        * size_factor(len(raiders), SIZE_HP_SCALE)
+    )
 
 
 def scaled_vessel_attack(raiders):
     """Pick an attack that hurts an average raider by VESSEL_HIT_SHARE after armor."""
     avg_hp = sum(r.max_hp for r in raiders) / len(raiders)
     avg_armor = sum(max(0.0, r.armor) for r in raiders) / len(raiders)
-    return VESSEL_HIT_SHARE * avg_hp * (DEFENSE_SCALE + avg_armor) / DEFENSE_SCALE
+    base = VESSEL_HIT_SHARE * avg_hp * (DEFENSE_SCALE + avg_armor) / DEFENSE_SCALE
+    return base * size_factor(len(raiders), SIZE_ATTACK_SCALE)
 
 
 @dataclass
@@ -273,8 +287,8 @@ class Encounter:
 
     @property
     def rite_capacity(self):
-        """The circle widens by one voice per phase."""
-        return self.base_capacity + self.phase - 1
+        """The circle widens as the vessel breaks."""
+        return self.base_capacity + CIRCLE_GROWTH_PER_PHASE * (self.phase - 1)
 
     @property
     def interrupt_threshold(self):

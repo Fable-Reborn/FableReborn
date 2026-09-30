@@ -429,6 +429,74 @@ async def grant_random_theme(pool, user_id, rarity, source):
             return chosen
 
 
+# ---------------------------------------------------------------------------
+# Theme Trade-In Contract
+# ---------------------------------------------------------------------------
+
+TRADE_CONTRACT_TYPE = "theme_trade_contract"
+TRADE_CONTRACT_NAME = "Theme Trade-In Contract"
+
+
+@dataclass(frozen=True)
+class TradeInResult:
+    """status: traded, no_character, no_contract, not_tradable, not_owned or complete."""
+    status: str
+    given: str | None = None
+    received: str | None = None
+    rarity: str | None = None
+    unequipped: bool = False
+
+
+def trade_in_options(owned, rarity):
+    """Collectible themes of ``rarity`` the player could receive from a trade-in."""
+    return [key for key, drop in COLLECTIBLE_THEMES.items() if drop.rarity == rarity and key not in owned]
+
+
+async def trade_in_theme(pool, user_id, theme_key, rng=random):
+    """Spend one contract: give up an owned collectible for a random unowned one of the same rarity.
+
+    Nothing is consumed unless the trade happens, so a player who already owns every
+    theme of that rarity keeps their contract. The character row stays locked through
+    the checks and writes, and a traded-away equipped theme falls back to classic.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            profile = await conn.fetchrow('SELECT prpg_theme FROM profile WHERE "user" = $1 FOR UPDATE;', user_id)
+            if profile is None:
+                return TradeInResult("no_character")
+            contract = await conn.fetchrow(
+                'SELECT id FROM user_consumables WHERE user_id = $1 AND consumable_type = $2 AND quantity > 0 '
+                'ORDER BY id LIMIT 1 FOR UPDATE;',
+                user_id, TRADE_CONTRACT_TYPE,
+            )
+            if contract is None:
+                return TradeInResult("no_contract")
+            drop = COLLECTIBLE_THEMES.get(theme_key)
+            if drop is None:
+                return TradeInResult("not_tradable", given=theme_key)
+            rows = await conn.fetch('SELECT theme_key FROM profile_theme_unlocks WHERE user_id = $1;', user_id)
+            owned = {row["theme_key"] for row in rows}
+            if theme_key not in owned:
+                return TradeInResult("not_owned", given=theme_key, rarity=drop.rarity)
+            choices = trade_in_options(owned, drop.rarity)
+            if not choices:
+                return TradeInResult("complete", given=theme_key, rarity=drop.rarity)
+
+            chosen = rng.choice(choices)
+            await conn.execute('UPDATE user_consumables SET quantity = quantity - 1 WHERE id = $1;', contract["id"])
+            await conn.execute(
+                'DELETE FROM profile_theme_unlocks WHERE user_id = $1 AND theme_key = $2;', user_id, theme_key,
+            )
+            await conn.execute(
+                'INSERT INTO profile_theme_unlocks (user_id, theme_key, source) VALUES ($1, $2, $3) ON CONFLICT (user_id, theme_key) DO NOTHING;',
+                user_id, chosen, f"trade-in:{theme_key}",
+            )
+            unequipped = profile["prpg_theme"] == theme_key
+            if unequipped:
+                await conn.execute('UPDATE profile SET prpg_theme = $1 WHERE "user" = $2;', "classic", user_id)
+            return TradeInResult("traded", theme_key, chosen, drop.rarity, unequipped)
+
+
 async def grant_event_theme(pool, user_id, theme_key, event_id=None):
     """Event cog entry point: ``await grant_event_theme(bot.pool, user.id, "harvest2026")``.
 

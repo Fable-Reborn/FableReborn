@@ -768,6 +768,17 @@ class Trading(commands.Cog):
         if random.random() < 0.5:
             offers.append(self._generate_trader_pet_consumable_offer())
 
+        # Add a Theme Trade-In Contract with a 0.5% chance.
+        if random.random() < 0.005:
+            offers.append(
+                self._build_trader_offer(
+                    "consumable",
+                    "Theme Trade-In Contract",
+                    100_000,
+                    {"consumable_type": "theme_trade_contract", "amount": 1},
+                )
+            )
+
         # Add Weapon Token with a 7% chance
         if random.random() < 0.07:
             token_price = random.randint(250000, 750000)

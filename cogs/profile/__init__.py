@@ -52,6 +52,7 @@ from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
 from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent
+from .theme_contract import is_contract_alias, start_trade_in
 from .theme_picker import ProfileThemePicker
 from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme, grant_random_theme, theme_drop_message
 from .themes import ASSET_ROOT as THEME_ASSET_ROOT
@@ -3711,10 +3712,14 @@ class Profile(commands.Cog):
     async def consume(self, ctx, item_type: str, target_arg: str = None, *, extra: str = None):
         """
         Consume either a reset potion, candy, or premium consumable.
-        Valid types: ascension, reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, petmindwipe, petelement <pet_id> <element>, weapelement <weapon_id> <element>
+        Valid types: ascension, reset, candy, highcandy, petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, petmindwipe, petelement <pet_id> <element>, weapelement <weapon_id> <element>, tradein [theme]
         """
         try:
             item_type = item_type.lower()
+            if is_contract_alias(item_type):
+                # The contract has its own confirmation and is only spent on a real trade.
+                await self.bot.reset_cooldown(ctx)
+                return await start_trade_in(ctx, " ".join(filter(None, (target_arg, extra))) or None)
             if item_type in {"ascension", "ascention", "ascensionpotion", "ascension reset potion"}:
                 if not await ctx.confirm("Consume **1 Ascension Reset Potion** to clear your mantle and choose again?"):
                     await self.bot.reset_cooldown(ctx)
@@ -4039,7 +4044,7 @@ class Profile(commands.Cog):
                     "Unknown item type. Valid types are: ascension, reset, candy, highcandy, "
                     "petage <pet_id>, petspeed <pet_id>, petxp <pet_id>, "
                     "petmindwipe, petelement <pet_id> <element>, "
-                    "weapelement <weapon_id> <element>"
+                    "weapelement <weapon_id> <element>, tradein [theme]"
                 )
                 await self.bot.reset_cooldown(ctx)
                 return
@@ -4936,6 +4941,18 @@ class Profile(commands.Cog):
                 "action_text": "This item is tied to splice flows rather than a direct consume action.",
                 "button_note": "Direct inventory consume is not wired for this item yet.",
             },
+            {
+                "entry_key": "potion:theme_trade_contract",
+                "name": "Theme Trade-In Contract",
+                "quantity": premium_quantities.get("theme_trade_contract", 0),
+                "description": "Trade a profile theme you own for a random theme of the same rarity you don't own.",
+                "summary": "Swap one owned theme for an unowned one of the same rarity.",
+                "consume_key": "tradein",
+                "usage_command": "tradein [theme]",
+                "button_enabled": True,
+                "action_text": "Opens the trade-in contract; it is only used if a trade happens.",
+                "button_note": "",
+            },
         )
 
         potion_lines = []
@@ -5296,6 +5313,8 @@ class Profile(commands.Cog):
             return True, "Use the confirmation prompt in this channel to finish consuming it."
         if consume_key == "petmindwipe":
             return True, "Pet Mind Wipe flow started in this channel."
+        if consume_key == "tradein":
+            return True, "Theme Trade-In Contract opened in this channel."
         return True, "Potion action invoked in this channel."
 
     @checks.has_char()

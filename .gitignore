@@ -103,3 +103,5 @@ tests/test_battle_tower_story.py
 cogs/battles/BATTLE_TOWER_STORY.md
 assets/battle_tower/portraits/README.md
 .gitignore
+assets/possession/generation-prompts.json
+tests/test_theme_trade_contract.py

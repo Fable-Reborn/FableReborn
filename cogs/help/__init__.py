@@ -2463,7 +2463,8 @@ class Help(commands.Cog):
                                         "• pet_mind_wipe\n"
                                         "• pet_element_scroll\n"
                                         "• splice_final_potion\n"
-                                        "• weapon_element_scroll"
+                                        "• weapon_element_scroll\n"
+                                        "• theme_trade_contract"
                                     ),
                                     "inline": False,
                                 }
