@@ -740,7 +740,7 @@ _SS = 2  # Filigree is drawn at twice the size and filtered down, so metal edges
 _CREST = (900, 975)
 # Glass panels: three stat plaques, armament/world/legacy, companion, quest footer.
 _FOLIO_PANELS = ((130, 1352, 590, 1514), (670, 1352, 1130, 1514), (1210, 1352, 1670, 1514),
-                 (72, 1556, 1100, 2294), (1140, 1556, 1728, 2294), (150, 2306, 1650, 2364))
+                 (72, 1556, 1100, 2284), (1140, 1556, 1728, 2284), (210, 2294, 1590, 2348))
 _FOLIO_HEADERS = ((100, 1568, "I   /   ARMAMENT", 1070), (100, 1810, "II   /   WORLD & ALLEGIANCE", 1070),
                   (100, 2058, "III   /   LEGACY", 1070), (1180, 1568, "IV   /   SOUL COMPANION", 1700))
 
@@ -1232,7 +1232,7 @@ def _transcendent_base(key):
         sd.line((0, y, w, y), fill=(*bg, round(90 * min(1.0, (y-700) / 320))))
     # A soft scrim so the title block reads over the brightest waterlines.
     scrim = _radial().resize((1500, 330), Image.Resampling.BICUBIC).point(lambda v: min(185, round(v*1.5)))
-    shade.alpha_composite(Image.merge("RGBA", (*Image.new("RGB", scrim.size, (3, 4, 8)).split(), scrim)), (150, 545))
+    shade.alpha_composite(Image.merge("RGBA", (*Image.new("RGB", scrim.size, (3, 4, 8)).split(), scrim)), (150, 521))
     deep = _rgb(_mix(theme.background, "#000000", .5))
     for box in _FOLIO_PANELS:
         sd.polygon(_chamfer(box, 16), fill=(*deep, 165))
@@ -1326,24 +1326,24 @@ def _transcendent_base(key):
         title_font = theme_font(size, "title")
     tag = f"E D I T I O N   {' '.join(_roman(number))}   O F   {' '.join(_roman(total))}"
     tag_font = theme_font(17, "heading")
-    _foil_text(canvas, w/2, 622, tag, tag_font, ink, glow, .6, center=True)
+    _foil_text(canvas, w/2, 598, tag, tag_font, ink, glow, .6, center=True)
     half = tag_font.getlength(tag) / 2
     for sign in (-1, 1):
         x0 = w/2 + sign*(half + 24)
-        draw.line((x0, 634, x0 + sign*180, 634), fill=ed["foil"][2], width=1)
-        draw.polygon([(x0 + sign*188, 628), (x0 + sign*194, 634), (x0 + sign*188, 640), (x0 + sign*182, 634)], fill=ed["jewel"][0])
-    _foil_text(canvas, w/2, 656, theme.name.upper(), title_font, ink, glow, 1.1, center=True)
+        draw.line((x0, 610, x0 + sign*180, 610), fill=ed["foil"][2], width=1)
+        draw.polygon([(x0 + sign*188, 604), (x0 + sign*194, 610), (x0 + sign*188, 616), (x0 + sign*182, 610)], fill=ed["jewel"][0])
+    _foil_text(canvas, w/2, 632, theme.name.upper(), title_font, ink, glow, 1.1, center=True)
     epithet_font = theme_font(22, "heading")
-    _foil_text(canvas, w/2, 762, theme.epithet, epithet_font, ink, glow, .45, center=True)
+    _foil_text(canvas, w/2, 738, theme.epithet, epithet_font, ink, glow, .45, center=True)
     half = epithet_font.getlength(theme.epithet) / 2
     for sign in (-1, 1):
         x0 = w/2 + sign*(half + 30)
-        draw.line((x0, 776, x0 + sign*240, 776), fill=ed["foil"][2], width=2)
-        draw.line((x0 + sign*20, 783, x0 + sign*170, 783), fill=ed["foil"][1], width=1)
-        draw.polygon([(x0 + sign*250, 768), (x0 + sign*260, 776), (x0 + sign*250, 784), (x0 + sign*240, 776)], fill=ed["jewel"][0])
+        draw.line((x0, 752, x0 + sign*240, 752), fill=ed["foil"][2], width=2)
+        draw.line((x0 + sign*20, 759, x0 + sign*170, 759), fill=ed["foil"][1], width=1)
+        draw.polygon([(x0 + sign*250, 744), (x0 + sign*260, 752), (x0 + sign*250, 760), (x0 + sign*240, 752)], fill=ed["jewel"][0])
     for x, y, value, _ in _FOLIO_HEADERS:
         _foil_text(canvas, x, y, value, header_font, ink, glow, .35)
-    _foil_text(canvas, 180, 2324, "CURRENT QUEST", header_font, ink, glow, .35)
+    _foil_text(canvas, 236, 2311, "CURRENT QUEST", header_font, ink, glow, .35)
     return canvas
 
 
@@ -1461,9 +1461,9 @@ def render_transcendent(theme, data):
     text(100, 2090, "ASCENSION", 17, theme.muted)
     text(100, 2119, data["ascension"], 24, theme.text, 955)
     for i, badge in enumerate(data["badges"][:6]):
-        text(100+(i % 2)*490, 2170+(i//2)*31, badge, 21, theme.muted, 455)
+        text(100+(i % 2)*490, 2160+(i//2)*29, badge, 21, theme.muted, 455)
     if data["jury_title"]:
-        text(100, 2264, data["jury_title"], 20, theme.accent, 950)
+        text(100, 2250, data["jury_title"], 20, theme.accent, 950)
 
     pet = data["companion"]
     if pet:
@@ -1507,8 +1507,8 @@ def render_transcendent(theme, data):
         foil(1435, 1830, "A BOND YET TO BE", 28, 500, center=True, strength=.5)
         text(1435, 1880, "No pet equipped / Use $pets equip", 22, theme.muted, 500, center=True)
 
-    text(380, 2320, data["mission"], 23, theme.text, 960)
-    text(1400, 2326, f'ID {data["user_id"]}', 15, theme.muted, 220)
+    text(430, 2307, data["mission"], 23, theme.text, 900)
+    text(1370, 2314, f'ID {data["user_id"]}', 15, theme.muted, 200)
     if data.get("sprite") is not None:
         sprite = data["sprite"].convert("RGBA")
         canvas.paste(sprite, (100, 892), sprite)
