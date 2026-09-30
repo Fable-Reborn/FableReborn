@@ -822,7 +822,11 @@ class PossessionSession:
         message = await self.say_to_gm(embed=embed, view=view)
         if message is None:
             return GUESS_FALLBACK_CRATE, False
-        await view.wait()
+        try:
+            await asyncio.wait_for(view.wait(), GUESS_PICK_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        view.stop()
         if view.choice is None:
             for child in view.children:
                 child.disabled = True
