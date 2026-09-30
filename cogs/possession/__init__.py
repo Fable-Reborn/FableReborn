@@ -1,13 +1,15 @@
 """GM Possession: a Game Master secretly drives a raid boss in real time.
 
 The GM receives each turn's options in DMs, voiced by the vessel's underling,
-and anything they type there is spoken aloud by the vessel. Their identity is
-revealed when the possession ends.
+and anything they type there is spoken aloud by the vessel. When the fight
+ends, the raiders vote on which Game Master it was before the identity is
+revealed; correct guesses earn a crate.
 """
 
 import asyncio
 import random
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 import discord
 from discord.ext import commands
@@ -41,7 +43,11 @@ ROUND_SECONDS = 35
 RESULT_PAUSE_SECONDS = 4
 RELAY_COOLDOWN_SECONDS = 2.0
 RELAY_MAX_CHARS = 400
+GUESS_SECONDS = 60
+GUESS_PICK_SECONDS = 120
+GUESS_FALLBACK_CRATE = "rare"
 CRATE_TYPES = ("common", "uncommon", "rare", "magic", "legendary", "mystery", "fortune", "divine")
+DEFAULT_PING_ROLE_ID = 1404803970572226760
 NO_MENTIONS = discord.AllowedMentions.none()
 
 
@@ -204,6 +210,70 @@ class PossessorPanel(discord.ui.View):
         self.add_item(TargetSelect(session))
         for index, ability in enumerate(ABILITIES):
             self.add_item(AbilityButton(session, ability, row=1 + index // 3))
+
+    async def interaction_check(self, interaction):
+        return interaction.user.id == self.session.gm.id
+
+
+class GuessSelect(discord.ui.Select):
+    def __init__(self, candidates):
+        options = [discord.SelectOption(label=name[:100], value=str(uid)) for uid, name in candidates]
+        super().__init__(placeholder="Whose will drove the vessel?", options=options)
+
+    async def callback(self, interaction):
+        view = self.view
+        if interaction.user.id not in view.voters:
+            return await interaction.response.send_message(
+                "Only those who stood against the vessel may name its master.", ephemeral=True
+            )
+        if view.is_finished():
+            return await interaction.response.send_message("The guessing has closed.", ephemeral=True)
+        choice = int(self.values[0])
+        view.guesses[interaction.user.id] = choice
+        await interaction.response.send_message(
+            f"You name **{view.names[choice]}**. You can change your guess until the vote closes.",
+            ephemeral=True,
+        )
+        if view.voters.issubset(view.guesses):
+            view.all_in.set()
+
+
+class GuessView(discord.ui.View):
+    def __init__(self, voters, candidates):
+        super().__init__(timeout=GUESS_SECONDS + 15)
+        self.voters = set(voters)
+        self.names = dict(candidates)
+        self.guesses = {}
+        self.all_in = asyncio.Event()
+        self.add_item(GuessSelect(candidates))
+
+
+class CratePickSelect(discord.ui.Select):
+    def __init__(self):
+        options = [discord.SelectOption(label=f"{crate.title()} Crate", value=crate) for crate in CRATE_TYPES]
+        super().__init__(placeholder="Choose their reward…", options=options)
+
+    async def callback(self, interaction):
+        view = self.view
+        if view.is_finished():
+            return await interaction.response.send_message("The moment has passed.", ephemeral=True)
+        view.choice = self.values[0]
+        view.stop()
+        for child in view.children:
+            child.disabled = True
+        await interaction.response.edit_message(view=view)
+        await interaction.followup.send(
+            f"*{view.session.underling['name']}:* A **{view.choice.title()} Crate** each. "
+            f"How generous, {view.session.underling['master']}."
+        )
+
+
+class CratePickView(discord.ui.View):
+    def __init__(self, session):
+        super().__init__(timeout=GUESS_PICK_SECONDS)
+        self.session = session
+        self.choice = None
+        self.add_item(CratePickSelect())
 
     async def interaction_check(self, interaction):
         return interaction.user.id == self.session.gm.id
@@ -452,7 +522,8 @@ class PossessionSession:
 
     async def _safe_send(self, destination, content=None, **kwargs):
         try:
-            return await destination.send(content, allowed_mentions=NO_MENTIONS, **kwargs)
+            kwargs.setdefault("allowed_mentions", NO_MENTIONS)
+            return await destination.send(content, **kwargs)
         except discord.HTTPException:
             return None
 
@@ -476,7 +547,13 @@ class PossessionSession:
             arrival.add_field(name="Bounty", value=" and ".join(rewards), inline=False)
         arrival.set_footer(text="Its will is not the vessel's own. Someone is watching through its eyes.")
         join_view = PossessionJoinView(self)
-        join_message = await self.channel.send(embed=arrival, view=join_view)
+        role = self.channel.guild.get_role(self.cog.ping_role_id) if self.cog.ping_role_id else None
+        join_message = await self.channel.send(
+            content=role.mention if role else None,
+            embed=arrival,
+            view=join_view,
+            allowed_mentions=discord.AllowedMentions(roles=[role]) if role else NO_MENTIONS,
+        )
         await asyncio.sleep(JOIN_SECONDS)
         await join_view.close(join_message)
 
@@ -604,7 +681,7 @@ class PossessionSession:
             title=f"{self.vessel['emoji']} {titles[enc.outcome]}",
             description=(
                 f"*{self.vessel['endings'][enc.outcome]}*\n\n"
-                f"As the connection breaks, the will behind the vessel is revealed: **{self.gm.mention}**."
+                "The connection breaks, but whose will was it?"
             ),
             color=self.vessel["color"],
         )
@@ -635,16 +712,161 @@ class PossessionSession:
             embed.add_field(name="Rewards", value="\n".join(reward_lines), inline=False)
         await self._safe_send(self.channel, embed=embed)
 
+        guesses, correct = await self._guess_vote(participants)
+        await self._reveal(guesses, correct)
+        guess_crate = None
+        if correct:
+            guess_crate, chosen = await self._pick_guess_reward(len(correct))
+            correct = await self._pay_guessers(correct, guess_crate, chosen)
+
         farewell = self.underling["defeat"] if victorious else self.underling["victory"]
         await self.say_to_gm(f"*{self.underling['name']}:* {farewell}")
-        await self._log(enc, payouts, crate_winner)
+        await self._log(enc, payouts, crate_winner, guesses, correct, guess_crate)
 
-    async def _log(self, enc, payouts, crate_winner):
+    async def _gm_candidates(self):
+        """The Possessor plus up to 24 other Game Masters, sorted by name."""
+        rows = await self.bot.pool.fetch("SELECT user_id FROM game_masters")
+        others = list(dict.fromkeys(row["user_id"] for row in rows if row["user_id"] != self.gm.id))
+        random.shuffle(others)
+        candidates = [(self.gm.id, self.gm.display_name)]
+        for uid in others[:24]:
+            user = self.channel.guild.get_member(uid) or self.bot.get_user(uid)
+            if user is None:
+                try:
+                    user = await self.bot.fetch_user(uid)
+                except discord.HTTPException:
+                    continue
+            candidates.append((uid, user.display_name))
+        return sorted(candidates, key=lambda c: c[1].lower())
+
+    async def _guess_vote(self, participants):
+        """Let the raiders name the Possessor. Returns (guesses, correct guessers)."""
+        try:
+            candidates = await self._gm_candidates()
+        except Exception:
+            self.bot.logger.exception("Could not load Game Masters for the possession vote")
+            return {}, []
+        if len(candidates) < 2:
+            return {}, []
+
+        deadline = datetime.now(timezone.utc) + timedelta(seconds=GUESS_SECONDS)
+        view = GuessView(participants, candidates)
+        embed = discord.Embed(
+            title="🎭 Who was the Possessor?",
+            description=(
+                "One of these Game Masters was watching through the vessel's eyes. "
+                f"Name them before the vote closes <t:{int(deadline.timestamp())}:R>.\n\n"
+                "Everyone who guesses right receives a crate, chosen by the Possessor themselves. "
+                "Only raiders from this fight may guess."
+            ),
+            color=self.vessel["color"],
+        )
+        message = await self._safe_send(self.channel, embed=embed, view=view)
+        if message is None:
+            return {}, []
+        try:
+            await asyncio.wait_for(view.all_in.wait(), GUESS_SECONDS)
+        except asyncio.TimeoutError:
+            pass
+        view.stop()
+        for child in view.children:
+            child.disabled = True
+        try:
+            await message.edit(view=view)
+        except discord.HTTPException:
+            pass
+
+        guesses = dict(view.guesses)
+        correct = [uid for uid, guess in guesses.items() if guess == self.gm.id]
+        return guesses, correct
+
+    async def _reveal(self, guesses, correct):
+        embed = discord.Embed(
+            title=f"{self.vessel['emoji']} The Possessor is revealed",
+            description=f"The will behind {self.vessel['name']} was **{self.gm.mention}**.",
+            color=self.vessel["color"],
+        )
+        if guesses:
+            if correct:
+                names = ", ".join(self.name(uid) for uid in correct)
+                value = (
+                    f"{len(correct)}/{len(guesses)} saw through the vessel: {names}.\n"
+                    "📦 The Possessor is choosing their reward…"
+                )
+            else:
+                value = f"None of the {len(guesses)} guess(es) were right. The Possessor hid well."
+            embed.add_field(name="The guessing", value=clip(value), inline=False)
+        if correct:
+            await self._safe_send(
+                self.channel,
+                f"{self.gm.mention}, check your DMs to choose the reward for those who saw through you.",
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=[self.gm]),
+            )
+        else:
+            await self._safe_send(self.channel, embed=embed)
+
+    async def _pick_guess_reward(self, winners):
+        """Ask the Possessor which crate the correct guessers earn. Returns (crate, chosen_by_gm)."""
+        view = CratePickView(self)
+        embed = discord.Embed(
+            description=(
+                f"*{self.underling['name']}:* {winners} of them saw through you, "
+                f"{self.underling['master']}. What shall they be given?\n\n"
+                f"Choose within {GUESS_PICK_SECONDS // 60} minutes, or they each receive a "
+                f"**{GUESS_FALLBACK_CRATE.title()} Crate**."
+            ),
+            color=self.vessel["color"],
+        )
+        embed.set_author(name=f"{self.underling['name']}, {self.underling['title']}")
+        message = await self.say_to_gm(embed=embed, view=view)
+        if message is None:
+            return GUESS_FALLBACK_CRATE, False
+        await view.wait()
+        if view.choice is None:
+            for child in view.children:
+                child.disabled = True
+            try:
+                await message.edit(view=view)
+            except discord.HTTPException:
+                pass
+            return GUESS_FALLBACK_CRATE, False
+        return view.choice, True
+
+    async def _pay_guessers(self, correct, crate, chosen):
+        """Pay the chosen crate to each correct guesser. Returns who was paid."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                async with conn.transaction():
+                    for uid in correct:
+                        await conn.execute(
+                            f'UPDATE profile SET "crates_{crate}" = "crates_{crate}" + 1 WHERE "user" = $1;',
+                            uid,
+                        )
+        except Exception:
+            self.bot.logger.exception("Possession guess reward transaction failed")
+            await self._safe_send(
+                self.channel, "⚠️ The guessing rewards could not be paid. Please contact a Game Master."
+            )
+            return []
+        names = ", ".join(f"**{self.name(uid)}**" for uid in correct)
+        source = (
+            f"chosen by {self.gm.display_name}" if chosen
+            else "the Possessor didn't choose in time"
+        )
+        await self._safe_send(
+            self.channel, clip(f"📦 {names} each receive a **{crate.title()} Crate** ({source}).", 2000)
+        )
+        return correct
+
+    async def _log(self, enc, payouts, crate_winner, guesses, correct, guess_crate):
         crate_text = f", {self.crate} crate to {crate_winner}" if crate_winner else ""
         content = (
             f"**{self.gm}** possessed {self.vessel['name']} in <#{self.channel.id}>. "
             f"Outcome: **{enc.outcome}** after {enc.round_no} turn(s), {len(enc.raiders)} raider(s). "
-            f"Paid **${sum(payouts.values()):,}** to {len(payouts)} player(s){crate_text}."
+            f"Paid **${sum(payouts.values()):,}** to {len(payouts)} player(s){crate_text}. "
+            f"{len(correct)}/{len(guesses)} guessed the Possessor"
+            f"{f' ({guess_crate} crate each)' if correct else ''}."
         )
         try:
             with handle_message_parameters(content=content, allowed_mentions=NO_MENTIONS) as params:
@@ -657,6 +879,8 @@ class Possession(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.session = None
+        possession_ids = getattr(getattr(bot.config, "ids", None), "possession", {}) or {}
+        self.ping_role_id = possession_ids.get("ping_role_id", DEFAULT_PING_ROLE_ID)
 
     def cog_unload(self):
         if self.session and self.session.task:
@@ -674,23 +898,29 @@ class Possession(commands.Cog):
     async def possess(
         self,
         ctx,
+        channel: Optional[discord.TextChannel] = None,
         vessel: str = None,
         gold: int = 0,
         crate: str = "none",
         hp_per_raider: int = 0,
     ):
-        """`<vessel>` - sepulchure, drakath or elysia
+        """`[channel]` - where the vessel appears; defaults to this channel
+        `<vessel>` - sepulchure, drakath or elysia
         `[gold]` - gold pool paid on victory: half to everyone, half to survivors
         `[crate]` - crate rarity for the most valiant raider, or none
         `[hp_per_raider]` - fixed vessel health per raider; 0 (default) scales it to the raid's damage
 
         You secretly control the boss. Your underling DMs you each turn; pick a target and a power.
         Anything you type in that DM is spoken aloud by the vessel. You are revealed at the end.
+        Run it from a private channel with a target channel so no one sees you start it.
 
         Only Game Masters can use this command."""
+        target = channel or ctx.channel
+        remote = target.id != ctx.channel.id
         key = (vessel or "").lower()
         crate = (crate or "none").lower()
         problem = None
+        bot_perms = target.permissions_for(target.guild.me)
         if self.session:
             problem = "A vessel is already possessed. Use `$unpossess` to break it first."
         elif key not in VESSELS:
@@ -701,11 +931,15 @@ class Possession(commands.Cog):
             problem = f"Crate must be one of: {', '.join(CRATE_TYPES)}, or none."
         elif hp_per_raider and not 1_000 <= hp_per_raider <= 1_000_000:
             problem = "Vessel health per raider must be 0 (auto) or between 1,000 and 1,000,000."
+        elif remote and not target.permissions_for(ctx.author).view_channel:
+            problem = "You cannot see that channel."
+        elif not (bot_perms.view_channel and bot_perms.send_messages and bot_perms.embed_links):
+            problem = f"I need to view, send messages and embed links in {target.mention}."
         if problem:
             return await ctx.send(problem, allowed_mentions=NO_MENTIONS)
 
         session = PossessionSession(
-            self, ctx.author, ctx.channel, key, gold, None if crate == "none" else crate, hp_per_raider or None
+            self, ctx.author, target, key, gold, None if crate == "none" else crate, hp_per_raider or None
         )
         try:
             session.dm = await ctx.author.create_dm()
@@ -714,15 +948,24 @@ class Possession(commands.Cog):
             )
             greeting.set_author(name=f"{session.underling['name']}, {session.underling['title']}")
             await session.dm.send(embed=greeting)
+            role = target.guild.get_role(self.ping_role_id) if self.ping_role_id else None
+            if role and not role.mentionable and not bot_perms.mention_everyone:
+                await session.dm.send(
+                    f"⚠️ I can't ping **{role.name}** in {target.mention}: the role isn't mentionable "
+                    "and I lack Mention Everyone there. The event will run without the ping."
+                )
         except discord.HTTPException:
             return await ctx.send(
                 "Your underling cannot reach you. Open your DMs to this bot and try again.",
                 delete_after=15,
             )
-        try:
-            await ctx.message.delete()  # Keep the Possessor's identity hidden.
-        except discord.HTTPException:
-            pass
+        if remote:
+            await ctx.send(f"{session.vessel['emoji']} The vessel awakens in {target.mention}. Your underling awaits in your DMs.")
+        else:
+            try:
+                await ctx.message.delete()  # Keep the Possessor's identity hidden.
+            except discord.HTTPException:
+                pass
         self.session = session
         session.task = asyncio.create_task(session.run())
 
