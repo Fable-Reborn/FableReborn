@@ -4525,32 +4525,40 @@ class GameMaster(commands.Cog):
         if not await ctx.confirm(f"Give **{label}** to every player profile?"):
             return await ctx.send("Contract grant cancelled.")
 
-        async with self.bot.pool.acquire() as conn:
-            async with conn.transaction():
-                # Players can hold duplicate rows for one type; add to the oldest one only.
-                await conn.execute(
-                    """
-                    UPDATE user_consumables SET quantity = quantity + $2
-                    WHERE id IN (
-                        SELECT MIN(id) FROM user_consumables WHERE consumable_type = $1 GROUP BY user_id
-                    );
-                    """,
-                    "theme_trade_contract",
-                    amount,
-                )
-                await conn.execute(
-                    """
-                    INSERT INTO user_consumables (user_id, consumable_type, quantity)
-                    SELECT p."user", $1, $2 FROM profile p
-                    WHERE NOT EXISTS (
-                        SELECT 1 FROM user_consumables uc
-                        WHERE uc.user_id = p."user" AND uc.consumable_type = $1
-                    );
-                    """,
-                    "theme_trade_contract",
-                    amount,
-                )
-                players = await conn.fetchval("SELECT COUNT(*) FROM profile;")
+        try:
+            async with self.bot.pool.acquire() as conn:
+                async with conn.transaction():
+                    # Players can hold duplicate rows for one type; add to the oldest one only.
+                    await conn.execute(
+                        """
+                        UPDATE user_consumables SET quantity = quantity + $2::integer
+                        WHERE id IN (
+                            SELECT MIN(id) FROM user_consumables WHERE consumable_type = $1::text GROUP BY user_id
+                        );
+                        """,
+                        "theme_trade_contract",
+                        amount,
+                    )
+                    # Explicit casts: parameters in an INSERT ... SELECT list otherwise default to text.
+                    await conn.execute(
+                        """
+                        INSERT INTO user_consumables (user_id, consumable_type, quantity)
+                        SELECT p."user", $1::text, $2::integer FROM profile p
+                        WHERE NOT EXISTS (
+                            SELECT 1 FROM user_consumables uc
+                            WHERE uc.user_id = p."user" AND uc.consumable_type = $1::text
+                        );
+                        """,
+                        "theme_trade_contract",
+                        amount,
+                    )
+                    players = await conn.fetchval("SELECT COUNT(*) FROM profile;")
+        except Exception as error:
+            self.bot.logger.exception("giveallcontracts failed")
+            return await ctx.send(
+                f"❌ The contract grant failed and nothing was given (the change was rolled back).\n"
+                f"```{type(error).__name__}: {str(error)[:1500]}```"
+            )
 
         await ctx.send(f"✅ Gave **{label}** to **{int(players or 0):,}** players.")
         with handle_message_parameters(
