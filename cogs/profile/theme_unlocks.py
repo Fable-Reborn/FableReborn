@@ -4,7 +4,10 @@ from dataclasses import dataclass
 import random
 
 from utils import misc as rpgtools
-from .themes import THEMES, resolve_theme
+from .themes import EVENT_THEMES, THEMES, resolve_theme
+
+# Boolean profile columns that unlock event themes (see EVENT_THEMES).
+PROFILE_FLAG_COLUMNS = tuple(sorted({theme.unlock_flag for theme in EVENT_THEMES if theme.unlock_flag}))
 
 
 @dataclass(frozen=True)
@@ -12,6 +15,7 @@ class UnlockRule:
     stat: str
     target: int = 0
     god: str = ""
+    flag: str = ""
 
     @property
     def label(self):
@@ -19,6 +23,8 @@ class UnlockRule:
             return "Available to every adventurer"
         if self.stat == "drop":
             return "Found during gameplay"
+        if self.stat == "event":
+            return "Awarded during events"
         if self.god:
             return f"Reach level {self.target} while following {self.god}"
         return {
@@ -30,6 +36,9 @@ class UnlockRule:
         }[self.stat]
 
     def met(self, facts):
+        if self.stat == "event":
+            # Granted explicitly, or claimed when its boolean profile column is true.
+            return bool(self.flag) and facts.get(self.flag) is True
         return self.stat in ("free", "drop") or (
             int(facts.get(self.stat, 0) or 0) >= self.target
             and (not self.god or str(facts.get("god") or "").casefold() == self.god.casefold())
@@ -40,6 +49,8 @@ class UnlockRule:
             return self.label
         if self.stat == "drop":
             return "Must be discovered"
+        if self.stat == "event":
+            return self.label
         value = max(0, int(facts.get(self.stat, 0) or 0))
         progress = f"{min(value, self.target):,}/{self.target:,}"
         if self.god:
@@ -67,6 +78,7 @@ RARITY_EMOJI = {
     "Epic": "🟠",
     "Legendary": "🔴",
     "Mythic": "💠",
+    "Event": "🎟️",
 }
 
 # Per-source drop chance: the probability that a roll happens at all.
@@ -376,6 +388,7 @@ RULES = {
     "forest": UnlockRule("free"),
     "frost": UnlockRule("free"),
     **{key: drop.unlock for key, drop in COLLECTIBLE_THEMES.items()},
+    **{theme.key: UnlockRule("event", flag=theme.unlock_flag) for theme in EVENT_THEMES},
 }
 
 
@@ -503,12 +516,16 @@ async def ensure_theme_schema(pool):
                 WHERE prpg_theme = ANY($1::text[])
                 ON CONFLICT (user_id, theme_key) DO NOTHING;
             ''', ["dragon", "evil", "chaos", "good", "forest", "frost"])
+            # Event unlock flags; names are validated identifiers in event_theme().
+            for column in PROFILE_FLAG_COLUMNS:
+                await conn.execute(f'ALTER TABLE profile ADD COLUMN IF NOT EXISTS "{column}" BOOLEAN NOT NULL DEFAULT FALSE;')
 
 
 async def _claim_locked(conn, user_id):
     """Caller holds a transaction; serialize grants/equips against this character."""
+    flags = "".join(f', "{column}"' for column in PROFILE_FLAG_COLUMNS)
     profile = await conn.fetchrow(
-        'SELECT xp, money, pvpwins, god, prpg_theme FROM profile WHERE "user" = $1 FOR UPDATE;', user_id,
+        f'SELECT xp, money, pvpwins, god, prpg_theme{flags} FROM profile WHERE "user" = $1 FOR UPDATE;', user_id,
     )
     if profile is None:
         return None
@@ -522,10 +539,17 @@ async def _claim_locked(conn, user_id):
     owned = {row["theme_key"] for row in rows if row["theme_key"] in THEMES} | {"classic"}
     # Only auto-claim free (starter) themes; collectible themes come from drops.
     new = tuple(key for key, rule in RULES.items() if key not in owned and key not in COLLECTIBLE_THEMES and rule.met(facts))
-    if new:
+    starters = [key for key in new if RULES[key].stat != "event"]
+    if starters:
         await conn.executemany(
             'INSERT INTO profile_theme_unlocks (user_id, theme_key) VALUES ($1, $2) ON CONFLICT (user_id, theme_key) DO NOTHING;',
-            [(user_id, key) for key in new],
+            [(user_id, key) for key in starters],
+        )
+    flagged = [key for key in new if RULES[key].stat == "event"]
+    if flagged:
+        await conn.executemany(
+            'INSERT INTO profile_theme_unlocks (user_id, theme_key, source) VALUES ($1, $2, $3) ON CONFLICT (user_id, theme_key) DO NOTHING;',
+            [(user_id, key, f"event-flag:{RULES[key].flag}") for key in flagged],
         )
     owned.update(new)
     current = resolve_theme(profile["prpg_theme"])
@@ -566,3 +590,15 @@ async def grant_theme(pool, user_id, theme, source):
                 user_id, theme.key, source,
             )
     return True
+
+
+async def grant_event_theme(pool, user_id, theme_key, event_id=None):
+    """Event cog entry point: ``await grant_event_theme(bot.pool, user.id, "harvest2026")``.
+
+    Returns False when the player has no character. Raises KeyError for a key
+    that is not listed in EVENT_THEMES, so a typo fails loudly during testing.
+    """
+    theme = resolve_theme(theme_key)
+    if theme is None or not theme.is_event:
+        raise KeyError(f"{theme_key!r} is not an event theme. Add it to EVENT_THEMES in cogs/profile/themes.py.")
+    return await grant_theme(pool, user_id, theme, f"event:{event_id or theme.key}")

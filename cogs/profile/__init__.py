@@ -54,6 +54,7 @@ from utils.i18n import _, locale_doc
 from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament
 from .theme_picker import ProfileThemePicker
 from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme
+from .themes import ASSET_ROOT as THEME_ASSET_ROOT
 
 JURY_COSMETIC_TITLE = "Favored by the Seven"
 
@@ -90,6 +91,16 @@ def okapi_class_icons(classes) -> list[str]:
 
 import discord
 from discord.ext import commands
+
+
+class MentionOrUserId(commands.Converter):
+    """Only a mention or a raw user ID, so a theme name is never read as a username."""
+
+    async def convert(self, ctx, argument):
+        match = re.fullmatch(r"<@!?(\d{15,20})>|(\d{15,20})", argument.strip())
+        if match is None:
+            raise commands.BadArgument(f"{argument!r} is not a mention or user ID.")
+        return discord.Object(id=int(match.group(1) or match.group(2)))
 
 
 class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
@@ -4268,10 +4279,70 @@ class Profile(commands.Cog):
         await ctx.send(f"Awarded **{theme.name}** to **{discord.utils.escape_markdown(str(target))}**.",
                        allowed_mentions=discord.AllowedMentions.none())
 
-    async def _send_profile_rpg(self, ctx, target=None, *, theme_key=None):
+    @commands.group(name="gmeventtheme", aliases=["gmevent"], hidden=True, invoke_without_command=True)
+    @commands.check_any(commands.is_owner(), is_gm())
+    async def gm_event_theme(self, ctx):
+        """Manage event-only profile themes defined in EVENT_THEMES (cogs/profile/themes.py)."""
+        p = ctx.clean_prefix
+        await ctx.send(
+            "**Event themes**\n"
+            f"`{p}gmeventtheme list` - every event theme defined in code\n"
+            f"`{p}gmeventtheme preview <theme>` - render it on your own card (does not grant)\n"
+            f"`{p}gmeventtheme give @player [@player ...] <theme>` - award it permanently\n"
+            "Add new ones in the EVENT THEMES section of `cogs/profile/themes.py`, then reload Profile."
+        )
+
+    def _event_theme_or_none(self, name):
+        theme = resolve_theme(name)
+        return theme if theme is not None and theme.is_event else None
+
+    @gm_event_theme.command(name="list")
+    async def gm_event_theme_list(self, ctx):
+        events = [theme for theme in THEMES.values() if theme.is_event]
+        if not events:
+            return await ctx.send("No event themes yet. Add one to EVENT_THEMES in `cogs/profile/themes.py`.")
+        embed = discord.Embed(title="Event profile themes", colour=int(events[-1].accent.lstrip("#"), 16))
+        for theme in events[-25:]:
+            art = "art ✓" if (THEME_ASSET_ROOT / f"{theme.key}.png").is_file() else "no art (plain banner)"
+            flag = f" · auto when `profile.{theme.unlock_flag}` is true" if theme.unlock_flag else ""
+            embed.add_field(name=f"{theme.emoji} {theme.name}"[:256],
+                            value=f"`{theme.key}` · {theme.event} · {art}{flag}"[:1024], inline=False)
+        if len(events) > 25:
+            embed.set_footer(text=f"Showing the newest 25 of {len(events)}.")
+        await ctx.send(embed=embed)
+
+    @gm_event_theme.command(name="preview")
+    async def gm_event_theme_preview(self, ctx, *, name: str):
+        theme = self._event_theme_or_none(name)
+        if theme is None:
+            return await ctx.send(f"Unknown event theme. See `{ctx.clean_prefix}gmeventtheme list`.")
+        await self._send_profile_rpg(ctx, None, theme_key=theme.key, gm_preview=True)
+
+    @gm_event_theme.command(name="give", aliases=["grant", "award"])
+    async def gm_event_theme_give(self, ctx, targets: commands.Greedy[MentionOrUserId], *, name: str):
+        theme = self._event_theme_or_none(name)
+        if theme is None:
+            return await ctx.send(f"Unknown event theme. See `{ctx.clean_prefix}gmeventtheme list`.")
+        if not targets:
+            return await ctx.send(f"Mention at least one player: `{ctx.clean_prefix}gmeventtheme give @player {theme.key}`.")
+        awarded, missing = [], []
+        for user_id in dict.fromkeys(target.id for target in targets):
+            ok = await grant_theme(self.bot.pool, user_id, theme, f"event:{theme.key}:gm:{ctx.author.id}")
+            (awarded if ok else missing).append(f"<@{user_id}>")
+        lines = []
+        if awarded:
+            lines.append(f"{theme.emoji} Awarded **{theme.name}** to: {', '.join(awarded)}")
+        if missing:
+            lines.append(f"No character, skipped: {', '.join(missing)}")
+        await ctx.send("\n".join(lines)[:2000], allowed_mentions=discord.AllowedMentions.none())
+
+    async def _send_profile_rpg(self, ctx, target=None, *, theme_key=None, gm_preview=False):
         # Shared boundary for both the preview command and wardrobe callbacks.
         # Check the requesting player's ownership before loading or rendering art.
-        if theme_key is not None:
+        # gm_preview is only passed by the GM-gated gmeventtheme preview command.
+        if theme_key is not None and gm_preview:
+            target = None
+        elif theme_key is not None:
             theme_state = await sync_theme_unlocks(self.bot.pool, ctx.author.id)
             if theme_state is None or theme_key not in theme_state.unlocked:
                 return await ctx.send(f"Choose a theme you own from `{ctx.clean_prefix}prpg themes`.")
@@ -4382,10 +4453,15 @@ class Profile(commands.Cog):
             tiamat_player=tiamat_player,
             theme_key=theme_key,
         )
+        if gm_preview:
+            caption = f"GM preview: **{THEMES[theme_key].name}** (not granted or equipped)."
+        elif theme_key:
+            caption = (f"Preview: **{THEMES[theme_key].name}**. "
+                       f"Equip with `{ctx.clean_prefix}prpg theme {theme_key}`")
+        else:
+            caption = _("Your RPG Profile Card:")
         await ctx.send(
-            (f"Preview: **{THEMES[theme_key].name}**. "
-             f"Equip with `{ctx.clean_prefix}prpg theme {theme_key}`"
-             if theme_key else _("Your RPG Profile Card:")),
+            caption,
             file=discord.File(
                 fp=image_buffer,
                 filename=f"profile_rpg_{user.id}.png",

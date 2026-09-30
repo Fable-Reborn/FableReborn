@@ -91,3 +91,7 @@ backups/ascension_descriptions_20260927_220747.zip
 cogs/raidbuilder/README.md
 tests/test_raidbuilder_node_canvas.cjs
 tests/test_raidbuilder_nodes.py
+assets/profile_themes/README.md
+tests/test_possession_engine.py
+EVENT_THEMES_GUIDE.md
+assets/profile_themes/README.md

@@ -51,6 +51,8 @@ class ProfileThemePicker(discord.ui.View):
         drop = COLLECTIBLE_THEMES.get(key)
         if drop:
             return f"Owned / {RARITY_EMOJI[drop.rarity]} {drop.rarity}"
+        if THEMES[key].is_event:
+            return f"Owned / {RARITY_EMOJI['Event']} {THEMES[key].event}"
         return f"Owned / {RULES[key].label}"
 
     def embed(self):
@@ -59,6 +61,8 @@ class ProfileThemePicker(discord.ui.View):
         drop = COLLECTIBLE_THEMES.get(self.selected)
         if drop:
             unlock_line = f"{RARITY_EMOJI[drop.rarity]} **{drop.rarity}** · {RULES[theme.key].label}"
+        elif theme.is_event:
+            unlock_line = f"{RARITY_EMOJI['Event']} **{theme.event}** · {RULES[theme.key].label}"
         else:
             unlock_line = RULES[theme.key].label
         embed = discord.Embed(

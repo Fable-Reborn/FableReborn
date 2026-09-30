@@ -116,6 +116,43 @@ from `cogs.profile.theme_unlocks` when issuing its rewards. Drop sources and rar
 weights live in `COLLECTIBLE_THEMES`; per-activity rates live in `DROP_CHANCES`.
 Already-recorded ownership is preserved when drop settings change.
 
+### Event themes
+
+Step-by-step instructions for GMs: [EVENT_THEMES_GUIDE.md](../../EVENT_THEMES_GUIDE.md).
+
+GMs and admins can add event-only themes without touching any other file. Open
+`cogs/profile/themes.py`, find the **EVENT THEMES** section and add an entry:
+
+```python
+EVENT_THEMES = (
+    event_theme(
+        "harvest2026", "Harvest Moon Festival",
+        accent="#f2a65a", event="Harvest Festival 2026",
+        emoji="🎃", motif="lantern",   # optional
+    ),
+)
+```
+
+Only the key, name, accent colour and event name are required. The rest of the palette
+is derived from the accent. Optional artwork goes in `assets/profile_themes/<key>.png`.
+Without art, the banner is plain. Reload the Profile cog; a typo raises a clear error.
+
+Event themes appear in an **Events** wardrobe collection. They never drop and are never
+auto-claimed. Bot owners and GMs can use:
+
+- `$gmeventtheme list` shows every event theme and whether its art is installed.
+- `$gmeventtheme preview <theme>` renders it on your own card without granting it.
+- `$gmeventtheme give @a @b 1234567890 <theme>` awards it to several players at once (mentions or IDs).
+
+Add `profile_flag="column"` to unlock a theme automatically for every player whose
+`profile.column` BOOLEAN is true. The column is created (default false) on cog load
+when missing. The claim is recorded as `event-flag:<column>` and stays permanent.
+A disabled example using the Halloween `spookyclass` column is in the section.
+
+Event cogs can call `await grant_event_theme(bot.pool, user_id, "harvest2026")` from
+`cogs.profile.theme_unlocks`. Never delete or rename an awarded event theme: owners
+would fall back to the classic card.
+
 ## Deployment and storage
 
 Deploy the modified Adventure, Battles and Profile cogs, `themes.py`, `theme_picker.py`, `theme_unlocks.py`,

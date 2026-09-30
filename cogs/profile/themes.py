@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 import math
 from pathlib import Path
+import re
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -29,10 +30,16 @@ class ProfileTheme:
     motif: str = "diamond"
     title_lines: tuple[str, ...] = ()
     finish: str = "standard"
+    event: str = ""
+    unlock_flag: str = ""
 
     @property
     def classic(self):
         return self.key == "classic"
+
+    @property
+    def is_event(self):
+        return bool(self.event)
 
     @property
     def palette(self):
@@ -255,6 +262,116 @@ for _key, _rarity, _motif in (
     ("good", "Rare", "sun"), ("forest", "Uncommon", "leaf"), ("frost", "Epic", "star"),
 ):
     THEMES[_key] = replace(THEMES[_key], rarity=_rarity, motif=_motif)
+
+MOTIFS = ("diamond", "star", "rift", "sun", "gear", "claw", "leaf", "wave", "petal",
+          "bubble", "lantern", "wing", "crown", "quill", "spire")
+
+
+def _mix(color, target, amount):
+    """Blend two #rrggbb colours; amount=0 keeps color, amount=1 returns target."""
+    a = [int(color[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(target[i:i + 2], 16) for i in (1, 3, 5)]
+    return "#" + "".join(f"{round(x + (y - x) * amount):02x}" for x, y in zip(a, b))
+
+
+def event_theme(key, name, *, accent, event, epithet="", description="", emoji="🎉",
+                motif="star", title_lines=(), secondary=None, background=None,
+                panel=None, text=None, muted=None, profile_flag=None):
+    """Build an event-only theme. Only key, name, accent and event are required;
+    the rest of the palette is derived from the accent colour.
+
+    profile_flag names a BOOLEAN column on the profile table. Players whose
+    column is true claim the theme automatically the next time their themes sync.
+    """
+    if not re.fullmatch(r"[a-z][a-z0-9_]{1,31}", key):
+        raise ValueError(f"Event theme key {key!r} must be 2-32 lowercase letters, digits or _, starting with a letter.")
+    colours = dict(accent=accent, secondary=secondary, background=background, panel=panel, text=text, muted=muted)
+    for field, value in colours.items():
+        if value is not None and not re.fullmatch(r"#[0-9a-fA-F]{6}", value):
+            raise ValueError(f"Event theme {key!r}: {field} must look like '#f2a65a', got {value!r}.")
+    if motif not in MOTIFS:
+        raise ValueError(f"Event theme {key!r}: motif must be one of {', '.join(MOTIFS)}.")
+    if not name or len(name) > 60:
+        raise ValueError(f"Event theme {key!r}: name must be 1-60 characters.")
+    if not event:
+        raise ValueError(f"Event theme {key!r}: event must name the event it belongs to.")
+    if profile_flag is not None and not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", profile_flag):
+        raise ValueError(f"Event theme {key!r}: profile_flag must be a lowercase profile column name, got {profile_flag!r}.")
+    accent = accent.lower()
+    return ProfileTheme(
+        key, name,
+        epithet or event.upper(),
+        description or f"A limited cosmetic from {event}.",
+        accent,
+        secondary or _mix(accent, "#000000", .45),
+        background or _mix(accent, "#0c0e14", .9),
+        panel or _mix(accent, "#0c0e14", .82),
+        text or _mix(accent, "#ffffff", .85),
+        muted or _mix(accent, "#c4c4c4", .55),
+        emoji, "Events", "Event", motif, tuple(title_lines), event=event,
+        unlock_flag=profile_flag or "",
+    )
+
+
+# ===========================================================================
+#  EVENT THEMES  —  GM / admin section
+# ===========================================================================
+# Event themes never drop from gameplay and are never auto-claimed. Players only
+# get them when a GM awards them (or an event cog calls grant_event_theme).
+#
+# To add one:
+#   1. Copy the example below into EVENT_THEMES and fill it in. Only key, name,
+#      accent and event are required; every other colour is derived from accent.
+#   2. Optional artwork: save it as assets/profile_themes/<key>.png (any size;
+#      it is cropped to 1660x554). Without art the banner is a plain colour.
+#   3. Reload the Profile cog. A typo raises a clear error and the old version
+#      stays loaded.
+#   4. In Discord:  $gmeventtheme list
+#                   $gmeventtheme preview <key>        (renders it on your card)
+#                   $gmeventtheme give @player1 @player2 <key>
+#
+# Unlock from the database instead of by hand: add profile_flag="column_name".
+# Everyone whose profile.column_name is true gets the theme the next time they
+# open $prpg or $prpg themes. The column is created (BOOLEAN, default false) on
+# cog load if it does not exist yet. Your event code then only has to run:
+#   UPDATE profile SET column_name = true WHERE "user" = $1;
+#
+# Never delete or rename an event theme once awarded: owners would lose it
+# (their card falls back to classic). Leave old events in the list.
+#
+# Optional fields: epithet="SHOUTED TAGLINE.", description="One sentence.",
+#   emoji="🎃", motif="lantern", title_lines=("Two-line", "Banner Title"),
+#   secondary/background/panel/text/muted="#rrggbb" to override derived colours.
+# Motifs: diamond star rift sun gear claw leaf wave petal bubble lantern wing
+#   crown quill spire
+#
+# Example:
+#   event_theme(
+#       "harvest2026", "Harvest Moon Festival",
+#       accent="#f2a65a", event="Harvest Festival 2026",
+#       epithet="THE FIELDS REMEMBER EVERY HAND.",
+#       description="Lanterns and a copper moon over the autumn fair.",
+#       emoji="🎃", motif="lantern",
+#   ),
+
+EVENT_THEMES = (
+    # Add event themes here ↓
+
+    # Database-flag example: everyone who unlocked the Halloween class
+    # (profile.spookyclass = true, set by cogs/halloween) gets this theme.
+    # Remove the # from the six lines below to switch it on.
+    # event_theme(
+    #     "spooky_season", "Spooky Season",
+    #     accent="#ff7a1a", event="Halloween",
+    #     epithet="SOMETHING IS KNOCKING.", emoji="🎃", motif="lantern",
+    #     profile_flag="spookyclass",
+    # ),
+)
+
+for _theme in EVENT_THEMES:
+    if _theme.key in THEMES:
+        raise ValueError(f"Event theme key {_theme.key!r} is already used by {THEMES[_theme.key].name!r}.")
+    THEMES[_theme.key] = _theme
 
 ALIASES = {
     "normal": "classic", "plain": "classic", "default": "classic", "reset": "classic",
@@ -490,9 +607,12 @@ def add_theme_banner(card, theme):
             _draw_foil_title(result, (60, y), line, theme_font(size, "title"))
         y += 90
     draw.text((64, y + 20), theme.epithet, font=theme_font(23, "heading"), fill=theme.accent)
-    edition = list(THEMES).index(theme.key)
-    draw.text((64, 465), f"{theme.collection.upper()}  /  {theme.rarity.upper()}  /  CHRONICLE {edition:02d}",
-              font=theme_font(18, "heading"), fill=theme.muted)
+    if theme.is_event:
+        caption = f"EVENT EDITION  /  {theme.event.upper()}"
+    else:
+        edition = list(THEMES).index(theme.key)
+        caption = f"{theme.collection.upper()}  /  {theme.rarity.upper()}  /  CHRONICLE {edition:02d}"
+    draw.text((64, 465), caption, font=theme_font(18, "heading"), fill=theme.muted)
     draw.line((64, 510, 1596, 510), fill=theme.secondary, width=1)
     draw_ornament(draw, 830, 510, 12, theme)
     if theme.finish == "prismatic":
