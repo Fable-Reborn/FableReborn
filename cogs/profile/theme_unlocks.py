@@ -69,6 +69,7 @@ RARITY_WEIGHTS = {
     "Epic": 4,
     "Legendary": 1.25,
     "Mythic": 0.75,
+    "Transcendent": 0.30,
 }
 
 RARITY_EMOJI = {
@@ -78,6 +79,7 @@ RARITY_EMOJI = {
     "Epic": "🟠",
     "Legendary": "🔴",
     "Mythic": "💠",
+    "Transcendent": "🌟",
     "Event": "🎟️",
 }
 
@@ -93,14 +95,17 @@ DROP_CHANCES = {
 }
 
 
+RANDOM_DROP_SOURCES = frozenset({"pve", "adventure", "bt", "boss"})
+
+
 @dataclass(frozen=True)
 class ThemeDrop:
     """Describes how a collectible theme is earned through gameplay drops."""
     unlock: UnlockRule
     rarity: str
     weight: float
-    drop_sources: frozenset[str]
-    hint: str = ""
+    drop_sources: frozenset[str] = RANDOM_DROP_SOURCES
+    hint: str = "Drops from adventures, PvE, Battle Tower, and Ice Dragon"
 
 
 # ---------------------------------------------------------------------------
@@ -108,273 +113,89 @@ class ThemeDrop:
 # ---------------------------------------------------------------------------
 
 COLLECTIBLE_THEMES: dict[str, ThemeDrop] = {
-    "emberkettle": ThemeDrop(
-        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
-    ),
-    "mossback": ThemeDrop(
-        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
-    ),
-    "brassbeak": ThemeDrop(
-        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
-    ),
-    "moonharvest": ThemeDrop(
-        UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
-    ),
-    "stormheron": ThemeDrop(
-        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "velvetprowl": ThemeDrop(
-        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "emberbloom": ThemeDrop(
-        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "tideweaver": ThemeDrop(
-        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "amberreliquary": ThemeDrop(
-        UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "frostgardener": ThemeDrop(
-        UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "leviathanswake": ThemeDrop(
-        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"adventure", "bt", "boss"}), "Drops from adventures, Battle Tower, and bosses",
-    ),
-    "gravebloom": ThemeDrop(
-        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"adventure", "bt", "boss"}), "Drops from adventures, Battle Tower, and bosses",
-    ),
-    "allworlds": ThemeDrop(
-        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
-        frozenset({"bt", "boss"}), "Drops from Battle Tower and bosses",
-    ),
-    # Bestiary and the ten-chronicle expansion. All remain hidden until dropped.
-    "tynfdarius": ThemeDrop(
-        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "mechaknight": ThemeDrop(
-        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "umbracrown": ThemeDrop(
-        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "deimos": ThemeDrop(
-        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"pve", "bt", "boss"}), "Drops from PvE, Battle Tower, and bosses",
-    ),
-    "voiddragon": ThemeDrop(
-        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"pve", "adventure", "boss"}), "Drops from PvE, adventures, and bosses",
-    ),
-    "nullstar": ThemeDrop(
-        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
-        frozenset({"bt", "boss"}), "Drops from Battle Tower and bosses",
-    ),
-    "boneglass": ThemeDrop(
-        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "drownedpearl": ThemeDrop(
-        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"adventure", "bt", "boss"}), "Drops from adventures, Battle Tower, and bosses",
-    ),
-    "worldheart": ThemeDrop(
-        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
-        frozenset({"bt", "boss"}), "Drops from Battle Tower and bosses",
-    ),
-    "sandreign": ThemeDrop(
-        UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "lanternwake": ThemeDrop(
-        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
-    ),
-    "glasswing": ThemeDrop(
-        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure"}), "Drops from PvE battles and adventures",
-    ),
-    "porcelain": ThemeDrop(
-        UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}), "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "firstflame": ThemeDrop(
-        UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"adventure", "bt", "boss"}), "Drops from adventures, Battle Tower, and bosses",
-    ),
-    "unwritten": ThemeDrop(
-        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
-        frozenset({"boss"}), "Drops from boss encounters only",
-    ),
-    "laststar": ThemeDrop(
-        UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"],
-        frozenset({"bt", "boss"}), "Drops from Battle Tower and bosses",
-    ),
-    # ── Companions ──────────────────────────────────────────────
-    "moonbunny": ThemeDrop(
-        UnlockRule("drop"),
-        "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}),
-        "Drops from PvE battles and adventures",
-    ),
-    "slime": ThemeDrop(
-        UnlockRule("drop"),
-        "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}),
-        "Drops from PvE battles and adventures",
-    ),
-    "chickencow": ThemeDrop(
-        UnlockRule("drop"),
-        "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}),
-        "Drops from PvE battles and adventures",
-    ),
-    "mushroom": ThemeDrop(
-        UnlockRule("drop"),
-        "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}),
-        "Drops from PvE battles and adventures",
-    ),
-    "frogzard": ThemeDrop(
-        UnlockRule("drop"),
-        "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure"}),
-        "Drops from PvE battles and adventures",
-    ),
-    "lotus": ThemeDrop(
-        UnlockRule("drop"),
-        "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}),
-        "Drops from PvE, adventures, and Battle Tower",
-    ),
-    # ── Elven ───────────────────────────────────────────────────
-    "woodelf": ThemeDrop(
-        UnlockRule("drop"),
-        "Common", RARITY_WEIGHTS["Common"],
-        frozenset({"pve", "adventure"}),
-        "Drops from PvE battles and adventures",
-    ),
-    "darkelf": ThemeDrop(
-        UnlockRule("drop"),
-        "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}),
-        "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "highelf": ThemeDrop(
-        UnlockRule("drop"),
-        "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"pve", "adventure", "bt"}),
-        "Drops from PvE, adventures, and Battle Tower",
-    ),
-    # ── Wonders ─────────────────────────────────────────────────
-    "kitsune": ThemeDrop(
-        UnlockRule("drop"),
-        "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"pve", "adventure", "bt"}),
-        "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "mimic": ThemeDrop(
-        UnlockRule("drop"),
-        "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"pve", "adventure", "bt"}),
-        "Drops from PvE, adventures, and Battle Tower",
-    ),
-    "clockwork": ThemeDrop(
-        UnlockRule("drop"),
-        "Uncommon", RARITY_WEIGHTS["Uncommon"],
-        frozenset({"pve", "adventure", "bt"}),
-        "Drops from PvE, adventures, and Battle Tower",
-    ),
-    # ── Divine (base) ───────────────────────────────────────────
-    "elysia": ThemeDrop(
-        UnlockRule("drop"),
-        "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"boss", "adventure", "bt"}),
-        "Drops from bosses, adventures, and Battle Tower",
-    ),
-    "sepulchure": ThemeDrop(
-        UnlockRule("drop"),
-        "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"boss", "adventure", "bt"}),
-        "Drops from bosses, adventures, and Battle Tower",
-    ),
-    "drakath": ThemeDrop(
-        UnlockRule("drop"),
-        "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"boss", "adventure", "bt"}),
-        "Drops from bosses, adventures, and Battle Tower",
-    ),
-    # ── Mythic ──────────────────────────────────────────────────
-    "storm": ThemeDrop(
-        UnlockRule("drop"),
-        "Rare", RARITY_WEIGHTS["Rare"],
-        frozenset({"bt", "boss"}),
-        "Drops from Battle Tower, and bosses",
-    ),
-    "leviathan": ThemeDrop(
-        UnlockRule("drop"),
-        "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"boss", "bt", "adventure"}),
-        "Drops from bosses, Battle Tower, and adventures",
-    ),
-    "phoenix": ThemeDrop(
-        UnlockRule("drop"),
-        "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"boss", "bt", "adventure"}),
-        "Drops from bosses, Battle Tower, and adventures",
-    ),
-    "bloodmoon": ThemeDrop(
-        UnlockRule("drop"),
-        "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"bt", "boss"}),
-        "Drops from Battle Tower, and bosses",
-    ),
-    "astral": ThemeDrop(
-        UnlockRule("drop"),
-        "Epic", RARITY_WEIGHTS["Epic"],
-        frozenset({"boss", "bt"}),
-        "Drops from bosses and Battle Tower",
-    ),
-    "eclipse": ThemeDrop(
-        UnlockRule("drop"),
-        "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"boss", "bt"}),
-        "Drops from bosses and Battle Tower",
-    ),
-    # ── Divine (Exalted) ────────────────────────────────────────
-    "elysia_ascendant": ThemeDrop(
-        UnlockRule("drop"),
-        "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"boss"}),
-        "Drops from boss encounters only",
-    ),
-    "sepulchure_unbound": ThemeDrop(
-        UnlockRule("drop"),
-        "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"boss"}),
-        "Drops from boss encounters only",
-    ),
-    "drakath_incarnate": ThemeDrop(
-        UnlockRule("drop"),
-        "Legendary", RARITY_WEIGHTS["Legendary"],
-        frozenset({"boss"}),
-        "Drops from boss encounters only",
-    ),
+    "cloverpony": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "breadandembers": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "silverhook": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "coalwhisker": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "patchworkcamp": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "thimbleguard": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "jadeapothecary": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "silkroadwyrm": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "bellkeeper": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "inkfin": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "gildedrook": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "auroraferry": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "rubyforge": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "opalunicorn": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "amethystbastion": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "honeycrown": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "duskmoth": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "thundercolossus": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "sableopera": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "coralcitadel": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "dawnpegasus": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "seraphimvault": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "winterregent": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "gravepony": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "opalodyssey": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "dreamsovereign": ThemeDrop(UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"]),
+    "eternityloom": ThemeDrop(UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"]),
+    "sunweaver": ThemeDrop(UnlockRule("drop"), "Transcendent", RARITY_WEIGHTS["Transcendent"]),
+    "nightpalace": ThemeDrop(UnlockRule("drop"), "Transcendent", RARITY_WEIGHTS["Transcendent"]),
+    "worldtreeheart": ThemeDrop(UnlockRule("drop"), "Transcendent", RARITY_WEIGHTS["Transcendent"]),
+    "emberkettle": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "mossback": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "brassbeak": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "moonharvest": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "stormheron": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "velvetprowl": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "emberbloom": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "tideweaver": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "amberreliquary": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "frostgardener": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "leviathanswake": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "gravebloom": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "allworlds": ThemeDrop(UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"]),
+    "tynfdarius": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "mechaknight": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "umbracrown": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "deimos": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "voiddragon": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "nullstar": ThemeDrop(UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"]),
+    "boneglass": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "drownedpearl": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "worldheart": ThemeDrop(UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"]),
+    "sandreign": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "lanternwake": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "glasswing": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "porcelain": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "firstflame": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "unwritten": ThemeDrop(UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"]),
+    "laststar": ThemeDrop(UnlockRule("drop"), "Mythic", RARITY_WEIGHTS["Mythic"]),
+    "moonbunny": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "slime": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "chickencow": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "mushroom": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "frogzard": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "lotus": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "woodelf": ThemeDrop(UnlockRule("drop"), "Common", RARITY_WEIGHTS["Common"]),
+    "darkelf": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "highelf": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "kitsune": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "mimic": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "clockwork": ThemeDrop(UnlockRule("drop"), "Uncommon", RARITY_WEIGHTS["Uncommon"]),
+    "elysia": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "sepulchure": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "drakath": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "storm": ThemeDrop(UnlockRule("drop"), "Rare", RARITY_WEIGHTS["Rare"]),
+    "leviathan": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "phoenix": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "bloodmoon": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "astral": ThemeDrop(UnlockRule("drop"), "Epic", RARITY_WEIGHTS["Epic"]),
+    "eclipse": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "elysia_ascendant": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "sepulchure_unbound": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
+    "drakath_incarnate": ThemeDrop(UnlockRule("drop"), "Legendary", RARITY_WEIGHTS["Legendary"]),
 }
 
 
@@ -412,22 +233,15 @@ class ThemeLocked(Exception):
 # ---------------------------------------------------------------------------
 
 def get_drop_pool(facts, source):
-    """Return a list of (key, weight) pairs for eligible collectible themes for this source.
+    """All active activities share the full collectible pool, including owned keys.
 
-    Pure function; no I/O.  Used by roll_theme_drop and tests.
-
-    A theme enters the pool when:
-    1. The activity source is listed in the theme's drop_sources.
-    2. The player's character meets the stat/god prerequisite.
+    Starters and event exclusives never enter this catalogue. Ownership, stats and
+    collection progress must not change these per-theme probabilities. Source is
+    validated here and recorded as award provenance; callers apply trigger rates.
     """
-    pool = []
-    for key, drop in COLLECTIBLE_THEMES.items():
-        if source not in drop.drop_sources:
-            continue
-        if not drop.unlock.met(facts):
-            continue
-        pool.append((key, drop.weight))
-    return pool
+    if source not in RANDOM_DROP_SOURCES:
+        return []
+    return [(key, drop.weight) for key, drop in COLLECTIBLE_THEMES.items()]
 
 
 def theme_drop_message(theme_key, prefix, recipient="You"):
@@ -446,8 +260,9 @@ async def roll_theme_drop(pool, user_id, source):
     """Roll for a random collectible theme drop from the given activity source.
 
     Returns the theme key (str) if one was won and granted, or None.
-    Themes the player already owns are excluded from the roll pool.
-    Only themes whose stat/god prerequisite is met are eligible.
+    Roll once against the full weighted collectible pool. An owned result returns
+    None silently, without rerolling or recording a new award. The character row
+    stays locked through the ownership check and insert to serialize parallel wins.
 
     Typical usage from a PvE / adventure / BT cog::
 
@@ -466,21 +281,17 @@ async def roll_theme_drop(pool, user_id, source):
             )
             if profile is None:
                 return None
-            facts = dict(profile)
-            facts["level"] = rpgtools.xptolevel(facts.get("xp") or 0)
-            pets = await conn.fetchrow(
-                'SELECT COUNT(*) AS pet_count, COALESCE(MAX(trust_level), 0) AS pet_trust FROM monster_pets WHERE user_id = $1;', user_id,
-            )
-            facts.update(dict(pets))
             rows = await conn.fetch('SELECT theme_key FROM profile_theme_unlocks WHERE user_id = $1;', user_id)
             owned = {row["theme_key"] for row in rows} | {"classic"}
 
-            eligible = [(key, weight) for key, weight in get_drop_pool(facts, source) if key not in owned]
+            eligible = get_drop_pool({}, source)
             if not eligible:
                 return None
 
             keys, weights = zip(*eligible)
             chosen = random.choices(keys, weights=weights, k=1)[0]
+            if chosen in owned:
+                return None
 
             await conn.execute(
                 'INSERT INTO profile_theme_unlocks (user_id, theme_key, source) VALUES ($1, $2, $3) ON CONFLICT (user_id, theme_key) DO NOTHING;',
@@ -590,6 +401,32 @@ async def grant_theme(pool, user_id, theme, source):
                 user_id, theme.key, source,
             )
     return True
+
+
+async def grant_random_theme(pool, user_id, rarity, source):
+    """GM reward: grant one collectible of ``rarity`` the player does not own yet.
+
+    Picks uniformly among the unowned themes of that rarity, so a gift is never a
+    duplicate. Returns the granted key, "" when every theme of that rarity is
+    already owned, or None when the player has no character. The character row
+    stays locked through the ownership check and insert, as with drops.
+    """
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            exists = await conn.fetchval('SELECT "user" FROM profile WHERE "user" = $1 FOR UPDATE;', user_id)
+            if exists is None:
+                return None
+            rows = await conn.fetch('SELECT theme_key FROM profile_theme_unlocks WHERE user_id = $1;', user_id)
+            owned = {row["theme_key"] for row in rows}
+            choices = [key for key, drop in COLLECTIBLE_THEMES.items() if drop.rarity == rarity and key not in owned]
+            if not choices:
+                return ""
+            chosen = random.choice(choices)
+            await conn.execute(
+                'INSERT INTO profile_theme_unlocks (user_id, theme_key, source) VALUES ($1, $2, $3) ON CONFLICT (user_id, theme_key) DO NOTHING;',
+                user_id, chosen, source,
+            )
+            return chosen
 
 
 async def grant_event_theme(pool, user_id, theme_key, event_id=None):

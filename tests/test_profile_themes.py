@@ -52,7 +52,7 @@ def profile_renderer():
         # Deterministic level curve and badge fixture; neither is modified by themes.
         rpgtools=SimpleNamespace(xptolevel=lambda xp: max(1, int(xp // 1000)), xp_for_level=lambda level: level * 1000),
         get_ascension_mantle=lambda key: None, ADVENTURE_NAMES={1: "The Ashen Citadel"},
-        **{name: getattr(themes, name) for name in ("THEMES", "resolve_theme", "theme_font", "theme_background", "add_theme_banner", "draw_ornament")},
+        **{name: getattr(themes, name) for name in ("THEMES", "resolve_theme", "theme_font", "theme_background", "add_theme_banner", "draw_ornament", "render_transcendent")},
     )
     exec(compile(ast.Module(body=[profile], type_ignores=[]), str(source), "exec"), namespace)
     instance = namespace["Profile"]()
@@ -92,7 +92,7 @@ def render(theme, *, pet=False, long_names=False):
 def test_all_themes_render_real_card(key):
     output = render(key, pet=True, long_names=True)
     with Image.open(output) as image:
-        assert image.size == ((1660, 940) if key == "classic" else (1660, 1460))
+        assert image.size == load_themes().THEMES[key].card_size
         assert image.format == "PNG"
     assert output.getbuffer().nbytes < 8_000_000
 
@@ -141,6 +141,77 @@ def test_prismatic_finish_preserves_stat_panels_avatar_and_input_card():
     ImageDraw.Draw(visible).ellipse((0, 0, 211, 211), fill=255)
     difference = ImageChops.difference(expected, actual)
     assert Image.composite(difference, Image.new("RGB", difference.size), visible).getbbox() is None
+
+
+@pytest.mark.parametrize("key", ["sunweaver", "nightpalace", "worldtreeheart"])
+@pytest.mark.parametrize("pet", [False, True])
+def test_transcendent_uses_new_data_renderer_and_preserves_values(key, pet, monkeypatch):
+    themes = load_themes()
+    actual_render = themes.render_transcendent
+    captured = {}
+    def capture(theme, data):
+        captured.update(data)
+        return actual_render(theme, data)
+    def old_panel_path(*args):
+        pytest.fail("Transcendent must not use the standard panel/banner compositor")
+    monkeypatch.setattr(themes, "render_transcendent", capture)
+    monkeypatch.setattr(themes, "add_theme_banner", old_panel_path)
+    with Image.open(render(key, pet=pet, long_names=True)) as result:
+        assert result.size == (1800, 2400)
+    assert captured["health"] == 18420
+    assert captured["attack"] == 3240
+    assert captured["defense"] == 2780
+    assert captured["power"] == 25960
+    assert captured["level"] == 92
+    assert captured["xp_progress"] == .5
+    assert captured["equipment"][0]["name"].startswith("An impossibly long")
+    assert captured["equipment"][1]["name"] == "Oathkeeper"
+    assert captured["mission"] == "The Ashen Citadel"
+    assert dict(captured["ledger"])["Guild"] == "The First Flame"
+    if pet:
+        assert captured["companion"]["hp"] == 18700
+        assert captured["companion"]["attack"] == 3520
+        assert captured["companion"]["defense"] == 2640
+        assert captured["companion"]["trust"] == 100
+    else:
+        assert captured["companion"] is None
+
+
+def test_transcendent_missing_art_and_cache_are_safe(monkeypatch):
+    themes = load_themes()
+    before = themes._poster_art("sunweaver", (1800, 900)).copy()
+    render("sunweaver")
+    assert ImageChops.difference(before, themes._poster_art("sunweaver", (1800, 900))).getbbox() is None
+    def missing(*args):
+        raise OSError("not installed")
+    monkeypatch.setattr(themes, "_poster_art", missing)
+    assert Image.open(render("sunweaver")).size == (1800, 2400)
+
+
+@pytest.mark.parametrize("key", ["sunweaver", "nightpalace", "worldtreeheart"])
+def test_transcendent_edition_cache_never_contains_player_pixels(key):
+    themes = load_themes()
+    before = themes._transcendent_base(key).copy()
+    render(key, pet=True, long_names=True)
+    assert ImageChops.difference(before, themes._transcendent_base(key)).getbbox() is None
+
+
+def test_transcendent_optional_portraits_and_zero_stats(monkeypatch):
+    themes = load_themes()
+    actual_render = themes.render_transcendent
+    def extreme(theme, data):
+        data.update(level=1, xp_progress=0, health=0, attack=0, defense=0, power=1,
+                    sprite=Image.new("RGBA", (132, 150), (255, 0, 0, 255)),
+                    sprite_name="A long in-game character name " * 20,
+                    jury_title="A long jury title " * 30, badges=["Badge " * 40]*6)
+        data["companion"]["image"] = Image.new("RGBA", (320, 320), (0, 255, 0, 0))
+        result = actual_render(theme, data)
+        assert result.getpixel((110, 900)) == (255, 0, 0)
+        # Transparent pet pixels must reveal the folio beneath, never become green.
+        assert result.getpixel((1251, 1691)) != (0, 255, 0)
+        return result
+    monkeypatch.setattr(themes, "render_transcendent", extreme)
+    assert Image.open(render("nightpalace", pet=True)).size == (1800, 2400)
 
 
 def test_preview_does_not_save():

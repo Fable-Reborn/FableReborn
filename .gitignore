@@ -95,3 +95,6 @@ assets/profile_themes/README.md
 tests/test_possession_engine.py
 EVENT_THEMES_GUIDE.md
 assets/profile_themes/README.md
+tests/test_profile_themes.py
+cogs/profile.zip
+tests/test_profile_themes.py

@@ -1,0 +1,439 @@
+{
+  "generator": "Built-in image_gen",
+  "themes": [
+    {
+      "key": "cloverpony",
+      "name": "Cloverhoof Meadow",
+      "rarity": "Common",
+      "epithet": "THE ROAD IS BETTER WITH A FRIEND.",
+      "description": "A chestnut pony rests among lanterns and wildflowers.",
+      "accent": "#d9bd8f",
+      "background": "#232922",
+      "motif": "leaf",
+      "title_lines": [
+        "Cloverhoof",
+        "Meadow"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An adorable sturdy chestnut PONY with soft flaxen mane, short legs, feathered fetlocks and expressive dark eyes stands in a lush meadow beside a rustic adventurer's saddle and rolled bedroll, braided mane threaded with tiny white daisies, golden fireflies, warm hanging lanterns and distant rolling hills under evening clouds. Entire compact equine body in frame on right, anatomically correct, enchanting painterly detail, honest cozy fantasy rather than toy or cartoon."
+    },
+    {
+      "key": "breadandembers",
+      "name": "Bread and Embers",
+      "rarity": "Common",
+      "epithet": "A WARM LOAF BEFORE THE LONG ROAD.",
+      "description": "A stone oven glows in a dwarven roadside bakery.",
+      "accent": "#e5b987",
+      "background": "#241917",
+      "motif": "lantern",
+      "title_lines": [
+        "Bread and",
+        "Embers"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A friendly stout dwarf baker in rolled linen sleeves pulls a round braided golden loaf from a sculpted stone woodfire oven, medieval roadside bakery with copper pans and rosemary, flour drifting through late afternoon light, a sleepy miniature red drake curled around warm coals. Rich tactile rustic still life, no signage."
+    },
+    {
+      "key": "silverhook",
+      "name": "Silverhook Landing",
+      "rarity": "Common",
+      "epithet": "THE QUIET HOURS HAVE THEIR TREASURES.",
+      "description": "An otter angler waits beside a jade mountain river.",
+      "accent": "#a5d6d0",
+      "background": "#152527",
+      "motif": "wave",
+      "title_lines": [
+        "Silverhook",
+        "Landing"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A charming river otter angler in a patched green cape sits on a wooden jetty, polished silver fishing hook suspended above clear jade water with a huge softly glowing fish silhouette below, reeds, lily pads, misty mountain village, wicker basket and pearlescent droplets. Tranquil sunrise, amber rim light, beautiful water reflections."
+    },
+    {
+      "key": "coalwhisker",
+      "name": "Coalwhisker Mine",
+      "rarity": "Common",
+      "epithet": "SMALL PAWS. BRIGHT FORTUNES.",
+      "description": "A mole miner uncovers a vein of honey quartz.",
+      "accent": "#e8c77e",
+      "background": "#201d26",
+      "motif": "diamond",
+      "title_lines": [
+        "Coalwhisker",
+        "Mine"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An endearing velvet-furred mole miner with antique brass headlamp and tiny pickaxe discovers a magnificent vein of translucent honey quartz and pale violet crystals inside an old mine, little ore cart, rough timber supports, mineral dust illuminated in amber shafts, cozy industrious adventure."
+    },
+    {
+      "key": "patchworkcamp",
+      "name": "Patchwork Camp",
+      "rarity": "Common",
+      "epithet": "REST HERE. THE WORLD CAN WAIT.",
+      "description": "Adventurers share a quiet fire under the stars.",
+      "accent": "#d7b191",
+      "background": "#1e232d",
+      "motif": "flame",
+      "title_lines": [
+        "Patchwork",
+        "Camp"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. Three weary fantasy travellers with varied cloaks sit around a small bright campfire beneath an ancient ruined arch, a loyal shaggy pack beast sleeping beside rolled bedrolls, steaming iron kettle, hung wet boots, golden fireflies in deep blue forest. Intimate cinematic campsite seen wide, fire and people on right."
+    },
+    {
+      "key": "thimbleguard",
+      "name": "The Thimble Guard",
+      "rarity": "Common",
+      "epithet": "COURAGE IS NEVER MEASURED IN INCHES.",
+      "description": "A mouse knight guards a rain-soaked garden gate.",
+      "accent": "#c9c4a0",
+      "background": "#202724",
+      "motif": "crown",
+      "title_lines": [
+        "The Thimble",
+        "Guard"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A brave tiny field mouse knight wearing beautifully hammered thimble armor and a burgundy cloth cape stands with sewing-needle rapier before a mossy miniature garden gate, huge dew-beaded violets and ferns towering over him, silver moonlight after rain, tiny reflected silhouette in a puddle, heroic low camera."
+    },
+    {
+      "key": "jadeapothecary",
+      "name": "The Jade Apothecary",
+      "rarity": "Uncommon",
+      "epithet": "EVERY WOUND HAS A WILDER ANSWER.",
+      "description": "An elven herbalist distils moonlight into glass.",
+      "accent": "#a7d4ab",
+      "background": "#142a23",
+      "motif": "leaf",
+      "title_lines": [
+        "The Jade",
+        "Apothecary"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An elegant elf herbalist in deep jade linen tends an intricate glass distillation apparatus holding liquid moonlight, hanging medicinal flowers, tiny luminous mushrooms and handblown emerald vials, intimate ancient greenhouse with wet glass and curved wrought-brass shelves, botanical detail and luminous vapor."
+    },
+    {
+      "key": "silkroadwyrm",
+      "name": "The Silkroad Wyrm",
+      "rarity": "Uncommon",
+      "epithet": "FORTUNE FOLLOWS THE LONGEST SHADOW.",
+      "description": "A jewel-scaled serpent escorts a desert caravan.",
+      "accent": "#edc397",
+      "background": "#2a1b26",
+      "motif": "scale",
+      "title_lines": [
+        "The Silkroad",
+        "Wyrm"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A graceful serpentine sand dragon with lapis scales and silk pennants glides beside a tiny camel caravan crossing pale rose desert dunes, ornate saddlebags and bronze bells suspended along its back, turquoise oasis far below, huge crescent moon at dusk, wind-carved sand and luminous dust."
+    },
+    {
+      "key": "bellkeeper",
+      "name": "The Bellkeeper",
+      "rarity": "Uncommon",
+      "epithet": "SOME SOULS STILL KNOW THE WAY HOME.",
+      "description": "A bronze stag rings a forgotten forest bell.",
+      "accent": "#c9c6a3",
+      "background": "#1e282c",
+      "motif": "lantern",
+      "title_lines": [
+        "The",
+        "Bellkeeper"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A solemn bronze-antlered white stag stands beside an enormous patinated temple bell suspended within a ruined forest belfry, antlers woven with tiny softly glowing votive lanterns, ferns on stone steps, pale blue fog, ivy, dark ancient cedar silhouettes, a single warm shaft of sunset on the bell."
+    },
+    {
+      "key": "inkfin",
+      "name": "Inkfin Atelier",
+      "rarity": "Uncommon",
+      "epithet": "THE SEA SIGNS ITS NAME IN GOLD.",
+      "description": "An octopus calligrapher paints living constellations.",
+      "accent": "#bea8df",
+      "background": "#231b35",
+      "motif": "star",
+      "title_lines": [
+        "Inkfin",
+        "Atelier"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A small elegant violet octopus artisan in a submerged glass observatory gracefully holds several gold-tipped brushes and paints flowing luminous abstract gold constellations in the water, floating ink ribbons, antique brass instruments, seashell pigments, exquisite coral windows opening on deep ultramarine ocean. No readable symbols."
+    },
+    {
+      "key": "gildedrook",
+      "name": "The Gilded Rook",
+      "rarity": "Uncommon",
+      "epithet": "THE NEXT MOVE BELONGS TO YOU.",
+      "description": "A raven watches a living ivory chess kingdom.",
+      "accent": "#ddd0a2",
+      "background": "#23232b",
+      "motif": "crown",
+      "title_lines": [
+        "The Gilded",
+        "Rook"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An intelligent black raven with a thin gold anklet perches on a carved ivory rook atop a magnificent abandoned marble chess table, chess pieces are tiny exquisitely carved castles and armored knights, rain-glossed stone courtyard, climbing white roses, warm late sun slicing across cool shadows, rich feather iridescence."
+    },
+    {
+      "key": "auroraferry",
+      "name": "Aurora Ferry",
+      "rarity": "Uncommon",
+      "epithet": "EVEN THE NIGHT NEEDS A WAY ACROSS.",
+      "description": "A lantern skiff sails a river beneath the northern lights.",
+      "accent": "#a6d9d9",
+      "background": "#142532",
+      "motif": "wave",
+      "title_lines": [
+        "Aurora",
+        "Ferry"
+      ],
+      "collection": "Journeys",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An old hooded ferryman pilots an ornate little wooden skiff carrying warm paper lanterns and one sleeping snow fox across perfectly still black water, immense aurora curtains and snowy peaks behind, golden lantern reflections form a path toward a distant mountain shrine. Elegant serene cinematic wide composition."
+    },
+    {
+      "key": "rubyforge",
+      "name": "The Ruby Forge",
+      "rarity": "Rare",
+      "epithet": "TEMPERED IN THE HEART OF THE MOUNTAIN.",
+      "description": "A master smith draws a crimson blade from crystal fire.",
+      "accent": "#e6aa98",
+      "background": "#2b1822",
+      "motif": "flame",
+      "title_lines": [
+        "The Ruby",
+        "Forge"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An imposing dwarven master smith in dark engraved plate draws an exquisite red crystal sword from a vast ruby geode forge, golden sparks spiral through rose-red crystal facets, black basalt walls, chains and intricate brass bellows, strong sculptural hands and focused face, dramatic precise cinematic lighting."
+    },
+    {
+      "key": "opalunicorn",
+      "name": "The Opal Unicorn",
+      "rarity": "Rare",
+      "epithet": "PURITY IS A POWER ALL ITS OWN.",
+      "description": "An opal unicorn steps across a moonlit mirror lake.",
+      "accent": "#cbd5ed",
+      "background": "#1d2339",
+      "motif": "star",
+      "title_lines": [
+        "The Opal",
+        "Unicorn"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A magnificent luminous pearl-white UNICORN with a single long spiraling opal horn, flowing silvery mane and tail stands with one forehoof lifted on the surface of a moonlit mirror lake, anatomically graceful full equine body on right, no wings. Intricate moonflower vines and tiny crystals braid its mane, gold dust rises at each hoof, ancient elven arches and white lilies reflected in deep indigo water, iridescent lilac and blue rim light, refined majestic living creature, beautiful horn fully inside frame.",
+      "correction": "Reframe the unicorn slightly smaller and lower on the right so the entire horn has breathing room below the upper edge. Preserve the 3:1 canvas, all four legs, flowing tail, appearance, lighting and environment. No text."
+    },
+    {
+      "key": "amethystbastion",
+      "name": "Amethyst Bastion",
+      "rarity": "Rare",
+      "epithet": "HOLD FAST WHERE THE SKY BREAKS.",
+      "description": "A crystal sentinel keeps watch over a violet fortress.",
+      "accent": "#c7aeed",
+      "background": "#211b32",
+      "motif": "diamond",
+      "title_lines": [
+        "Amethyst",
+        "Bastion"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A monumental faceted amethyst stone guardian with gold-filled cracks and a halberd stands on a citadel terrace overlooking a violet crystal fortress above clouds, translucent carved armor and internally lit quartz, tiny soldiers for scale, glacial white light and restrained violet-gold palette, architectural fantasy realism."
+    },
+    {
+      "key": "honeycrown",
+      "name": "Court of Honey",
+      "rarity": "Rare",
+      "epithet": "A THOUSAND WINGS. ONE GOLDEN VOW.",
+      "description": "A bee empress rules a palace of translucent amber.",
+      "accent": "#ecd19c",
+      "background": "#292419",
+      "motif": "crown",
+      "title_lines": [
+        "Court of",
+        "Honey"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A beautiful regal insect empress with delicate bee wings, polished black chitin and a gold honeycomb crown sits in a translucent amber throne within a vast sunlit wax cathedral, countless tiny worker bees form graceful currents, pollen motes, white blossoms and liquid honey luminous within architectural cells, sumptuous organic jewel design."
+    },
+    {
+      "key": "duskmoth",
+      "name": "Duskmoth Reliquary",
+      "rarity": "Rare",
+      "epithet": "THE LIGHT YOU LOST STILL LIVES HERE.",
+      "description": "A giant velvet moth shelters a fragile lantern city.",
+      "accent": "#d8b2ce",
+      "background": "#2a1d32",
+      "motif": "wing",
+      "title_lines": [
+        "Duskmoth",
+        "Reliquary"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A giant velvet plum moth with huge intricate dusty-rose and pearl patterned wings rests on an ancient stone arch around a tiny lantern-lit village, wings studded with natural eye spots like stained glass, moonflowers, silk threads and delicate suspended brass lanterns, dusk mist, velvety material contrast."
+    },
+    {
+      "key": "thundercolossus",
+      "name": "The Thunder Colossus",
+      "rarity": "Epic",
+      "epithet": "LET THE MOUNTAINS HEAR YOUR FOOTSTEPS.",
+      "description": "A storm titan crosses a broken mountain range.",
+      "accent": "#b3d2ef",
+      "background": "#18273a",
+      "motif": "bolt",
+      "title_lines": [
+        "The Thunder",
+        "Colossus"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An immense ancient stone titan with a glowing blue storm imprisoned in its chest strides between shattered alpine peaks, enormous weathered granite hands dragging golden lightning chains, tiny ruined fortresses clinging to shoulders, dramatic diagonal thunderheads and rain, terrifying majestic scale and painstaking rock texture."
+    },
+    {
+      "key": "sableopera",
+      "name": "The Sable Opera",
+      "rarity": "Epic",
+      "epithet": "THE LAST NOTE OUTLIVES THE KINGDOM.",
+      "description": "A masked spectre conducts an orchestra of black swans.",
+      "accent": "#dac1dd",
+      "background": "#271b30",
+      "motif": "crown",
+      "title_lines": [
+        "The Sable",
+        "Opera"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An aristocratic ghost conductor in elaborate black and silver ceremonial coat with delicate porcelain mask levitates above a ruined flooded baroque opera stage, a spiral of black swans unfurls like musical notes around an enormous broken crystal chandelier, moonlight, velvet red curtains and opal water, theatrical refined Gothic spectacle."
+    },
+    {
+      "key": "coralcitadel",
+      "name": "The Coral Citadel",
+      "rarity": "Epic",
+      "epithet": "BENEATH THE WAVES, AN EMPIRE WAKES.",
+      "description": "A lionfish knight guards a radiant coral throne.",
+      "accent": "#edbea8",
+      "background": "#182937",
+      "motif": "scale",
+      "title_lines": [
+        "The Coral",
+        "Citadel"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A magnificent armored lionfish knight with fanned crimson-and-ivory fins and a mother-of-pearl trident guards a breathtaking underwater coral throne, ornate pink and white coral palaces behind, giant translucent jellyfish chandeliers, luminous teal depth, regal three-quarter portrait with astonishing striped fins and gold detailing."
+    },
+    {
+      "key": "dawnpegasus",
+      "name": "Wings of the First Dawn",
+      "rarity": "Epic",
+      "epithet": "THE SKY WAS ONLY THE BEGINNING.",
+      "description": "A golden-winged Pegasus soars above a sea of clouds.",
+      "accent": "#edcfa6",
+      "background": "#1e2939",
+      "motif": "wing",
+      "title_lines": [
+        "Wings of the",
+        "First Dawn"
+      ],
+      "collection": "Relics",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A breathtaking pure-white PEGASUS with two enormous beautifully layered feathered wings flies in a powerful graceful three-quarter pose above an endless sea of dawn clouds, equine anatomy exact, long mane trailing like silver silk, wing feathers ivory at base and burnished rose gold at tips, a few tiny golden armor ornaments, distant floating marble sanctuaries and cascading cloudfalls, monumental sunbeams. Full horse head and wings inside frame on right, no horn, heroic premium fantasy, extreme detail on feathers and warm/cool light.",
+      "correction": "Pull back slightly so both spread wings and all outermost wing tips fit within the 3:1 banner with breathing room above and to the right. Preserve appearance, anatomy, gold tack, feathers, floating sanctuaries and sunrise lighting; keep the left third quiet for title. No lettering."
+    },
+    {
+      "key": "seraphimvault",
+      "name": "The Seraphim Vault",
+      "rarity": "Legendary",
+      "epithet": "WHAT HEAVEN HID, YOU HAVE FOUND.",
+      "description": "A six-winged guardian opens an impossible golden vault.",
+      "accent": "#f0d8a7",
+      "background": "#231e30",
+      "motif": "wing",
+      "title_lines": [
+        "The Seraphim",
+        "Vault"
+      ],
+      "collection": "Eternities",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A breathtaking six-winged angelic armored guardian in white-gold plate and a faceless mirror helm opens an enormous floating celestial vault, six distinct layered wings of pearl feathers and cut crystal elegantly fanned around the figure, suspended marble staircases, brilliant molten gold treasure galaxies inside the doorway, dark ultramarine cosmic architecture, extraordinary sacred scale."
+    },
+    {
+      "key": "winterregent",
+      "name": "The Winter Regent",
+      "rarity": "Legendary",
+      "epithet": "THE WORLD HOLDS ITS BREATH.",
+      "description": "A crowned polar sovereign rules a palace of frozen light.",
+      "accent": "#badde6",
+      "background": "#172839",
+      "motif": "crown",
+      "title_lines": [
+        "The Winter",
+        "Regent"
+      ],
+      "collection": "Eternities",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A majestic colossal polar bear sovereign with translucent ice crown and platinum filigree armor stands within a palace carved from frozen aurora, huge cathedral arches of blue ice, long flowing silk mantle embroidered with silver snowflakes, pristine frost fur and a single blue diamond at chest, distant tiny ice knights, noble not aggressive."
+    },
+    {
+      "key": "gravepony",
+      "name": "The Graveborn Foal",
+      "rarity": "Legendary",
+      "epithet": "EVEN DEATH COULD NOT BREAK YOUR SPIRIT.",
+      "description": "An undead demon pony trots through a thornbound necropolis.",
+      "accent": "#dfa5c7",
+      "background": "#271a30",
+      "motif": "flame",
+      "title_lines": [
+        "The Graveborn",
+        "Foal"
+      ],
+      "collection": "Eternities",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An extraordinary UNDEAD DEMON PONY, unmistakably a small stocky pony with short legs, compact body and oversized shaggy mane, trots proudly across a ruined Gothic cemetery bridge. Stylized elegant skeletal ivory facial plates and exposed polished obsidian ribs surround a softly burning violet soul lantern in its chest, no gore, two swept-back small black demon horns, long luxurious mane of smoky amethyst fire, cloven hooves trailing silver embers, tattered ornate black velvet saddle with silver filigree, curled demonic tail. Full creature on right, playful defiant expression yet infernal grandeur, miniature black roses and pale moon, lavish layered cathedral tombs and spectral violet mist, extremely refined bone/glass/velvet textures."
+    },
+    {
+      "key": "opalodyssey",
+      "name": "The Opal Odyssey",
+      "rarity": "Legendary",
+      "epithet": "NO HORIZON CAN HOLD YOU.",
+      "description": "A skyship sails through the ribs of a fallen moon.",
+      "accent": "#d5c3e7",
+      "background": "#20233a",
+      "motif": "star",
+      "title_lines": [
+        "The Opal",
+        "Odyssey"
+      ],
+      "collection": "Eternities",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. A lavish fantasy skyship with opalescent sails shaped like butterfly wings and an intricately carved gold hull sails through the immense broken ribs of a shattered pearl moon, waterfalls falling into stars, miniature gardens on decks and tiny lanterns, rose and turquoise iridescence against navy cosmos, bold elegant diagonal with deep celestial perspective."
+    },
+    {
+      "key": "dreamsovereign",
+      "name": "Sovereign of Dreams",
+      "rarity": "Mythic",
+      "epithet": "ALL THAT COULD BE BOWS BEFORE YOU.",
+      "description": "A sleeping cosmic sovereign dreams entire living worlds.",
+      "accent": "#e7c5e5",
+      "background": "#231a38",
+      "motif": "covenant",
+      "title_lines": [
+        "Sovereign of",
+        "Dreams"
+      ],
+      "collection": "Eternities",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. The ultimate sumptuous dream-fantasy painting: a serene gigantic celestial woman made of translucent violet opal reclines in a silver crescent throne, a breathtaking crown of seven floating jeweled palaces arcs above her, a whole tiny living world with forests oceans and golden cities floats cradled between her hands, pearlescent silk flowing into a river of stars, immense layered dream architecture, exquisite physical gemstone refraction and micro detail, no generic nebula."
+    },
+    {
+      "key": "eternityloom",
+      "name": "The Eternity Loom",
+      "rarity": "Mythic",
+      "epithet": "EVERY DESTINY RETURNS TO YOUR HANDS.",
+      "description": "An ancient weaver spins galaxies into living silk.",
+      "accent": "#e5d1ad",
+      "background": "#1f2231",
+      "motif": "covenant",
+      "title_lines": [
+        "The Eternity",
+        "Loom"
+      ],
+      "collection": "Eternities",
+      "prompt": "Use case: stylized-concept. Finished premium fantasy RPG collectible profile banner, exactly panoramic 3:1 landscape. Exquisite hand-painted cinematic fantasy illustration, coherent anatomy and perspective, tactile materials, beautiful controlled light, rich depth, striking silhouette. Main subject in RIGHT 55 percent, entire head, crown and important features within frame with breathing room. LEFT 37 percent quiet very dark atmospheric environment reserved for title overlay; continue environment smoothly across canvas, no hard dividing line. No text, lettering, runes, logos, borders, watermark, panels or UI. An ineffably ancient regal cosmic weaver with a luminous porcelain mask and layered black-gold ceremonial robes works an immense gilded loom suspended over the edge of reality, luminous silken threads become tiny living galaxies, emerald forests and flowing rivers woven into a hanging opal tapestry, many beautifully detailed mechanical gold shuttle birds, impossible cathedral architecture unfolding into infinity, hyper-refined heirloom material detail and warm gold against ink-blue shadows."
+    }
+  ]
+}

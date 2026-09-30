@@ -1,92 +1,127 @@
 # The Chronicle Collection
 
-59 illustrated cosmetics, plus the original `classic` profile. The latest thirteen additions follow the requested rarity breakdown: four Common, four Uncommon, two Rare, two Epic, and one Mythic. Each has a new panoramic painting and matching card palette. **Covenant of All Worlds** introduces an exclusive prismatic finish with foil lettering, jeweled rails, seven realm gems and an opal avatar halo.
+89 illustrated cosmetics plus the original `classic` profile: seven free starters and 83 collectible drops. This expansion adds 30 themes: six Common, six Uncommon, five Rare, four Epic, four Legendary, two Mythic and three **Transcendent**, the new tier above Mythic.
 
-Every illustrated theme is permanent once earned. The 7 core **Origins** themes are free starter themes immediately available to every adventurer. The remaining 53 themes are **Collectible Drops** that drop from various activities based on their rarity tier. Unlocks are cosmetic only and permanently owned by the current character once claimed. The original card remains freely available.
+The Transcendent trio — **Genesis of the Sun**, **The Velvet Singularity**, and **The Worldtree's Heart** — uses a completely separate **1800×2400 illustrated folio** format. It draws directly from resolved profile values instead of reusing the standard panels. Each folio is minted like a numbered collector's coin: the painting melts into a light-etched field under a gilded, glowing filigree frame set with edition jewels, and the portrait sits in a coin crest whose legend reads *Transcendent · <name>* above and *Edition I/II/III of III* below. Title, name, level, power and stats use blooming chrome lettering; stats sit on glass plaques with gradient rails and lit tips; an iridescent sheen and sparkles finish the card. Each edition has its own metal and light: **Genesis** is solar gold with a sunburst crest and radiant rays, **Singularity** is platinum and amethyst with a starfield and an accretion ring that passes in front of the portrait, and **Worldtree** is jade and gold with a laurel wreath, vines and fireflies. Everything that does not depend on the player is built once per edition (~0.6s) and cached. Warm renders take ~0.35s. Gameplay calculations and ownership rules are unchanged. Optional in-game character portraits and missing pet artwork are supported.
+
+The other 27 include **Cloverhoof Meadow** (pony), **The Opal Unicorn**, **Wings of the First Dawn** (Pegasus), and **The Graveborn Foal** (undead demon pony). Their cards retain the standard 1660×1460 size. The two new Mythics use prismatic decoration.
 
 ## Rarity tiers and drops
 
-On a successful activity, roll for a drop: adventures **20%**, Battle Tower **15%**, PvE **10%**, and Ice Dragon **8% per party member**. PvE macro penalties suppress theme drops. Adventure drops have no extra character-level gate. This expansion preserves the current configured rates.
+Activity trigger rates remain: adventures **20%**, Battle Tower **15%**, PvE **10%**, Ice Dragon **8% per party member**. PvE macro penalties suppress theme drops. PvP has no theme reward hook.
 
-If the roll succeeds, choose among unowned themes available from that source using these relative weights:
+Every triggered roll chooses exactly once from the **same complete collectible pool**, including already-owned themes. Starters and event-exclusive themes are excluded. There are no stat, god, level or activity-specific theme restrictions. If the selected theme is owned, return no reward silently: no reroll, duplicate notice or new grant record. Ownership never changes the pool or weights.
 
-- 🟢 **Common**: 68
-- 🔵 **Uncommon**: 26
-- 🟣 **Rare**: 10
-- 🟠 **Epic**: 4
-- 🔴 **Legendary**: 1.25
-- 💠 **Mythic**: 0.75
+Weights are per theme, not per rarity tier. With the current 83 collectible themes:
 
-Mythic is the drop tier above Legendary. Each Mythic has 60% of a Legendary theme's selection weight when both are eligible. These are relative per-theme weights, not absolute drop percentages. Adding eligible themes expands the source pool, so individual theme probabilities change even with the same activity trigger rates and weights.
+| Rarity | Weight per theme | Share of triggered rolls |
+| --- | ---: | ---: |
+| Common | 68 | 60.7215% |
+| Uncommon | 26 | 26.3127% |
+| Rare | 10 | 8.3343% |
+| Epic | 4 | 3.3337% |
+| Legendary | 1.25 | 0.9674% |
+| Mythic | 0.75 | 0.3125% |
+| Transcendent | 0.1 | 0.0179% |
 
-There are no stat or god requirements. Owned themes are excluded; completing a source collection produces no further drops from that source. PvP currently has no theme rewards.
+An individual theme's probability per activity completion is `activity trigger × theme weight / 1679.8`. Actual new-reward probability falls as themes are collected; rarity selection probabilities stay constant. Adding themes changes the total weight, so this table must be regenerated when the pool changes. Parallel rolls hold the character row lock through the ownership check and grant, preventing duplicate announcements.
 
 ## Developer catalogue (contains spoilers)
 
-| Collection | Key | Theme | Rarity | Drop sources |
-| --- | --- | --- | --- | --- |
-| Origins | `classic` | Original Chronicle | Starter | Free |
-| Origins | `dragon` | Ashen Sovereign | Starter | Free |
-| Origins | `evil` | The Hollow Crown | Starter | Free |
-| Origins | `chaos` | Violet Rupture | Starter | Free |
-| Origins | `good` | Dawnward | Starter | Free |
-| Origins | `forest` | Verdant Oath | Starter | Free |
-| Origins | `frost` | Winterveil | Starter | Free |
-| Divine | `elysia` | Elysia's Mercy | Rare | Adventure, Ice Dragon, Battle Tower |
-| Divine | `sepulchure` | Sepulchure's Requiem | Rare | Adventure, Ice Dragon, Battle Tower |
-| Divine | `drakath` | Drakath's Paradox | Rare | Adventure, Ice Dragon, Battle Tower |
-| Companions | `moonbunny` | Moonpetal Burrow | Common | Adventure, PvE |
-| Companions | `slime` | Slime Royalty | Common | Adventure, PvE |
-| Companions | `frogzard` | Frogzard Festival | Uncommon | Adventure, PvE |
-| Companions | `chickencow` | Cloudmilk Meadow | Common | Adventure, PvE |
-| Companions | `mushroom` | Mosslight Hollow | Common | Adventure, PvE |
-| Mythic | `leviathan` | Abyssal Monarch | Epic | Adventure, Ice Dragon, Battle Tower |
-| Mythic | `phoenix` | Cindersong | Epic | Adventure, Ice Dragon, Battle Tower |
-| Mythic | `storm` | Stormbreaker | Rare | Ice Dragon, Battle Tower |
-| Mythic | `eclipse` | Eclipse Devourer | Legendary | Ice Dragon, Battle Tower |
-| Mythic | `bloodmoon` | Bloodmoon Hunt | Epic | Ice Dragon, Battle Tower |
-| Mythic | `astral` | Starfall Archive | Epic | Ice Dragon, Battle Tower |
-| Wonders | `kitsune` | Foxfire Masquerade | Rare | Adventure, Battle Tower, PvE |
-| Wonders | `mimic` | The Gilded Maw | Rare | Adventure, Battle Tower, PvE |
-| Wonders | `lotus` | Lotus Dream | Uncommon | Adventure, Battle Tower, PvE |
-| Wonders | `clockwork` | Clockwork Seraph | Uncommon | Adventure, Battle Tower, PvE |
-| Elven | `darkelf` | Nightglass Court | Uncommon | Adventure, Battle Tower, PvE |
-| Elven | `woodelf` | Heartwood Covenant | Common | Adventure, PvE |
-| Elven | `highelf` | Starglass Dominion | Rare | Adventure, Battle Tower, PvE |
-| Divine | `elysia_ascendant` | Elysia Ascendant | Legendary | Ice Dragon |
-| Divine | `sepulchure_unbound` | Sepulchure Unbound | Legendary | Ice Dragon |
-| Divine | `drakath_incarnate` | Drakath Incarnate | Legendary | Ice Dragon |
-| Companions | `lanternwake` | Lanternwake | Uncommon | Adventure, PvE |
-| Wonders | `glasswing` | Glasswing Reverie | Uncommon | Adventure, PvE |
-| Wonders | `porcelain` | Porcelain Tempest | Uncommon | Adventure, Battle Tower, PvE |
-| Mythic | `firstflame` | Crown of the First Flame | Legendary | Adventure, Ice Dragon, Battle Tower |
-| Mythic | `unwritten` | The World Unwritten | Mythic | Ice Dragon |
-| Mythic | `laststar` | Cathedral of the Last Star | Mythic | Ice Dragon, Battle Tower |
-| Bestiary | `tynfdarius` | Emperor of the Caldera | Epic | PvE, Adventure, Battle Tower |
-| Bestiary | `mechaknight` | The Iron Apocalypse | Epic | PvE, Adventure, Battle Tower |
-| Bestiary | `umbracrown` | Garden of the Petrified | Legendary | PvE, Adventure, Battle Tower |
-| Bestiary | `deimos` | Chains of the Dread King | Legendary | PvE, Battle Tower, Ice Dragon |
-| Bestiary | `voiddragon` | Sovereign of the Rift | Legendary | PvE, Adventure, Ice Dragon |
-| Bestiary | `nullstar` | Hunger Beyond Heaven | Mythic | Battle Tower, Ice Dragon |
-| Wonders | `boneglass` | Boneglass Requiem | Epic | PvE, Adventure, Battle Tower |
-| Wonders | `drownedpearl` | Pearl of the Drowned | Legendary | Adventure, Battle Tower, Ice Dragon |
-| Mythic | `worldheart` | Anvil of Creation | Mythic | Battle Tower, Ice Dragon |
-| Wonders | `sandreign` | Empire in the Hourglass | Epic | PvE, Adventure, Battle Tower |
-| Wonders | `emberkettle` | The Last Warm Hearth | Common | PvE, Adventure |
-| Companions | `mossback` | Mossback Caravan | Common | PvE, Adventure |
-| Companions | `brassbeak` | Brassbeak Post | Common | PvE, Adventure |
-| Companions | `moonharvest` | Moonberry Harvest | Common | PvE, Adventure |
-| Wonders | `stormheron` | Heron of the Thunder Marsh | Uncommon | PvE, Adventure, Battle Tower |
-| Companions | `velvetprowl` | Velvet Prowler | Uncommon | PvE, Adventure, Battle Tower |
-| Companions | `emberbloom` | Emberbloom Sanctuary | Uncommon | PvE, Adventure, Battle Tower |
-| Wonders | `tideweaver` | The Tideweaver | Uncommon | PvE, Adventure, Battle Tower |
-| Wonders | `amberreliquary` | The Amber Reliquary | Rare | PvE, Adventure, Battle Tower |
-| Companions | `frostgardener` | The Frost Gardener | Rare | PvE, Adventure, Battle Tower |
-| Mythic | `leviathanswake` | The Leviathan's Wake | Epic | Adventure, Battle Tower, Ice Dragon |
-| Mythic | `gravebloom` | Where Titans Sleep | Epic | Adventure, Battle Tower, Ice Dragon |
-| Mythic | `allworlds` | Covenant of All Worlds | Mythic | Battle Tower, Ice Dragon |
+All collectible rows below use the shared pool: **Adventure, PvE, Battle Tower and Ice Dragon**. Bestiary artwork references specific monsters, but earning it does not require defeating that monster.
 
-Bestiary artwork follows the corresponding monster references; drops use the listed activity pools and do not require defeating that specific monster.
+| Collection | Key | Theme | Rarity |
+| --- | --- | --- | --- |
+| Origins | `classic` | Original Chronicle | Starter |
+| Origins | `dragon` | Ashen Sovereign | Starter |
+| Origins | `evil` | The Hollow Crown | Starter |
+| Origins | `chaos` | Violet Rupture | Starter |
+| Origins | `good` | Dawnward | Starter |
+| Origins | `forest` | Verdant Oath | Starter |
+| Origins | `frost` | Winterveil | Starter |
+| Divine | `elysia` | Elysia's Mercy | Rare |
+| Divine | `sepulchure` | Sepulchure's Requiem | Rare |
+| Divine | `drakath` | Drakath's Paradox | Rare |
+| Companions | `moonbunny` | Moonpetal Burrow | Common |
+| Companions | `slime` | Slime Royalty | Common |
+| Companions | `frogzard` | Frogzard Festival | Uncommon |
+| Companions | `chickencow` | Cloudmilk Meadow | Common |
+| Companions | `mushroom` | Mosslight Hollow | Common |
+| Mythic | `leviathan` | Abyssal Monarch | Epic |
+| Mythic | `phoenix` | Cindersong | Epic |
+| Mythic | `storm` | Stormbreaker | Rare |
+| Mythic | `eclipse` | Eclipse Devourer | Legendary |
+| Mythic | `bloodmoon` | Bloodmoon Hunt | Epic |
+| Mythic | `astral` | Starfall Archive | Epic |
+| Wonders | `kitsune` | Foxfire Masquerade | Rare |
+| Wonders | `mimic` | The Gilded Maw | Rare |
+| Wonders | `lotus` | Lotus Dream | Uncommon |
+| Wonders | `clockwork` | Clockwork Seraph | Uncommon |
+| Elven | `darkelf` | Nightglass Court | Uncommon |
+| Elven | `woodelf` | Heartwood Covenant | Common |
+| Elven | `highelf` | Starglass Dominion | Rare |
+| Divine | `elysia_ascendant` | Elysia Ascendant | Legendary |
+| Divine | `sepulchure_unbound` | Sepulchure Unbound | Legendary |
+| Divine | `drakath_incarnate` | Drakath Incarnate | Legendary |
+| Companions | `lanternwake` | Lanternwake | Uncommon |
+| Wonders | `glasswing` | Glasswing Reverie | Uncommon |
+| Wonders | `porcelain` | Porcelain Tempest | Uncommon |
+| Mythic | `firstflame` | Crown of the First Flame | Legendary |
+| Mythic | `unwritten` | The World Unwritten | Mythic |
+| Mythic | `laststar` | Cathedral of the Last Star | Mythic |
+| Bestiary | `tynfdarius` | Emperor of the Caldera | Epic |
+| Bestiary | `mechaknight` | The Iron Apocalypse | Epic |
+| Bestiary | `umbracrown` | Garden of the Petrified | Legendary |
+| Bestiary | `deimos` | Chains of the Dread King | Legendary |
+| Bestiary | `voiddragon` | Sovereign of the Rift | Legendary |
+| Bestiary | `nullstar` | Hunger Beyond Heaven | Mythic |
+| Wonders | `boneglass` | Boneglass Requiem | Epic |
+| Wonders | `drownedpearl` | Pearl of the Drowned | Legendary |
+| Mythic | `worldheart` | Anvil of Creation | Mythic |
+| Wonders | `sandreign` | Empire in the Hourglass | Epic |
+| Wonders | `emberkettle` | The Last Warm Hearth | Common |
+| Companions | `mossback` | Mossback Caravan | Common |
+| Companions | `brassbeak` | Brassbeak Post | Common |
+| Companions | `moonharvest` | Moonberry Harvest | Common |
+| Wonders | `stormheron` | Heron of the Thunder Marsh | Uncommon |
+| Companions | `velvetprowl` | Velvet Prowler | Uncommon |
+| Companions | `emberbloom` | Emberbloom Sanctuary | Uncommon |
+| Wonders | `tideweaver` | The Tideweaver | Uncommon |
+| Wonders | `amberreliquary` | The Amber Reliquary | Rare |
+| Companions | `frostgardener` | The Frost Gardener | Rare |
+| Mythic | `leviathanswake` | The Leviathan's Wake | Epic |
+| Mythic | `gravebloom` | Where Titans Sleep | Epic |
+| Mythic | `allworlds` | Covenant of All Worlds | Mythic |
+| Journeys | `cloverpony` | Cloverhoof Meadow | Common |
+| Journeys | `breadandembers` | Bread and Embers | Common |
+| Journeys | `silverhook` | Silverhook Landing | Common |
+| Journeys | `coalwhisker` | Coalwhisker Mine | Common |
+| Journeys | `patchworkcamp` | Patchwork Camp | Common |
+| Journeys | `thimbleguard` | The Thimble Guard | Common |
+| Journeys | `jadeapothecary` | The Jade Apothecary | Uncommon |
+| Journeys | `silkroadwyrm` | The Silkroad Wyrm | Uncommon |
+| Journeys | `bellkeeper` | The Bellkeeper | Uncommon |
+| Journeys | `inkfin` | Inkfin Atelier | Uncommon |
+| Journeys | `gildedrook` | The Gilded Rook | Uncommon |
+| Journeys | `auroraferry` | Aurora Ferry | Uncommon |
+| Relics | `rubyforge` | The Ruby Forge | Rare |
+| Relics | `opalunicorn` | The Opal Unicorn | Rare |
+| Relics | `amethystbastion` | Amethyst Bastion | Rare |
+| Relics | `honeycrown` | Court of Honey | Rare |
+| Relics | `duskmoth` | Duskmoth Reliquary | Rare |
+| Relics | `thundercolossus` | The Thunder Colossus | Epic |
+| Relics | `sableopera` | The Sable Opera | Epic |
+| Relics | `coralcitadel` | The Coral Citadel | Epic |
+| Relics | `dawnpegasus` | Wings of the First Dawn | Epic |
+| Eternities | `seraphimvault` | The Seraphim Vault | Legendary |
+| Eternities | `winterregent` | The Winter Regent | Legendary |
+| Eternities | `gravepony` | The Graveborn Foal | Legendary |
+| Eternities | `opalodyssey` | The Opal Odyssey | Legendary |
+| Eternities | `dreamsovereign` | Sovereign of Dreams | Mythic |
+| Eternities | `eternityloom` | The Eternity Loom | Mythic |
+| Transcendent | `sunweaver` | Genesis of the Sun | Transcendent |
+| Transcendent | `nightpalace` | The Velvet Singularity | Transcendent |
+| Transcendent | `worldtreeheart` | The Worldtree's Heart | Transcendent |
 
 ## Player commands and collection browser
 
@@ -101,7 +136,7 @@ Use your server's command prefix in place of `$` if different.
 - `$prpg theme classic` restores the original appearance.
 - `$prpg` shows your saved theme; `$prpg @user` shows that player's saved, owned theme.
 
-All seven Origins themes are free. The other 53 themes come from gameplay drops or GM/event grants. Ownership is permanent for the character; changing stats or gods does not remove it. Character deletion removes ownership through the database foreign key.
+All seven Origins themes are free. The other 83 themes come from gameplay drops or GM/event grants. Ownership is permanent for the character; changing stats or gods does not remove it. Character deletion removes ownership through the database foreign key.
 
 The browser is owner-only and expires after five minutes. The server checks ownership again for previews and equips, including stale buttons. Previewing never equips. Menus stay below Discord option and embed limits.
 
@@ -110,6 +145,8 @@ The browser is owner-only and expires after five minutes. The server checks owne
 `$gmprpgtheme @player <theme>` permanently grants one theme, without equipping it.
 It uses the existing `is_gm` permission check. Grants record their timestamp and
 `gm:<issuer_id>` source and are idempotent. No awards were issued during development.
+
+`$gmtranscendent @player` grants one random Transcendent theme the player does not own yet, announced like a drop. It never picks a duplicate and says so when the player already owns all three. Same `is_gm` check and `gm:<issuer_id>` source.
 
 An event cog can call `grant_theme(bot.pool, user_id, THEMES[key], "event:<event-id>")`
 from `cogs.profile.theme_unlocks` when issuing its rewards. Drop sources and rarity
@@ -187,7 +224,7 @@ prompts are in [prompts.json](prompts.json) for the launch six and
 [god-reference-prompts.json](god-reference-prompts.json) for the three god variants.
 The previous six prompts are preserved in [ascendant-prompts.json](ascendant-prompts.json).
 The previous ten prompts and monster reference mappings are in [legends-prompts.json](legends-prompts.json).
-The latest thirteen prompts are in [covenant-prompts.json](covenant-prompts.json).
+The previous thirteen prompts are in [covenant-prompts.json](covenant-prompts.json).
 Bestiary references are Avatar Tynfdarius, Mech-a-Knight and Umbracrown Basilisk (tier 9),
 and Deimos, Void Dragon and Nullstar Behemoth (tier 10). Their original images were
 inspected and supplied to imagegen to retain their recognizable designs.
@@ -198,18 +235,25 @@ purple chest eye and black cloak. Source URLs and downloaded reference images ar
 preserved under `references/` for provenance and are not needed at runtime. Fonts are
 Cinzel and Lato from Google Fonts, with SIL Open Font Licenses under `fonts/`.
 
-Covenant's exclusive decoration is applied automatically when that theme is equipped or previewed by its owner.
+Prismatic decoration is applied automatically when a prismatic theme is equipped or previewed by its owner.
 It stays cosmetic, uses the existing image dimensions, and keeps all stat panels, bars and avatar pixels visible.
 Its frame is rendered locally in Python; no additional database columns or player settings are required.
 
-Everything loads locally at runtime; no image-generation API is called. Only six
-decoded source banners are cached at once, never composed player cards.
+Everything loads locally at runtime; no image-generation API is called. At most six
+standard banners and three Transcendent art panels are cached, never composed player cards.
+
+The new artwork was generated with the built-in ImageGen tool and saved in this directory.
+[Transcendent prompts](transcendent-prompts.json) include the Worldtree aspect-ratio correction;
+[Odyssey prompts](odyssey-prompts.json) contain all 27 additional concepts.
 
 ## Preview gallery and validation
 
+[Inspect the three remastered Transcendent folios](previews/transcendent-showcase.jpg) and
+[the 27 new banners](previews/odyssey-showcase.jpg).
+
 [Open the local gallery](previews/index.html) or [overview](previews/collection.jpg).
-Individual full cards and seven collection contact sheets are in `previews/`.
-[The thirteen newest banners](previews/covenant-showcase.jpg) have their own review sheet,
+Individual full cards and collection contact sheets are in `previews/`.
+[The previous thirteen banners](previews/covenant-showcase.jpg) have their own review sheet,
 including a full-width Mythic spotlight. [Covenant's complete card](previews/allworlds.png)
 shows the exclusive finish. The previous [ten-theme showcase](previews/legends-showcase.jpg) remains available.
 Samples use fictional character data and placeholder avatar/pet portraits.

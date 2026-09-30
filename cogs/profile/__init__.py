@@ -51,9 +51,9 @@ from utils.april_fools import get_pet_display_name, mask_pet_record_for_display
 from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
-from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament
+from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent
 from .theme_picker import ProfileThemePicker
-from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme
+from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme, grant_random_theme, theme_drop_message
 from .themes import ASSET_ROOT as THEME_ASSET_ROOT
 
 JURY_COSMETIC_TITLE = "Favored by the Seven"
@@ -2755,9 +2755,39 @@ class Profile(commands.Cog):
         #draw.text((width - 16 - tw(footer, tiny_font), height - (19 if theme.classic else 25)), footer, font=tiny_font, fill=colors["muted"])
 
         output = BytesIO()
-        if not theme.classic:
+        if theme.rarity == "Transcendent":
+            # Pass the already resolved gameplay values to a separate visual format.
+            # The folio never reads stats back from pixels or recalculates combat.
+            companion = None
+            if pet_data:
+                companion = dict(
+                    name=pet_display_name, level=pet_level, element=pet_element,
+                    stage=pet_stage, bond=f"{trust_name} ({trust_bonus:+d}%)", iv=pet_iv,
+                    happiness=pet_happiness, hunger=pet_hunger, trust=pet_trust,
+                    hp=pet_hp, attack=pet_attack, defense=pet_defense, image=pet_img,
+                )
+            equipment = []
+            for label, item in (("RIGHT HAND", right_hand), ("LEFT HAND", left_hand)):
+                equipment.append(dict(
+                    label=label, name=str(item.get("name") or "Unknown") if item else "None equipped",
+                    detail=(f"{item_type_name(item)} / Power {self._format_stat_value(self._effective_item_primary_stat(item))}"
+                            f" / {str(item.get('element') or 'No element').title()}") if item else "Empty slot",
+                ))
+            canvas = render_transcendent(theme, dict(
+                name=card_name, race=race_name, classes=classes, level=level, rarity=rarity,
+                xp_progress=xp_progress, power=power, luck=luck_percent,
+                attack=raid_attack_value, defense=raid_defense_value, health=total_health_value,
+                avatar=avatar, user_id=user.id, rank_xp=rank_xp, rank_money=rank_money,
+                badges=badge_lines, ascension=ascension_title, jury_title=jury_title,
+                ledger=ledger, equipment=equipment, stance=stance, mission=mission_text,
+                companion=companion, sprite=char_sprite if ingame_character_rendered else None,
+                sprite_name=str(tiamat_player.get("display_name") or card_name) if ingame_character_rendered else "",
+            ))
+        elif not theme.classic:
             canvas = add_theme_banner(canvas, theme)
-        canvas.convert("RGB").save(output, format="PNG", optimize=True)
+        # The folio is large and richly lit; exhaustive PNG optimisation costs ~1s for ~4%.
+        png_options = dict(compress_level=6) if theme.rarity == "Transcendent" else dict(optimize=True)
+        canvas.convert("RGB").save(output, format="PNG", **png_options)
         output.seek(0)
         return output
 
@@ -4277,6 +4307,20 @@ class Profile(commands.Cog):
         if not await grant_theme(self.bot.pool, target.id, theme, f"gm:{ctx.author.id}"):
             return await ctx.send("That player no longer has a character.")
         await ctx.send(f"Awarded **{theme.name}** to **{discord.utils.escape_markdown(str(target))}**.",
+                       allowed_mentions=discord.AllowedMentions.none())
+
+    @commands.command(name="gmtranscendent", aliases=["gmrandomtranscendent"], hidden=True)
+    @is_gm()
+    async def gm_transcendent(self, ctx, target: UserWithCharacter):
+        """Award one random Transcendent theme the player does not own yet: gmtranscendent @player."""
+        key = await grant_random_theme(self.bot.pool, target.id, "Transcendent", f"gm:{ctx.author.id}")
+        name = discord.utils.escape_markdown(str(target))
+        if key is None:
+            return await ctx.send("That player no longer has a character.")
+        if not key:
+            return await ctx.send(f"**{name}** already owns every Transcendent theme.",
+                                  allowed_mentions=discord.AllowedMentions.none())
+        await ctx.send(theme_drop_message(key, ctx.clean_prefix, recipient=f"**{name}**"),
                        allowed_mentions=discord.AllowedMentions.none())
 
     @commands.group(name="gmeventtheme", aliases=["gmevent"], hidden=True, invoke_without_command=True)
