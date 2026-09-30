@@ -4323,7 +4323,8 @@ class Profile(commands.Cog):
         await ctx.send(theme_drop_message(key, ctx.clean_prefix, recipient=f"**{name}**"),
                        allowed_mentions=discord.AllowedMentions.none())
 
-    @commands.group(name="gmeventtheme", aliases=["gmevent"], hidden=True, invoke_without_command=True)
+    # No "gmevent" alias: the Game Master cog already owns $gmevent.
+    @commands.group(name="gmeventtheme", hidden=True, invoke_without_command=True)
     @commands.check_any(commands.is_owner(), is_gm())
     async def gm_event_theme(self, ctx):
         """Manage event-only profile themes defined in EVENT_THEMES (cogs/profile/themes.py)."""
