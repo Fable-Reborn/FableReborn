@@ -98,3 +98,8 @@ assets/profile_themes/README.md
 tests/test_profile_themes.py
 cogs/profile.zip
 tests/test_profile_themes.py
+assets/battle_tower/portraits/index.html
+tests/test_battle_tower_story.py
+cogs/battles/BATTLE_TOWER_STORY.md
+assets/battle_tower/portraits/README.md
+.gitignore

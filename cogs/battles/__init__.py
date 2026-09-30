@@ -8,9 +8,11 @@ import random
 import traceback
 from decimal import Decimal, ROUND_HALF_UP
 from collections import deque
+from pathlib import Path
 
 import discord
 from utils import misc as rpgtools
+from utils.elements import ELEMENT_STRENGTHS
 from utils.markdown import escape_markdown
 from discord.ext import commands, tasks
 from discord.ui import View, Button, Select, select
@@ -1644,6 +1646,11 @@ class Battles(commands.Cog):
     }
     DEFAULT_DIALOGUE_AVATAR = "https://ia803204.us.archive.org/4/items/discordprofilepictures/discordblue.png"
     TOWER_KEY_FLOOR_BITS = {22: 1, 23: 2, 25: 4}
+    # Floors 1-29 are each governed by one element, rolled once per prestige.
+    TOWER_ELEMENT_FLOORS = 29
+    TOWER_FLOOR_ELEMENT_POOL = tuple(element for element in ELEMENT_STRENGTHS if element != "Unknown")
+    # The summit never changes: each god fights with their own element.
+    TOWER_FINAL_FLOOR_ELEMENTS = {"minion1": "Light", "minion2": "Dark", "boss": "Corrupted"}
     TOWER_KEY_DROP_CHANCE = 0.55
     TOWER_FREEDOM_MILESTONE_GAINS = {10: 1, 20: 1, 25: 1}
     TOWER_FREEDOM_FINALE_MISS_GAIN = 2
@@ -1656,6 +1663,8 @@ class Battles(commands.Cog):
         if not isinstance(battles_ids, dict):
             battles_ids = {}
         self.macro_alert_user_id = battles_ids.get("macro_alert_user_id")
+        # Floor 16: faces shown in the dialogue, reused by the fight that follows.
+        self._tower_borrowed_faces = {}
         self.debug_user_id = battles_ids.get("debug_user_id")
         self.forceleg = False
         self.battle_factory = BattleFactory(bot)
@@ -1742,6 +1751,13 @@ class Battles(commands.Cog):
             )
             await conn.execute(
                 "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS bossrush_prestige INTEGER NOT NULL DEFAULT 0;"
+            )
+            # Per-run floor elements; regenerated whenever prestige no longer matches.
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS floor_elements TEXT[];"
+            )
+            await conn.execute(
+                "ALTER TABLE battletower ADD COLUMN IF NOT EXISTS floor_elements_prestige INTEGER;"
             )
             # Floor ghosts: community stats shown when entering a tower floor
             await conn.execute("""
@@ -2150,6 +2166,8 @@ class Battles(commands.Cog):
             if isinstance(remastered_dialogue_data.get("dialogues"), dict):
                 dialogue_data.setdefault("dialogues", {})
                 dialogue_data["dialogues"].update(remastered_dialogue_data["dialogues"])
+            if isinstance(remastered_dialogue_data.get("portraits"), dict):
+                dialogue_data["portraits"] = remastered_dialogue_data["portraits"]
         self.dialogue_data = dialogue_data
 
         # Load monsters if file exists
@@ -2197,6 +2215,143 @@ class Battles(commands.Cog):
             25: "Third Key",
         }.get(level, "Tower Key")
 
+    async def _tower_story_state(self, user_id: int) -> dict:
+        """The loop the story talks about is the player's real prestige count."""
+        try:
+            row = await self.bot.pool.fetchrow(
+                "SELECT COALESCE(prestige, 0) AS prestige, COALESCE(run_key_bits, 0) AS run_key_bits "
+                "FROM battletower WHERE id = $1",
+                user_id,
+            )
+        except Exception:
+            logger.exception("Could not load Battle Tower story state for %s", user_id)
+            row = None
+        prestige = int(row["prestige"] or 0) if row else 0
+        keys = self._tower_key_count(int(row["run_key_bits"] or 0)) if row else 0
+        return {"cycle": prestige + 1, "keys": keys}
+
+    @classmethod
+    def _roll_tower_floor_elements(cls, rng=random) -> list[str]:
+        return [rng.choice(cls.TOWER_FLOOR_ELEMENT_POOL) for _ in range(cls.TOWER_ELEMENT_FLOORS)]
+
+    @classmethod
+    def _valid_tower_floor_elements(cls, elements) -> bool:
+        return (
+            isinstance(elements, (list, tuple))
+            and len(elements) == cls.TOWER_ELEMENT_FLOORS
+            and all(element in cls.TOWER_FLOOR_ELEMENT_POOL for element in elements)
+        )
+
+    async def _tower_floor_elements(self, user_id: int) -> list[str] | None:
+        """Elements for floors 1-29 of the player's current run, generated on first use.
+
+        Rows from before this feature, or from an earlier prestige, get a fresh roll.
+        The conditional update means two commands racing on a new run agree on one roll.
+        """
+        async with self.bot.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(prestige, 0) AS prestige, floor_elements, floor_elements_prestige "
+                "FROM battletower WHERE id = $1",
+                user_id,
+            )
+            if not row:
+                return None
+            prestige = int(row["prestige"] or 0)
+            elements = list(row["floor_elements"] or [])
+            if row["floor_elements_prestige"] == prestige and self._valid_tower_floor_elements(elements):
+                return elements
+            await conn.execute(
+                """
+                UPDATE battletower
+                SET floor_elements = $1, floor_elements_prestige = $2
+                WHERE id = $3
+                  AND (floor_elements_prestige IS DISTINCT FROM $2
+                       OR floor_elements IS NULL
+                       OR cardinality(floor_elements) <> $4)
+                """,
+                self._roll_tower_floor_elements(),
+                prestige,
+                user_id,
+                self.TOWER_ELEMENT_FLOORS,
+            )
+            elements = await conn.fetchval("SELECT floor_elements FROM battletower WHERE id = $1", user_id)
+        elements = list(elements or [])
+        return elements if self._valid_tower_floor_elements(elements) else None
+
+    def _apply_tower_floor_element(self, level_data: dict, level: int, floor_elements) -> dict:
+        """Return a copy of the floor with every enemy carrying the floor's element."""
+        if level == 30:
+            by_slot = dict(self.TOWER_FINAL_FLOOR_ELEMENTS)
+        elif floor_elements and 1 <= level <= len(floor_elements):
+            by_slot = dict.fromkeys(("minion1", "minion2", "boss"), floor_elements[level - 1])
+        else:
+            return level_data
+        governed = {k: (dict(v) if isinstance(v, dict) else v) for k, v in level_data.items()}
+        for slot, element in by_slot.items():
+            if isinstance(governed.get(slot), dict):
+                governed[slot]["element"] = element
+        return governed
+
+    def _tower_floor_element_label(self, level: int, floor_elements) -> tuple[str, str]:
+        """(emoji, name) for one floor. The summit shows all three gods' elements."""
+        emoji = self.element_ext.element_to_emoji
+        if level == 30:
+            return "".join(emoji[e] for e in self.TOWER_FINAL_FLOOR_ELEMENTS.values()), "Gods"
+        if floor_elements and 1 <= level <= len(floor_elements):
+            element = floor_elements[level - 1]
+            return emoji.get(element, "❓"), element
+        return "❓", "Unknown"
+
+    @staticmethod
+    def _tower_story_variant(entry: dict, state: dict, key_outcome: str | None = None) -> dict:
+        """Overlay the last matching variant (min_cycle / min_keys / key outcome) onto an entry."""
+        chosen = dict(entry)
+        for variant in entry.get("variants") or ():
+            if state.get("cycle", 1) < int(variant.get("min_cycle", 1)):
+                continue
+            if state.get("keys", 0) < int(variant.get("min_keys", 0)):
+                continue
+            if "key" in variant and variant["key"] != key_outcome:
+                continue
+            chosen.update({k: v for k, v in variant.items() if k not in ("min_cycle", "min_keys", "key")})
+        return chosen
+
+    @staticmethod
+    def _format_tower_text(text: str, *, name: str, god: str, state: dict) -> str:
+        cycle = int(state.get("cycle", 1))
+        for token, value in (
+            ("{PLAYER_GOD}", god), ("{PLAYER}", name), ("{CYCLE}", str(cycle)),
+            ("{PREV_CYCLE}", str(max(1, cycle - 1))), ("{KEYS}", str(state.get("keys", 0))),
+        ):
+            text = text.replace(token, value)
+        # Older story files use bare tokens.
+        return text.replace("PLAYER_GOD", god).replace("PLAYER", name)
+
+    def _tower_portrait_asset(self, thumbnail: str):
+        """Resolve repository assets independently of the bot's working directory."""
+        if isinstance(thumbnail, str) and thumbnail.startswith("ART:"):
+            value = (self.dialogue_data.get("portraits") or {}).get(thumbnail[4:], "")
+            if isinstance(value, str) and value.startswith("assets/"):
+                root = Path(__file__).resolve().parents[2]
+                path = (root / value).resolve()
+                if path.is_relative_to(root / "assets") and path.is_file():
+                    return path
+        return None
+
+    def _resolve_tower_portrait(self, thumbnail: str) -> str:
+        """Named "ART:<slot>" portraits are filled in the dialogue file's "portraits" map."""
+        if thumbnail in self.BATTLE_TOWER_THUMBNAIL_TOKENS:
+            return self.BATTLE_TOWER_THUMBNAIL_TOKENS[thumbnail]
+        if isinstance(thumbnail, str) and thumbnail.startswith("ART:"):
+            asset = self._tower_portrait_asset(thumbnail)
+            if asset is not None:
+                return f"attachment://{asset.name}"
+            url = (self.dialogue_data.get("portraits") or {}).get(thumbnail[4:])
+            if isinstance(url, str) and url.startswith("assets/"):
+                return self.BATTLE_TOWER_THUMBNAIL_TOKENS["SYSTEM"]
+            return url or self.BATTLE_TOWER_THUMBNAIL_TOKENS["SYSTEM"]
+        return thumbnail
+
     def _tower_door_label(self, door_key: str) -> str:
         return {
             "door_1_elysia": "Door 1 - Elysia",
@@ -2232,11 +2387,13 @@ class Battles(commands.Cog):
             return True, None
         return True, decision.action
 
-    async def _update_tower_run_progress(self, ctx, level: int):
+    async def _update_tower_run_progress(self, ctx, level: int) -> tuple[str | None, list[str]]:
+        """Roll keys and resonance. Returns the key outcome ("found", "missed", "held"
+        or None) and the status lines, so the story can be told before they are sent."""
         freedom_gain = int(self.TOWER_FREEDOM_MILESTONE_GAINS.get(level, 0) or 0)
         has_key_roll = level in self.TOWER_KEY_FLOOR_BITS
         if not freedom_gain and not has_key_roll:
-            return
+            return None, []
 
         async with self.bot.pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -2248,26 +2405,30 @@ class Battles(commands.Cog):
                 ctx.author.id,
             )
             if not row:
-                return
+                return None, []
 
             old_bits = int(row["run_key_bits"] or 0)
             new_bits = old_bits
             old_meter = int(row["freedom_meter"] or 0)
             new_meter = old_meter + freedom_gain
             key_message = None
+            key_outcome = None
 
             if has_key_roll:
                 bit = int(self.TOWER_KEY_FLOOR_BITS[level])
                 key_label = self._tower_key_label_for_floor(level)
                 if old_bits & bit:
+                    key_outcome = "held"
                     key_message = f"🔑 **{key_label}** is already resonating for this run."
                 elif random.random() < self.TOWER_KEY_DROP_CHANCE:
+                    key_outcome = "found"
                     new_bits = old_bits | bit
                     key_message = (
                         f"🔑 **{key_label}** resonates with your soul. "
                         f"Keys this run: **{self._tower_key_count(new_bits)}/3**."
                     )
                 else:
+                    key_outcome = "missed"
                     key_message = (
                         f"🗝️ **{key_label}** slips away this cycle. "
                         f"Keys this run: **{self._tower_key_count(new_bits)}/3**."
@@ -2286,14 +2447,16 @@ class Battles(commands.Cog):
                     ctx.author.id,
                 )
 
+        messages = []
         if freedom_gain:
             shown_meter = min(new_meter, self.TOWER_FREEDOM_UNLOCK_THRESHOLD)
-            await ctx.send(
+            messages.append(
                 f"🧭 Hidden Door resonance +{freedom_gain} "
                 f"(**{shown_meter}/{self.TOWER_FREEDOM_UNLOCK_THRESHOLD}**)."
             )
         if key_message:
-            await ctx.send(key_message)
+            messages.append(key_message)
+        return key_outcome, messages
 
     async def _get_tower_unlock_state(self, user_id: int) -> dict:
         async with self.bot.pool.acquire() as conn:
@@ -3676,8 +3839,9 @@ class Battles(commands.Cog):
             await self._send_with_retry(ctx, content="The battle begins!", suppress_failure=True)
             return
         
-        dialogue_info = self.dialogue_data["dialogues"][level_str]
-        
+        state = await self._tower_story_state(ctx.author.id)
+        dialogue_info = self._tower_story_variant(self.dialogue_data["dialogues"][level_str], state)
+
         # Handle special case for level 16 (random users)
         random_user_objects = []
         if "special" in dialogue_info and dialogue_info["special"] == "random_users":
@@ -3692,48 +3856,39 @@ class Battles(commands.Cog):
                 if len(random_user_objects) < 2:
                     await self._send_with_retry(ctx, content="The battle begins!", suppress_failure=True)
                     return
-        
+            # The fight reuses these, so the borrowed faces you meet are the ones you fight.
+            self._tower_borrowed_faces[ctx.author.id] = random_user_objects[:2]
+
         # Process dialogue lines
         processed_lines = []
+        portrait_assets = {}
         player_god = god_value if isinstance(god_value, str) and god_value else "an unknown god"
         for line in dialogue_info["lines"]:
             speaker = line["speaker"]
-            text = (
-                line["text"]
-                .replace("{PLAYER_GOD}", player_god)
-                .replace("PLAYER_GOD", player_god)
-                .replace("PLAYER", name_value)
-            )
+            text = self._format_tower_text(line["text"], name=name_value, god=player_god, state=state)
             thumbnail = line["thumbnail"]
 
             if speaker == "PLAYER":
                 speaker = name_value
-            
+            for index, token in enumerate(("RANDOM_USER_1", "RANDOM_USER_2")):
+                if index < len(random_user_objects):
+                    text = text.replace(token, random_user_objects[index].display_name)
+                    if speaker == token:
+                        speaker = random_user_objects[index].display_name
+
             # Replace placeholder thumbnails
-            if thumbnail in self.BATTLE_TOWER_THUMBNAIL_TOKENS:
-                thumbnail = self.BATTLE_TOWER_THUMBNAIL_TOKENS[thumbnail]
-            elif thumbnail == "PLAYER_AVATAR":
+            if thumbnail == "PLAYER_AVATAR":
                 thumbnail = ctx.author.avatar.url if ctx.author.avatar else ctx.author.default_avatar.url
-            elif thumbnail == "RANDOM_USER_1_AVATAR":
-                if random_user_objects:
-                    thumbnail = random_user_objects[0].avatar.url if random_user_objects[0].avatar else self.DEFAULT_DIALOGUE_AVATAR
-                else:
-                    thumbnail = self.DEFAULT_DIALOGUE_AVATAR
-            elif thumbnail == "RANDOM_USER_2_AVATAR":
-                if len(random_user_objects) > 1:
-                    thumbnail = random_user_objects[1].avatar.url if random_user_objects[1].avatar else self.DEFAULT_DIALOGUE_AVATAR
-                else:
-                    thumbnail = self.DEFAULT_DIALOGUE_AVATAR
-            elif "special" in dialogue_info and dialogue_info["special"] == "random_users":
-                if speaker == "RANDOM_USER_1" and random_user_objects:
-                    speaker = random_user_objects[0].display_name
-                    text = text.replace("RANDOM_USER_1", speaker)
-                    thumbnail = random_user_objects[0].avatar.url if random_user_objects[0].avatar else self.DEFAULT_DIALOGUE_AVATAR
-                elif speaker == "RANDOM_USER_2" and len(random_user_objects) > 1:
-                    speaker = random_user_objects[1].display_name
-                    text = text.replace("RANDOM_USER_2", speaker)
-                    thumbnail = random_user_objects[1].avatar.url if random_user_objects[1].avatar else self.DEFAULT_DIALOGUE_AVATAR
-            
+            elif thumbnail in ("RANDOM_USER_1_AVATAR", "RANDOM_USER_2_AVATAR"):
+                index = 0 if thumbnail == "RANDOM_USER_1_AVATAR" else 1
+                face = random_user_objects[index] if index < len(random_user_objects) else None
+                thumbnail = face.avatar.url if face and face.avatar else self.DEFAULT_DIALOGUE_AVATAR
+            else:
+                asset = self._tower_portrait_asset(thumbnail)
+                if asset is not None:
+                    portrait_assets[asset.name] = asset
+                thumbnail = self._resolve_tower_portrait(thumbnail)
+
             processed_lines.append({
                 "speaker": speaker,
                 "text": text,
@@ -3765,11 +3920,19 @@ class Battles(commands.Cog):
             ctx.author,
             allowed_user_ids=allowed_dialogue_users,
         )
-        dialogue_message = await self._send_with_retry(
-            ctx,
-            embed=pages[0],
-            view=view,
-            suppress_failure=True,
+        # Each retry opens fresh files; all page portraits stay on the message
+        # while the view switches embeds without replacing attachments.
+        async def send_dialogue():
+            files = [discord.File(str(path), filename=name) for name, path in portrait_assets.items()]
+            try:
+                send = getattr(ctx, "_battle_original_send", ctx.send)
+                return await send(embed=pages[0], view=view, **({"files": files} if files else {}))
+            finally:
+                for file in files:
+                    file.close()
+
+        dialogue_message = await self._discord_request_with_retry(
+            send_dialogue, action_name="tower dialogue", suppress_failure=True,
         )
         if dialogue_message is not None:
             await view.wait()
@@ -4256,11 +4419,12 @@ class Battles(commands.Cog):
             if not user_exists:
                 # User doesn't exist in the database
                 prologue_embed = discord.Embed(
-                    title="Welcome to the Battle Tower",
+                    title="The Tower of Ascension",
                     description=(
-                        "You stand at the foot of the imposing Battle Tower, a colossal structure that pierces the heavens. "
-                        "It is said that the tower was once a place of valor, but it has since fallen into darkness. "
-                        "Now, it is a domain of malevolence, home to powerful bosses and their loyal minions."
+                        "It rises out of the clouds: thirty floors of stone and gold. Every god sponsors champions here, "
+                        "and every champion who reaches the summit, they say, Ascends.\n\n"
+                        "No one you know has ever come back down to tell you what that means.\n\n"
+                        "At the door, an old Gatekeeper opens his ledger and waits for your name."
                     ),
                     color=0xFF5733
                 )
@@ -4358,13 +4522,16 @@ class Battles(commands.Cog):
                     )
 
                     level_names_1 = self.battle_data.get("level_names") or []
+                    floor_elements = await self._tower_floor_elements(ctx.author.id)
 
-                    # Function to generate the formatted level list
+                    # Floor, cleared mark, governing element, name. Kept to 15 floors per
+                    # field so each stays under Discord's 1024-character field limit.
                     def generate_level_list(levels, start_level=1):
                         result = "```\n"
                         for level, level_name in enumerate(levels, start=start_level):
-                            checkbox = "❌" if level == user_level else "✅" if level < user_level else "❌"
-                            result += f"Level {level:<2} {checkbox} {level_name}\n"
+                            checkbox = "✅" if level < user_level else "❌"
+                            element_emoji, element_name = self._tower_floor_element_label(level, floor_elements)
+                            result += f"{level:>2} {checkbox} {element_emoji} {element_name:<9} {level_name}\n"
                         result += "```"
                         return result
 
@@ -4387,7 +4554,16 @@ class Battles(commands.Cog):
                         ),
                         color=0x0000FF
                     )
-                    embed_1.add_field(name="Level Progress", value=generate_level_list(level_names_1), inline=False)
+                    embed_1.add_field(
+                        name="Floors 1-15 · element governing each floor",
+                        value=generate_level_list(level_names_1[:15]),
+                        inline=False,
+                    )
+                    embed_1.add_field(
+                        name="Floors 16-30 · rerolled every prestige",
+                        value=generate_level_list(level_names_1[15:30], start_level=16),
+                        inline=False,
+                    )
 
                     # This week's corrupted floors
                     corrupted_floors = self.get_corrupted_floors()
@@ -4766,8 +4942,12 @@ class Battles(commands.Cog):
             await ctx.send("You won the battle!")
             return
             
+        # Roll keys/resonance first so the story can match what actually happened.
+        key_outcome, progress_messages = await self._update_tower_run_progress(ctx, level)
+        state = await self._tower_story_state(ctx.author.id)
+
         # Get level data
-        victory_data = self.battle_data["victories"][level_str]
+        victory_data = self._tower_story_variant(self.battle_data["victories"][level_str], state, key_outcome)
         level_name = self.battle_data["level_names"][level - 1] if level <= len(self.battle_data["level_names"]) else "Unknown Level"
         
         # Handle any special flash events (like in level 18)
@@ -4791,6 +4971,8 @@ class Battles(commands.Cog):
             if not other_god_message:
                 other_god_message = "A divine warning echoes in your mind, then vanishes."
             description = description.replace("{OTHER_GOD_MESSAGE}", other_god_message)
+        god_name = player_god if isinstance(player_god, str) and player_god else "your god"
+        description = self._format_tower_text(description, name=name_value, god=god_name, state=state)
         
         # Create and send the victory embed
         victory_embed = discord.Embed(
@@ -4799,9 +4981,8 @@ class Battles(commands.Cog):
             color=0x00ff00  # Green color for success
         )
         await ctx.send(embed=victory_embed)
-
-        # Track run-based hidden-door progress (key rolls + resonance milestones).
-        await self._update_tower_run_progress(ctx, level)
+        for message in progress_messages:
+            await ctx.send(message)
         
         # Handle chest rewards if this level has them
         if "has_chest" in victory_data and victory_data["has_chest"]:
@@ -5397,7 +5578,9 @@ class Battles(commands.Cog):
                                 'UPDATE battletower SET level = 1, prestige = prestige + 1, run_key_bits = 0 WHERE id = $1 RETURNING prestige',
                                 ctx.author.id)
                         await ctx.send(
-                            "You have prestiged. Your level has been reset to 1. The rewards for your next run will be completely randomized.")
+                            "You have prestiged. Your level has been reset to 1. The rewards for your next run will be completely randomized.\n"
+                            f"*You wake at the foot of the Tower with scars you don't remember. Somewhere above, the Gatekeeper "
+                            f"is already writing your name. Cycle {int(new_prestige or 0) + 1} begins.*")
                         self.bot.dispatch("battletower_prestige", ctx, new_prestige)
                         await self.bot.reset_cooldown(ctx)
                         return
@@ -5434,10 +5617,13 @@ class Battles(commands.Cog):
             # Special handling for level 16 - use random players as minions
             if level == 16:
                 async with self.bot.pool.acquire() as connection:
-                    query = 'SELECT "user" FROM profile WHERE "user" != $1 ORDER BY RANDOM() LIMIT 2'
-                    random_users = await connection.fetch(query, ctx.author.id)
-
-                    random_user_objects = []
+                    # Prefer the two faces the Shapeshifter just wore in the dialogue.
+                    random_user_objects = list(self._tower_borrowed_faces.pop(ctx.author.id, None) or [])
+                    random_users = []
+                    if len(random_user_objects) < 2:
+                        random_user_objects = []
+                        query = 'SELECT "user" FROM profile WHERE "user" != $1 ORDER BY RANDOM() LIMIT 2'
+                        random_users = await connection.fetch(query, ctx.author.id)
                     for user in random_users:
                         user_id = user['user']
                         try:
@@ -5498,6 +5684,18 @@ class Battles(commands.Cog):
                             content="Warning: Could not find enough players for special level 16 battle. Using default enemies.",
                             suppress_failure=True,
                         )
+
+            # Each floor is governed by an element, rolled once per prestige.
+            floor_elements = await self._tower_floor_elements(ctx.author.id)
+            level_data = self._apply_tower_floor_element(level_data, level, floor_elements)
+            if level == 30:
+                await ctx.send(
+                    "🌟 Elysia fights with **Light**, 🌑 Sepulchure with **Dark** "
+                    "and 🌀 Drakath with **Corrupted**."
+                )
+            elif floor_elements:
+                element_emoji, element_name = self._tower_floor_element_label(level, floor_elements)
+                await ctx.send(f"{element_emoji} **{element_name}** governs floor {level}.")
 
             # Weekly corrupted floor: scale enemies up and flag the bonus reward
             corruption = self.get_corrupted_floors().get(level)
