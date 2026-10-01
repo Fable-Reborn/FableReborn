@@ -22,7 +22,16 @@ from classes.endgame import (
     starforge_success_chance,
     starforged_name,
 )
+from cogs.battles.extensions.element_procs import (
+    COMMON_MIN_STARS,
+    MYTHIC_MIN_STARS,
+    POWER_WORD_MIN_STARS,
+    PROC_EMOJI,
+    PROC_NAMES,
+    ElementProcExtension,
+)
 from utils.checks import has_char
+from utils.elements import normalize_element
 
 
 class Starforge(commands.Cog):
@@ -155,6 +164,31 @@ class Starforge(commands.Cog):
             f"(+{float(bonus_pct * 100):.1f}% item stats)"
         )
 
+    @staticmethod
+    def _element_proc_text(item, stars: int) -> str | None:
+        """What this weapon's stars unlock in the element procs test, if anything."""
+        element = normalize_element(item["element"])
+        if element not in PROC_NAMES or str(item["type"] or "").lower() == "shield":
+            return None
+        common, mythic = PROC_NAMES[element]
+        lines = []
+        if stars < COMMON_MIN_STARS:
+            chance = ElementProcExtension.common_chance(COMMON_MIN_STARS)
+            lines.append(f"Forge ★{COMMON_MIN_STARS} to unlock **{common}** ({chance * 100:.2f}%)")
+        else:
+            chance = ElementProcExtension.common_chance(stars)
+            lines.append(f"**{common}**: {chance * 100:.2f}%")
+        mythic_chance = ElementProcExtension.mythic_chance(element, stars)
+        if mythic_chance > 0:
+            lines.append(f"✨ **{mythic}**: {mythic_chance * 100:.2f}%")
+        else:
+            needed = POWER_WORD_MIN_STARS if element == "Light" else MYTHIC_MIN_STARS
+            lines.append(f"✨ **{mythic}** unlocks at ★{needed}")
+        return (
+            f"{PROC_EMOJI[element]} " + " · ".join(lines)
+            + "\nOnly with elemental advantage. Opt in with `$elementprocs on`."
+        )
+
     @commands.group(name="starforge", aliases=["sf"], invoke_without_command=True)
     @has_char()
     async def starforge(self, ctx):
@@ -185,6 +219,16 @@ class Starforge(commands.Cog):
             value=(
                 "Salvage consumes the fuel item forever. Upgrade attempts never destroy "
                 "or downgrade the target item. Failed attempts build pity."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="✨ Element Procs (test)",
+            value=(
+                "Starforged weapons can trigger their element's ability when it has the "
+                f"advantage: ★{COMMON_MIN_STARS} commons, ★{MYTHIC_MIN_STARS} mythics, "
+                f"★{POWER_WORD_MIN_STARS} Light unlocks **Power Word: Die**.\n"
+                "Opt-in only. See `$elementprocs`."
             ),
             inline=False,
         )
@@ -242,6 +286,9 @@ class Starforge(commands.Cog):
             ),
             inline=False,
         )
+        proc_text = self._element_proc_text(item, stars)
+        if proc_text:
+            embed.add_field(name="✨ Element Procs (test)", value=proc_text, inline=False)
         if next_star is None:
             embed.add_field(name="Next Star", value="Fully starforged.", inline=False)
         else:
