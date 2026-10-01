@@ -107,3 +107,4 @@ assets/possession/generation-prompts.json
 tests/test_theme_trade_contract.py
 tests/test_dragon_party_card.py
 tests/test_dragon_party_card.py
+tests/test_dragon_party_card.py

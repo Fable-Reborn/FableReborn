@@ -59,7 +59,7 @@ class TestDragonPartyCard(unittest.TestCase):
             rendered_buffer = self.renderer.render_dragon_party_card(dragon, members)
             rendered = Image.open(rendered_buffer)
             self.assertEqual("JPEG", rendered.format)
-            self.assertEqual((self.renderer.WIDTH, self.renderer.HEIGHT), rendered.size)
+            self.assertEqual(self.renderer.OUTPUT_SIZE, rendered.size)
             self.assertLess(len(rendered_buffer.getvalue()), 1_000_000)
 
     def test_static_background_is_cached_between_renders(self):

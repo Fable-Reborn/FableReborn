@@ -46,6 +46,13 @@ VESSELS = {
             "ward": ("Obsidian Carapace", "🛡️", "Volcanic glass creeps over the armor. Blows skitter off it."),
             "cataclysm": ("The Final Night", "🌘", "The sky goes out. For one breath there is only the dark, and it is hungry."),
         },
+        "trait": {
+            "key": "attrition",
+            "name": "Soul Harvest",
+            "emoji": "💀",
+            "rule": "Every raider it kills restores some of its health. Keep each other alive.",
+            "gm": "Each raider you kill restores 3% of the Husk's health (less in big raids).",
+        },
         "cataclysm_variance": None,
         "omen": "The torches die. The stars above the Husk go out one by one. **The Final Night is gathering.**",
         "interrupted": "The Husk staggers mid-invocation. The gathered dark bleeds away into nothing.",
@@ -123,7 +130,15 @@ VESSELS = {
             "ward": ("Kaleidoscope Mirror", "🪞", "The Colossus fractures into a hundred reflections. Which one is real?"),
             "cataclysm": ("The Great Unmaking", "🎲", "Drakath rolls the dice of the world. Nobody knows what the numbers mean."),
         },
-        "cataclysm_variance": (0.3, 2.5),
+        "trait": {
+            "key": "chaos",
+            "name": "Loaded Dice",
+            "emoji": "🎲",
+            "rule": "Every blow it lands rolls a random strength, from feeble to brutal. "
+                    "Its first Puppet Strings shuffles everyone's chosen actions.",
+            "gm": "Your hits roll 0.4x to 1.4x strength. Your first Puppet Strings also shuffles every raider's action.",
+        },
+        "cataclysm_variance": (0.3, 1.8),  # Averages ~1x so the dice stay fair.
         "omen": "Every die in the world starts rolling at once. **The Great Unmaking is gathering.**",
         "interrupted": "The dice clatter to the floor, every face blank. The Colossus pouts.",
         "phases": {
@@ -198,6 +213,14 @@ VESSELS = {
             "dominate": ("Sermon of Obedience", "📿", "The Seraph speaks {target}'s true name, and {target} kneels."),
             "ward": ("Veil of Tears", "🌫️", "A shroud of weeping mist folds around the Seraph."),
             "cataclysm": ("Judgment Without Grace", "⚖️", "The Seraph lifts its hands and passes sentence on *everyone*."),
+        },
+        "trait": {
+            "key": "judgment",
+            "name": "Penance",
+            "emoji": "⚖️",
+            "rule": "Her Veil of Tears also stops the Severance that turn. While her Dread is full, "
+                    "anyone who chants is punished (Guard halves it).",
+            "gm": "Veil of Tears also blocks the Severance that turn. With full Dread, every chanter takes a hit.",
         },
         "cataclysm_variance": None,
         "omen": "The choir falls silent. Six wings rise to blot out the sun. **Judgment Without Grace is gathering.**",
@@ -287,7 +310,7 @@ SIGNATURE_LORE = {
                 "{actor} goes berserk and carves **{amount}** out of the vessel!"),
     "bulwark": ("Bulwark", "🏰", "The whole raid takes half damage this turn.",
                 "{actor} plants their shield, and the whole raid shelters behind it."),
-    "pilfer": ("Pilfer", "🗝️", "Steal up to 40 Dread. Breaks a gathering Cataclysm.",
+    "pilfer": ("Pilfer", "🗝️", "Steal up to 40 Dread. Halves a gathering Cataclysm.",
                "{actor} slips a hand into the vessel's shadow and steals **{amount}** Dread!"),
     "arcane_surge": ("Arcane Surge", "🔮", "1.5× damage that ignores armor and wards.",
                      "{actor} unleashes raw arcana for **{amount}**, straight through every defense!"),

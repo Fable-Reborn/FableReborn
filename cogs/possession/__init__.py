@@ -586,6 +586,10 @@ class PossessionSession:
         """Display name, safe to drop into markdown."""
         return discord.utils.escape_markdown(self.plain_name(user_id)[:limit])
 
+    def trait_label(self):
+        trait = self.vessel["trait"]
+        return f"{trait['emoji']} **{trait['name']}**"
+
     def ability_label(self, ability):
         name, emoji, _narration = self.vessel["abilities"][ability]
         return f"{emoji} **{name}**"
@@ -783,7 +787,7 @@ class PossessionSession:
         warning = None
         if enc.charging:
             name = self.vessel["abilities"]["cataclysm"][0].upper()
-            warning = f"{name} IS GATHERING  ·  deal {enc.interrupt_threshold:,.0f} damage this turn to break it, or Guard"
+            warning = f"{name} IS GATHERING  ·  {enc.interrupt_threshold:,.0f} damage breaks it, less weakens it"
         return {
             "accent": tuple(self.vessel["color"].to_bytes(3, "big")),
             "turn": enc.round_no,
@@ -822,8 +826,8 @@ class PossessionSession:
         if enc.charging:
             name = self.vessel["abilities"]["cataclysm"][0]
             description += (
-                f"\n⚠️ **{name} is gathering.** Deal **{ui.compact(enc.interrupt_threshold)}** damage "
-                "this turn to break it, or Guard to halve it."
+                f"\n⚠️ **{name} is gathering.** **{ui.compact(enc.interrupt_threshold)}** damage this turn "
+                "breaks it; any less weakens it. Guard halves what lands."
             )
         embed = discord.Embed(description=description, color=self.vessel["color"])
         embed.set_image(url=f"attachment://{CARD_FILENAME}")
@@ -852,6 +856,8 @@ class PossessionSession:
             color=self.vessel["color"],
         )
         embed.add_field(name="How to play", value=HOW_TO_PLAY, inline=False)
+        trait = self.vessel["trait"]
+        embed.add_field(name=f"{trait['emoji']} This vessel: {trait['name']}", value=trait["rule"], inline=False)
         bounty = []
         if self.gold:
             bounty.append(f"💰 **${self.gold:,}** shared, more for survivors")
@@ -878,8 +884,8 @@ class PossessionSession:
             name = self.vessel["abilities"]["cataclysm"][0]
             description += (
                 f"\n\n⚠️ **{name} is gathering.** It hits everyone when this turn ends.\n"
-                f"Deal **{ui.compact(enc.interrupt_threshold)}** damage this turn to break it, "
-                "or Guard to halve it."
+                f"**{ui.compact(enc.interrupt_threshold)}** damage this turn breaks it, and any less weakens it. "
+                "Guard halves what lands."
             )
         embed = discord.Embed(
             title=f"{self.vessel['emoji']} {upper_first(self.vessel['name'])}",
@@ -907,7 +913,7 @@ class PossessionSession:
         if enc.charging:
             parts.append(
                 f"{self.underling['charging']} They need **{ui.compact(enc.interrupt_threshold)}** "
-                "damage this turn to break it."
+                "damage this turn to break it; anything less only weakens it."
             )
         elif enc.rite >= enc.rite_goal / 2:
             parts.append(line(self.underling["rite_warning"], **fields))
@@ -943,6 +949,7 @@ class PossessionSession:
             else:
                 status = ""
             powers.append(f"{self.ability_label(ability)} · {ABILITY_RULES[ability]}{status}")
+        powers.append(f"{self.trait_label()} · passive · {self.vessel['trait']['gm']}")
         embed.add_field(name="Powers", value=clip("\n".join(powers)), inline=False)
         embed.set_footer(
             text="Pick a target, then a power (no target = weakest) · 💫 = Signature unused · "
@@ -987,6 +994,8 @@ class PossessionSession:
 
         if report.dominated:
             raid.append(self._dominate_line(report.dominated))
+        if report.scrambled:
+            raid.append(f"{self.trait_label()}: the strings tangle everyone, and every chosen action was shuffled!")
         for uid, key, target_id, amount in report.signatures:
             raid.append(self._signature_line(uid, key, target_id, amount))
         strikes = sorted(
@@ -1025,6 +1034,12 @@ class PossessionSession:
             raid.append(f"👻 {plural(report.haunts, 'spirit')} drained **{report.haunt_drain}** Dread")
         if report.echoes:
             raid.append(f"🔔 {plural(report.echoes, 'spirit')} echoed the chant")
+        if report.rite_veiled:
+            ward_name, ward_emoji, _narration = self.vessel["abilities"]["ward"]
+            raid.append(
+                f"{ward_emoji} **{ward_name}** smothered the chant: **{report.rite_veiled}** Severance lost "
+                f"({self.trait_label()})."
+            )
         if report.total_rite:
             reached = enc.rite + (report.total_rite if report.rite_broken else 0)
             unheard = f" · {report.rite_unheard} unheard" if report.rite_unheard else ""
@@ -1037,8 +1052,12 @@ class PossessionSession:
         if report.charge_started:
             vessel.append(f"{emoji} **{ability_name}** is gathering. It hits everyone at the end of next turn.")
         elif report.releasing and report.interrupted:
-            cause = "a Pilfer" if report.pilfered else f"{ui.compact(report.total_strike)} damage"
-            vessel.append(f"💥 **{ability_name}** was broken by {cause}!")
+            vessel.append(f"💥 **{ability_name}** was broken by {ui.compact(report.total_strike)} damage!")
+        elif report.releasing and report.blast_scale < 1:
+            pilfer = f" ({plural(report.pilfers, 'Pilfer')} halved it)" if report.pilfers else ""
+            vessel.append(
+                f"💥 The raid weakened **{ability_name}** to **{report.blast_scale:.0%}** strength{pilfer}."
+            )
         elif report.ability == "ward" and not enc.victorious:
             vessel.append(f"{emoji} **{ability_name}** halved the raid's damage.")
         if report.hits:
@@ -1058,6 +1077,9 @@ class PossessionSession:
                 ]
                 more = f" · +{len(report.hits) - 8} more" if len(report.hits) > 8 else ""
                 vessel.append("╰ " + " · ".join(parts) + more)
+        if report.penance:
+            parts = " · ".join(f"{self.name(uid, 16)} {ui.compact(amount)}" for uid, amount in report.penance[:8])
+            vessel.append(f"{self.trait_label()}: the chanters are punished: {parts}")
         for uid in report.executed:
             vessel.append(f"⚰️ {self.name(uid)} was executed.")
         if report.rite_broken:
@@ -1067,8 +1089,10 @@ class PossessionSession:
             vessel.append(f"🔆 {self.name(uid)} returned to the fight.")
         for uid in report.deaths:
             vessel.append(f"☠️ {self.name(uid)} fell.")
+        if report.feasted:
+            vessel.append(f"{self.trait_label()}: the vessel feeds on the fallen (+{ui.compact(report.feasted)} HP).")
         if not (report.dominated or report.hits or report.charge_started or report.releasing
-                or report.ability == "ward") and not enc.outcome:
+                or report.ability == "ward" or report.penance) and not enc.outcome:
             vessel.append("The vessel falters.")
 
         if report.charge_started:
@@ -1155,6 +1179,7 @@ class PossessionSession:
             self.hp_per_raider,
             max_rounds=MAX_ROUNDS,
             cataclysm_variance=self.vessel["cataclysm_variance"],
+            trait=self.vessel["trait"]["key"],
         )
         await self.say_to_gm(
             f"*{self.underling['name']}:* {len(raiders)} of them, {self.underling['master']}. The vessel is yours."
@@ -1597,6 +1622,8 @@ class Possession(commands.Cog):
         try:
             session.dm = await ctx.author.create_dm()
             greeting, portrait = session.underling_embed(random.choice(session.underling["greeting"]), thumbnail=True)
+            trait = session.vessel["trait"]
+            greeting.add_field(name=f"{trait['emoji']} Your vessel's gift: {trait['name']}", value=trait["gm"], inline=False)
             greeting.add_field(
                 name="Speaking as the vessel",
                 value="Anything you type here, the vessel says aloud. Start a message with `<anger>`, "

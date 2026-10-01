@@ -10,6 +10,9 @@ Raiders can guard or mend an ally, and each has one class signature per
 fight. The fallen return as spirits with weak actions of their own. The
 vessel's Cataclysm gathers for a turn before it lands, and the vessel grows
 more dangerous (and more exposed) as it passes each phase threshold.
+
+Each vessel also has one trait (TRAITS): the Husk feeds on kills, the Colossus
+rolls loaded dice, and the Seraph sits in judgment over the Severance.
 """
 
 import math
@@ -18,7 +21,7 @@ from dataclasses import dataclass, field
 
 VESSEL_ARMOR = 200
 DEFENSE_SCALE = 1_500
-VESSEL_STRIKE_ROUNDS = 5.5    # Turns an all-Strike raid would need; real raids mix actions and take ~9-11.
+VESSEL_STRIKE_ROUNDS = 6.0    # Turns an all-Strike raid would need; real raids mix actions and take ~10-12.
 VESSEL_HIT_SHARE = 0.22       # A base hit takes this share of an average raider's health.
 SIZE_BASE = 5                 # Raids beyond this size face a tougher vessel, since they
 SIZE_HP_SCALE = 0.03          # bring more healers and guards: +3% health and damage
@@ -40,12 +43,20 @@ RITE_GRIP_MAX = 0.4           # A complete Severance would add +40% strike damag
 FOCUS_PARTY = 6               # Single-target powers scale with party size around this.
 FOCUS_BOUNDS = (0.75, 2.5)
 
-INTERRUPT_SHARE = 0.10        # Damage (share of max health) in the release turn that breaks a Cataclysm.
-PHASE_THRESHOLDS = (2 / 3, 1 / 3)  # Health shares that begin phases II and III.
+BREAK_FACTOR = 2.0            # Breaking a Cataclysm takes this many plain all-Strike turns of damage;
+                              # anything less only weakens the blast in proportion.
+PILFER_WEAKEN = 0.5           # Each Pilfer during the warning turn multiplies the blast by this.
+PHASE_THRESHOLDS = (0.75, 0.40)  # Health shares that begin phases II and III.
 PHASE3_ATTACK_BONUS = 0.25
 PHASE3_DREAD_PER_ROUND = 30
 CIRCLE_GROWTH_PER_PHASE = 0   # Extra chanting slots per phase; more made the Severance too easy.
 EXECUTE_THRESHOLD = 0.25
+
+# Vessel traits: one distinct mechanic per vessel, on top of the shared powers.
+TRAITS = ("attrition", "chaos", "judgment")
+ATTRITION_HEAL = 0.03          # Husk: share of max health restored per kill in a 5-raider fight.
+CHAOS_HIT_RANGE = (0.4, 1.4)   # Colossus: every non-Cataclysm hit rolls this multiplier (averages ~1).
+JUDGMENT_PENANCE = 0.25        # Seraph: hit on each chanter while her Dread is full.
 
 HAUNT_DREAD = 5
 ECHOES_PER_RITE = 2
@@ -216,6 +227,9 @@ class RoundReport:
     releasing: bool = False                           # A gathered Cataclysm was due this turn.
     charge_started: bool = False                      # The vessel began gathering a Cataclysm.
     interrupted: bool = False                         # The gathered Cataclysm was broken.
+    break_threshold: float = 0.0                      # Damage that would have broken it this turn.
+    blast_scale: float = 1.0                          # Share of the Cataclysm that still landed.
+    pilfers: int = 0                                  # Pilfers cast while it was gathering.
     strikes: list = field(default_factory=list)       # (user_id, damage, signature key or None)
     guards: list = field(default_factory=list)        # (guard_id, protected_id)
     mends: list = field(default_factory=list)         # (healer_id, target_id, amount)
@@ -238,6 +252,10 @@ class RoundReport:
     deaths: list = field(default_factory=list)        # user_id
     revived: list = field(default_factory=list)       # user_id
     phase_change: int | None = None
+    feasted: float = 0.0                              # Husk: health restored from kills
+    scrambled: bool = False                           # Colossus: everyone's actions were shuffled
+    rite_veiled: int = 0                              # Seraph: Severance smothered by her ward
+    penance: list = field(default_factory=list)       # Seraph: (user_id, damage) on chanters
 
     @property
     def total_strike(self):
@@ -250,7 +268,7 @@ class RoundReport:
 
 class Encounter:
     def __init__(self, raiders, hp_per_raider=None, *,
-                 max_rounds=MAX_ROUNDS, cataclysm_variance=None, rng=None):
+                 max_rounds=MAX_ROUNDS, cataclysm_variance=None, trait=None, rng=None):
         """Vessel health scales to the raid's damage unless hp_per_raider is given."""
         if not raiders:
             raise ValueError("A possession needs at least one raider.")
@@ -264,6 +282,10 @@ class Encounter:
         self.base_capacity = rite_capacity(len(raiders))
         self.max_rounds = max_rounds
         self.cataclysm_variance = cataclysm_variance
+        if trait is not None and trait not in TRAITS:
+            raise ValueError(f"Unknown vessel trait {trait!r}.")
+        self.trait = trait
+        self.scrambled = False
         self.round_no = 0
         self.outcome = None  # "slain", "exorcised", "wiped", "withdrawn"
         self.last_actions = {}
@@ -292,7 +314,11 @@ class Encounter:
 
     @property
     def interrupt_threshold(self):
-        return self.vessel.max_hp * INTERRUPT_SHARE
+        """Damage needed in the warning turn to break a gathered Cataclysm.
+
+        It is BREAK_FACTOR plain all-Strike turns from the raiders still standing, so
+        breaking it takes nearly everyone striking plus a bonus or signature."""
+        return BREAK_FACTOR * sum(max(1.0, r.damage - self.vessel.armor) for r in self.living())
 
     @property
     def vessel_attack(self):
@@ -381,16 +407,24 @@ class Encounter:
             target_id = None
 
         report = RoundReport(self.round_no, ability, target_id, releasing=releasing)
+        if releasing:
+            report.break_threshold = self.interrupt_threshold  # fixed before anyone acts
         report.ward = ability == "ward"
         chosen = self._choices(actions, living)
         self.last_actions = {uid: action for uid, (action, _target) in chosen.items()}
 
+        dread_was_full = self.vessel.dread >= DREAD_MAX
         self._spirits(spirits or {}, report)
         if ability == "dominate" and target_id in chosen:
             report.dominated = self._dominate(target_id, chosen)
+            if self.trait == "chaos" and not self.scrambled:
+                self._scramble(chosen, report)
 
         guarded, protectors = self._stances(chosen, report)
         chanting = self._raid_acts(chosen, report)
+        if self.trait == "judgment" and report.ward and not report.circle_sealed and report.total_rite:
+            report.rite_veiled = report.total_rite
+            report.rite_gain = report.bonus_rite = report.echo_gain = 0
         self.rite = min(self.rite_goal, self.rite + report.total_rite)
         self._advance_phase(report)
 
@@ -401,9 +435,11 @@ class Encounter:
             self.outcome = "exorcised"
         elif releasing:
             self.charging = False
-            if report.pilfered or report.total_strike >= self.interrupt_threshold:
+            dealt = report.total_strike
+            if dealt >= report.break_threshold:
                 report.interrupted = True
             else:
+                report.blast_scale = (1 - dealt / report.break_threshold) * PILFER_WEAKEN ** report.pilfers
                 self._cataclysm(guarded, protectors, report)
         elif ability == "cataclysm":
             self.vessel.dread -= spec["dread_cost"]
@@ -413,6 +449,8 @@ class Encounter:
             self._vessel_acts(ability, target_id, guarded, protectors, report)
         if not self.outcome:
             self._break_chants(chanting, report)
+            if self.trait == "judgment" and dread_was_full:
+                self._penance(chanting, guarded, report)
 
         self._record_deaths(report)
         self._tick_cooldowns(ability, releasing)
@@ -554,7 +592,9 @@ class Encounter:
         elif key == "pilfer":
             amount = min(self.vessel.dread, PILFER_DREAD)
             self.vessel.dread -= amount
-            report.pilfered = max(1, amount) if self.charging else amount
+            report.pilfered = amount
+            if self.charging:
+                report.pilfers += 1
         elif key == "ballad":
             amount = sum(self._heal(raider, ally, BALLAD_RATIO) for ally in self.living())
         elif key == "gift":
@@ -610,7 +650,7 @@ class Encounter:
             target = self.raiders[target_id]
             if not target.alive:
                 return
-            multiplier = spec["multiplier"] * focus_multiplier(self.starting_count)
+            multiplier = spec["multiplier"] * focus_multiplier(self.starting_count) * self._chaos_roll()
             doomed = ability == "execute" and target.hp_ratio <= EXECUTE_THRESHOLD
             victim, dealt, halved = self._hit(target, multiplier, guarded, protectors, report, single=True)
             if doomed and victim is target and not halved and victim.alive:
@@ -622,11 +662,37 @@ class Encounter:
                 report.vessel_healed = healed
         elif ability == "sweep":
             for raider in self.rng.sample(living, k=sweep_target_count(len(living))):
-                self._hit(raider, spec["multiplier"], guarded, protectors, report)
+                self._hit(raider, spec["multiplier"] * self._chaos_roll(), guarded, protectors, report)
+
+    def _chaos_roll(self):
+        return self.rng.uniform(*CHAOS_HIT_RANGE) if self.trait == "chaos" else 1.0
+
+    def _scramble(self, chosen, report):
+        """The Colossus's first Puppet Strings shuffles everyone's chosen actions.
+        Signatures stay with their owners; nobody can cast another class's power."""
+        self.scrambled = True
+        movable = [uid for uid, (action, _target) in chosen.items() if action not in (None, "signature")]
+        plays = [chosen[uid] for uid in movable]
+        self.rng.shuffle(plays)
+        for uid, play in zip(movable, plays):
+            chosen[uid] = play
+        report.scrambled = len(movable) > 1
+
+    def _penance(self, chanting, guarded, report):
+        """The Seraph punishes every chanter while her Dread is full. Guards halve it."""
+        for uid in sorted(chanting):
+            raider = self.raiders[uid]
+            if not raider.alive:
+                continue
+            hit = incoming_damage(self.vessel_attack * JUDGMENT_PENANCE, raider.armor)
+            if uid in guarded:
+                hit *= GUARD_FACTOR
+            raider.hp = max(0.0, raider.hp - hit)
+            report.penance.append((uid, hit))
 
     def _cataclysm(self, guarded, protectors, report):
         for raider in self.living():
-            multiplier = ABILITIES["cataclysm"]["multiplier"]
+            multiplier = ABILITIES["cataclysm"]["multiplier"] * report.blast_scale
             if self.cataclysm_variance:
                 multiplier *= self.rng.uniform(*self.cataclysm_variance)
             self._hit(raider, multiplier, guarded, protectors, report)
@@ -649,6 +715,12 @@ class Encounter:
         per_round = PHASE3_DREAD_PER_ROUND if self.phase >= 3 else DREAD_PER_ROUND
         gain = per_round + DREAD_PER_KILL * len(report.deaths)
         self.vessel.dread = min(DREAD_MAX, self.vessel.dread + gain)
+        if self.trait == "attrition" and report.deaths and self.vessel.hp > 0:
+            # Each kill matters less in a bigger raid, so the feast shrinks with raid size.
+            per_kill = ATTRITION_HEAL * SIZE_BASE / max(SIZE_BASE, self.starting_count)
+            heal = min(self.vessel.max_hp - self.vessel.hp, self.vessel.max_hp * per_kill * len(report.deaths))
+            self.vessel.hp += heal
+            report.feasted = heal
 
     def _tick_cooldowns(self, used, releasing):
         for name in list(self.vessel.cooldowns):

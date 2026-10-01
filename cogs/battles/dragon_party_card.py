@@ -1,9 +1,10 @@
 """Procedurally drawn Ice Dragon party card.
 
-Everything except the dragon artwork is drawn in code. The card is rendered at
-``SS`` times its output size and downscaled once at the end, which gives every
-shape, ring and bar clean anti-aliased edges. Data-independent layers (sky,
-artwork, aurora, snow, frosted glass) are built once and cached.
+Everything except the dragon artwork is drawn in code. Layout coordinates are
+logical pixels on a 1600x900 canvas; the card is rendered ``SS`` times larger
+and downscaled once to ``OUTPUT_SIZE``, which gives every shape, ring and bar
+clean anti-aliased edges. Data-independent layers (sky, artwork, light rays,
+snow, crystals, frosted glass) are built once and cached.
 """
 
 import math
@@ -25,7 +26,8 @@ BODY_FONT_PATH = FONT_DIR / "Lato-Bold.ttf"
 BODY_REGULAR_FONT_PATH = FONT_DIR / "Lato-Regular.ttf"
 
 WIDTH, HEIGHT = 1600, 900
-SS = 2
+OUTPUT_SIZE = (1920, 1080)
+SS = 2.4
 
 NIGHT = (4, 9, 20)
 FROST = (238, 247, 255)
@@ -34,21 +36,28 @@ ICE_DEEP = (52, 132, 230)
 MUTED = (146, 172, 200)
 DIM = (82, 104, 132)
 GOLD = (255, 207, 112)
-GOLD_DEEP = (205, 132, 38)
 VIOLET = (186, 160, 255)
+CRIMSON = (255, 82, 108)
 ATK_COLOR = (255, 146, 118)
 DEF_COLOR = ICE
 HP_COLOR = (118, 236, 168)
 
-BOSS_LEFT, BOSS_RIGHT = 56, 720
-ART_SIZE = (986, 468)
+ICE_METAL = ((0.0, (222, 246, 255)), (0.3, (126, 196, 244)), (1.0, (34, 66, 116)))
+GOLD_METAL = ((0.0, (255, 242, 196)), (0.3, (238, 178, 76)), (1.0, (108, 64, 20)))
+DIM_METAL = ((0.0, (120, 150, 190)), (1.0, (40, 56, 84)))
+
+ART_LEFT, ART_TOP, ART_HEIGHT = 430, -10, 580
+MOUTH = (752, 250)
+
+BOSS_LEFT, BOSS_RIGHT = 56, 600
 TILE_BOXES = (
-    (56, 288, 246, 352),
-    (258, 288, 448, 352),
-    (460, 288, 720, 352),
+    (1270, 92, 1544, 160),
+    (1270, 172, 1544, 240),
+    (1270, 252, 1544, 320),
 )
-HEADER_Y = 392
-CARD_TOP, CARD_BOTTOM = 434, 862
+BAR_TOP, BAR_BOTTOM = 448, 480
+HEADER_Y = 522
+CARD_TOP, CARD_BOTTOM = 556, 866
 CARD_LEFT, CARD_RIGHT, CARD_GAP = 56, 1544, 20
 CARD_WIDTH = (CARD_RIGHT - CARD_LEFT - CARD_GAP * 3) / 4
 CARD_BOXES = tuple(
@@ -60,12 +69,26 @@ CARD_BOXES = tuple(
     )
     for i in range(4)
 )
+CARD_CUT = 16
 ROMAN = ("I", "II", "III", "IV")
+
 # Text-heavy regions where sharp foreground snowflakes would hurt legibility.
 SNOW_FREE_ZONES = (
-    (40, 30, 740, 420),
-    (1080, 370, 1560, 416),
+    (40, 30, 620, 360),
+    (1260, 84, 1552, 328),
+    (40, 416, 1560, 540),
 )
+
+THREAT_TIERS = ("MENACING", "DANGEROUS", "DEADLY", "LETHAL", "CATASTROPHIC", "APOCALYPTIC")
+TAGLINES = {
+    "frostbite wyrm": "The first bite of winter.",
+    "corrupted ice dragon": "Rot sleeps beneath the rime.",
+    "permafrost": "Nothing thaws. Nothing escapes.",
+    "absolute zero": "Where even breath stands still.",
+    "void tyrant": "The cold between the stars.",
+    "eternal frost": "Winter without end.",
+}
+DEFAULT_TAGLINE = "The glacier stirs. Steel yourselves."
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +102,10 @@ def _s(value):
 
 def _box(x0, y0, x1, y1):
     return (_s(x0), _s(y0), _s(x1), _s(y1))
+
+
+def _pts(points):
+    return [(_s(x), _s(y)) for x, y in points]
 
 
 def _rgba(color, alpha):
@@ -96,7 +123,7 @@ def _format_stat(value):
     return f"{Decimal(str(value)):,.0f}"
 
 
-@lru_cache(maxsize=128)
+@lru_cache(maxsize=160)
 def _font(size, display=False, weight="Bold"):
     """Return a font sized in logical pixels (scaled for supersampling)."""
     pixels = max(1, _s(size))
@@ -187,14 +214,12 @@ def _gradient(size, stops, axis="x"):
     colors = []
     for i in range(length):
         t = i / max(1, length - 1)
-        color = stops[-1][1]
+        color = stops[0][1] if t < stops[0][0] else stops[-1][1]
         for (p0, c0), (p1, c1) in zip(stops, stops[1:]):
             if p0 <= t <= p1:
                 k = (t - p0) / max(1e-6, p1 - p0)
                 color = tuple(int(a + (b - a) * k) for a, b in zip(c0, c1))
                 break
-        if t < stops[0][0]:
-            color = stops[0][1]
         colors.append(color[:3])
     strip = Image.new("RGB", (length, 1))
     strip.putdata(colors)
@@ -203,11 +228,23 @@ def _gradient(size, stops, axis="x"):
     return strip.transpose(Image.Transpose.ROTATE_270).resize((width, height), Image.NEAREST)
 
 
+def _chamfer(box, cut):
+    left, top, right, bottom = box
+    return [
+        (left + cut, top), (right - cut, top), (right, top + cut), (right, bottom - cut),
+        (right - cut, bottom), (left + cut, bottom), (left, bottom - cut), (left, top + cut),
+    ]
+
+
+def _shape_mask(size, points, origin):
+    mask = Image.new("L", size, 0)
+    ImageDraw.Draw(mask).polygon([(x - origin[0], y - origin[1]) for x, y in points], fill=255)
+    return mask
+
+
 def _rounded_mask(size, radius):
     mask = Image.new("L", size, 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, size[0] - 1, size[1] - 1), radius=radius, fill=255
-    )
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, size[0] - 1, size[1] - 1), radius=radius, fill=255)
     return mask
 
 
@@ -226,8 +263,22 @@ def _glow(img, bounds, color, blur, paint):
     img.paste(Image.new("RGB", mask.size, color[:3]), (origin_x, origin_y), mask)
 
 
-def _glow_text(img, draw, xy, text, font, color, strength=200, blur=12, anchor="la"):
-    x, y = _s(xy[0]), _s(xy[1])
+def _glow_points(img, points, color, blur, strength, width=None):
+    """Glow along a closed outline (``width``) or a filled polygon (``None``)."""
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+
+    def paint(d, ox, oy):
+        shifted = [(x - ox, y - oy) for x, y in points]
+        if width:
+            d.line(shifted + [shifted[0]], fill=strength, width=width, joint="curve")
+        else:
+            d.polygon(shifted, fill=strength)
+
+    _glow(img, (min(xs), min(ys), max(xs), max(ys)), color, blur, paint)
+
+
+def _glow_text(img, draw, xy, text, font, color, strength=200, blur=12, anchor="la", offset=(0, 0)):
+    x, y = _s(xy[0] + offset[0]), _s(xy[1] + offset[1])
     bounds = draw.textbbox((x, y), text, font=font, anchor=anchor)
     _glow(
         img,
@@ -241,15 +292,14 @@ def _glow_text(img, draw, xy, text, font, color, strength=200, blur=12, anchor="
     )
 
 
-def _gradient_text(img, draw, xy, text, font, top, bottom, anchor="la"):
+def _gradient_text(img, draw, xy, text, font, stops, anchor="la"):
     x, y = _s(xy[0]), _s(xy[1])
     left, upper, right, lower = draw.textbbox((x, y), text, font=font, anchor=anchor)
     if right <= left or lower <= upper:
         return
     mask = Image.new("L", (right - left, lower - upper), 0)
     ImageDraw.Draw(mask).text((x - left, y - upper), text, font=font, fill=255, anchor=anchor)
-    fill = _gradient(mask.size, ((0.0, top), (1.0, bottom)), axis="y")
-    img.paste(fill, (left, upper), mask)
+    img.paste(_gradient(mask.size, stops, axis="y"), (left, upper), mask)
 
 
 def _tracked(draw, xy, text, font, fill, tracking, anchor="lm"):
@@ -268,6 +318,10 @@ def _tracked(draw, xy, text, font, fill, tracking, anchor="lm"):
     return width / SS
 
 
+def _tracked_width(draw, text, font, tracking):
+    return (sum(draw.textlength(ch, font=font) for ch in text) + _s(tracking) * max(0, len(text) - 1)) / SS
+
+
 def _fade_line(img, x0, y0, length, color, alpha, thickness=1.0, profile="center", vertical=False):
     span = max(2, _s(length))
     thick = max(1, _s(thickness))
@@ -279,7 +333,44 @@ def _fade_line(img, x0, y0, length, color, alpha, thickness=1.0, profile="center
     mask = _ramp_mask((span, 1), "x", stops).resize((span, thick), Image.NEAREST)
     if vertical:
         mask = mask.transpose(Image.Transpose.ROTATE_270)
+        img.paste(Image.new("RGB", mask.size, color[:3]), (_s(x0) - thick // 2, _s(y0)), mask)
+        return
     img.paste(Image.new("RGB", mask.size, color[:3]), (_s(x0), _s(y0) - thick // 2), mask)
+
+
+def _metal_stroke(img, points, stops, width):
+    """Stroke a closed outline (canvas pixels) with a vertical metallic gradient."""
+    pad = width + 2
+    xs, ys = [p[0] for p in points], [p[1] for p in points]
+    left, top = int(min(xs)) - pad, int(min(ys)) - pad
+    size = (int(max(xs)) - left + pad, int(max(ys)) - top + pad)
+    mask = Image.new("L", size, 0)
+    shifted = [(x - left, y - top) for x, y in points]
+    ImageDraw.Draw(mask).line(shifted + [shifted[0]], fill=255, width=width, joint="curve")
+    img.paste(_gradient(size, stops, axis="y"), (left, top), mask)
+
+
+def _dashed_path(draw, points, color, dash, gap, width):
+    """Dash a closed logical-pixel outline, carrying the pattern around corners."""
+    line_width = max(1, _s(width))
+    closed = list(points) + [points[0]]
+    drawing, remaining = True, dash
+    for (x0, y0), (x1, y1) in zip(closed, closed[1:]):
+        length = math.hypot(x1 - x0, y1 - y0)
+        position = 0.0
+        while position < length - 1e-6:
+            step = min(remaining, length - position)
+            if drawing:
+                a, b = position / length, (position + step) / length
+                draw.line(
+                    _box(x0 + (x1 - x0) * a, y0 + (y1 - y0) * a, x0 + (x1 - x0) * b, y0 + (y1 - y0) * b),
+                    fill=color, width=line_width,
+                )
+            position += step
+            remaining -= step
+            if remaining <= 1e-6:
+                drawing = not drawing
+                remaining = dash if drawing else gap
 
 
 # ---------------------------------------------------------------------------
@@ -295,14 +386,14 @@ def _poly(cx, cy, size, points, angle=0.0):
     ]
 
 
-def _icon_sword(draw, cx, cy, size, color):
-    angle = math.radians(45)
+def _icon_sword(draw, cx, cy, size, color, angle=45):
+    radians = math.radians(angle)
     blade = ((-0.21, 0.2), (-0.21, -0.68), (0, -1.0), (0.21, -0.68), (0.21, 0.2))
     guard = ((-0.56, 0.18), (0.56, 0.18), (0.56, 0.38), (-0.56, 0.38))
     grip = ((-0.12, 0.38), (0.12, 0.38), (0.12, 0.74), (-0.12, 0.74))
     pommel = ((-0.22, 0.72), (0.22, 0.72), (0.22, 0.98), (-0.22, 0.98))
     for shape in (blade, guard, grip, pommel):
-        draw.polygon(_poly(cx, cy, size, shape, angle), fill=color)
+        draw.polygon(_poly(cx, cy, size, shape, radians), fill=color)
 
 
 def _icon_shield(draw, cx, cy, size, color):
@@ -338,6 +429,20 @@ def _icon_crown(draw, cx, cy, size, color):
     draw.polygon(_poly(cx, cy, size, points), fill=color)
 
 
+def _icon_skull(draw, cx, cy, size, color, hole=(6, 12, 26, 255)):
+    draw.ellipse(_box(cx - 0.8 * size, cy - 0.92 * size, cx + 0.8 * size, cy + 0.5 * size), fill=color)
+    draw.rounded_rectangle(
+        _box(cx - 0.46 * size, cy + 0.1 * size, cx + 0.46 * size, cy + 0.92 * size),
+        radius=_s(0.16 * size), fill=color,
+    )
+    for ox in (-0.33, 0.33):
+        x = cx + ox * size
+        draw.ellipse(_box(x - 0.22 * size, cy - 0.34 * size, x + 0.22 * size, cy + 0.1 * size), fill=hole)
+    draw.polygon(_poly(cx, cy, size, ((0, 0.16), (-0.11, 0.4), (0.11, 0.4))), fill=hole)
+    for ox in (-0.15, 0.15):
+        draw.line(_box(cx + ox * size, cy + 0.6 * size, cx + ox * size, cy + 0.92 * size), fill=hole, width=max(1, _s(0.08 * size)))
+
+
 def _icon_diamond(draw, cx, cy, size, fill=None, outline=None, width=1.0):
     points = _poly(cx, cy, size, ((0, -1), (0.68, 0), (0, 1), (-0.68, 0)))
     draw.polygon(points, fill=fill, outline=outline, width=max(1, _s(width)) if outline else 0)
@@ -363,6 +468,15 @@ def _icon_claw(draw, cx, cy, size, color):
         draw.polygon(_poly(cx, cy, size, points, math.radians(12)), fill=color)
 
 
+def _gem(img, draw, cx, cy, size, color):
+    """A faceted diamond gem with a soft halo."""
+    _glow_points(img, _poly(cx, cy, size * 1.1, ((0, -1), (0.68, 0), (0, 1), (-0.68, 0))), color, _s(size * 0.7), 230)
+    _icon_diamond(draw, cx, cy, size, fill=_rgba((6, 14, 30), 255), outline=_rgba(color, 255), width=1.3)
+    draw.polygon(_poly(cx, cy, size * 0.55, ((0, -1), (0.68, 0), (0, 0))), fill=_rgba(FROST, 255))
+    draw.polygon(_poly(cx, cy, size * 0.55, ((0, -1), (-0.68, 0), (0, 0))), fill=_rgba(color, 255))
+    draw.polygon(_poly(cx, cy, size * 0.55, ((-0.68, 0), (0, 1), (0.68, 0))), fill=_rgba(color, 150))
+
+
 STAT_ICONS = {"atk": _icon_sword, "def": _icon_shield, "hp": _icon_heart}
 STAT_COLORS = {"atk": ATK_COLOR, "def": DEF_COLOR, "hp": HP_COLOR}
 
@@ -372,11 +486,36 @@ STAT_COLORS = {"atk": ATK_COLOR, "def": DEF_COLOR, "hp": HP_COLOR}
 # ---------------------------------------------------------------------------
 
 
-def _paint_radial(img, center, radii, color, alpha):
+def _paint_radial(img, center, radii, color, alpha, power=2.2):
     rx, ry = _s(radii[0]), _s(radii[1])
     mask = ImageOps.invert(Image.radial_gradient("L")).resize((rx * 2, ry * 2), Image.BILINEAR)
-    mask = mask.point(lambda v: int(alpha * (v / 255) ** 2.2))
+    mask = mask.point(lambda v: int(alpha * (v / 255) ** power))
     img.paste(Image.new("RGB", mask.size, color), (_s(center[0]) - rx, _s(center[1]) - ry), mask)
+
+
+def _paint_light_rays(base):
+    rng = random.Random(4)
+    small = (WIDTH // 4, HEIGHT // 4)
+    mask = Image.new("L", small, 0)
+    draw = ImageDraw.Draw(mask)
+    mx, my = MOUTH[0] / 4, MOUTH[1] / 4
+    for _ in range(22):
+        angle = rng.uniform(0, math.tau)
+        spread = rng.uniform(0.012, 0.05)
+        reach = 600
+        draw.polygon(
+            [
+                (mx, my),
+                (mx + math.cos(angle - spread) * reach, my + math.sin(angle - spread) * reach),
+                (mx + math.cos(angle + spread) * reach, my + math.sin(angle + spread) * reach),
+            ],
+            fill=rng.randint(18, 52),
+        )
+    mask = mask.filter(ImageFilter.GaussianBlur(2.5)).resize(base.size, Image.BILINEAR)
+    falloff = ImageOps.invert(Image.radial_gradient("L")).resize((_s(1500), _s(1100)), Image.BILINEAR)
+    canvas = Image.new("L", base.size, 0)
+    canvas.paste(falloff, (_s(MOUTH[0] - 750), _s(MOUTH[1] - 550)))
+    base.paste(Image.new("RGB", base.size, (150, 215, 255)), (0, 0), ImageChops.multiply(mask, canvas))
 
 
 def _paint_hero_art(base):
@@ -384,15 +523,24 @@ def _paint_hero_art(base):
         return
     with Image.open(ART_PATH) as source:
         art = source.convert("RGB").crop(ART_CROP)
-    size = (_s(ART_SIZE[0]), _s(ART_SIZE[1]))
+    width = ART_HEIGHT * art.width / art.height
+    size = (_s(width), _s(ART_HEIGHT))
     art = art.resize(size, Image.LANCZOS)
-    art = ImageEnhance.Contrast(art).enhance(1.12)
-    art = Image.blend(art, Image.new("RGB", size, (14, 36, 84)), 0.14)
+    art = art.filter(ImageFilter.UnsharpMask(radius=_s(1.2), percent=70, threshold=2))
+    art = ImageEnhance.Contrast(art).enhance(1.15)
+    art = Image.blend(art, Image.new("RGB", size, (14, 36, 84)), 0.12)
+
+    # Bloom: lift the already-glowing eye, throat and crystals into light.
+    highlights = art.convert("L").point(lambda v: max(0, v - 120) * 2)
+    bloom = highlights.filter(ImageFilter.GaussianBlur(_s(14)))
+    art.paste(Image.new("RGB", size, (150, 220, 255)), (0, 0), bloom.point(lambda v: min(200, int(v * 1.1))))
+    art.paste(Image.new("RGB", size, (235, 250, 255)), (0, 0), highlights.filter(ImageFilter.GaussianBlur(_s(3))).point(lambda v: v // 3))
+
     mask = ImageChops.multiply(
-        _ramp_mask(size, "x", ((0.0, 0), (0.34, 255))),
-        _ramp_mask(size, "y", ((0.5, 255), (0.98, 0))),
+        _ramp_mask(size, "x", ((0.0, 0), (0.24, 255))),
+        _ramp_mask(size, "y", ((0.56, 255), (0.98, 0))),
     )
-    base.paste(art, (_s(WIDTH) - size[0], 0), mask)
+    base.paste(art, (_s(ART_LEFT), _s(ART_TOP)), mask)
 
 
 def _paint_aurora(base):
@@ -410,12 +558,13 @@ def _paint_aurora(base):
             for x in range(-40, WIDTH + 40, 16)
         ]
         ImageDraw.Draw(mask).line(points, fill=alpha, width=9, joint="curve")
-        mask = mask.filter(ImageFilter.GaussianBlur(7))
-        mask = mask.resize((_s(WIDTH), _s(HEIGHT)), Image.BILINEAR)
-        mask = ImageChops.multiply(
-            mask, _ramp_mask(mask.size, "x", ((0.0, 255), (0.55, 200), (0.85, 60)))
-        )
+        mask = mask.filter(ImageFilter.GaussianBlur(7)).resize(base.size, Image.BILINEAR)
+        mask = ImageChops.multiply(mask, _ramp_mask(mask.size, "x", ((0.0, 255), (0.45, 170), (0.7, 30))))
         base.paste(Image.new("RGB", mask.size, color), (0, 0), mask)
+
+
+def _in_quiet_zone(x, y):
+    return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in SNOW_FREE_ZONES)
 
 
 def _paint_snow(base, seed=1337):
@@ -426,87 +575,149 @@ def _paint_snow(base, seed=1337):
         x, y = rng.uniform(0, WIDTH / 2), rng.uniform(0, HEIGHT / 2)
         r = rng.uniform(3, 9)
         bokeh_draw.ellipse((x - r, y - r, x + r, y + r), fill=rng.randint(30, 70))
-    bokeh = bokeh.filter(ImageFilter.GaussianBlur(3)).resize((_s(WIDTH), _s(HEIGHT)), Image.BILINEAR)
+    bokeh = bokeh.filter(ImageFilter.GaussianBlur(3)).resize(base.size, Image.BILINEAR)
     base.paste(Image.new("RGB", bokeh.size, (190, 225, 255)), (0, 0), bokeh)
 
+    # Wind-driven streaks sell the blizzard around the dragon.
+    streaks = Image.new("L", base.size, 0)
+    streak_draw = ImageDraw.Draw(streaks)
+    angle = math.radians(158)
+    for _ in range(150):
+        x, y = rng.uniform(560, WIDTH), rng.uniform(0, 460)
+        if _in_quiet_zone(x, y):
+            continue
+        length = rng.uniform(14, 46)
+        streak_draw.line(
+            _box(x, y, x + math.cos(angle) * length, y + math.sin(angle) * length),
+            fill=rng.randint(40, 120), width=max(1, _s(rng.choice((0.8, 1.0, 1.4)))),
+        )
+    streaks = streaks.filter(ImageFilter.GaussianBlur(_s(0.8)))
+    base.paste(Image.new("RGB", base.size, (215, 236, 255)), (0, 0), streaks)
+
     draw = ImageDraw.Draw(base, "RGBA")
-    for _ in range(300):
+    for _ in range(320):
         x, y = rng.uniform(0, WIDTH), rng.uniform(0, HEIGHT)
         r = rng.choice((0.7, 0.9, 1.1, 1.4, 1.8, 2.3))
         alpha = rng.randint(70, 220) if r > 1 else rng.randint(40, 140)
-        if any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in SNOW_FREE_ZONES):
+        if _in_quiet_zone(x, y):
             continue
         draw.ellipse(_box(x - r, y - r, x + r, y + r), fill=(225, 240, 255, alpha))
 
+    # Frost motes drifting out of the dragon's open jaws.
+    for _ in range(18):
+        x = MOUTH[0] + rng.uniform(-150, 30)
+        y = MOUTH[1] + rng.uniform(-60, 90)
+        r = rng.uniform(1.4, 3.2)
+        _glow(base, _box(x - r, y - r, x + r, y + r), ICE, _s(r * 2.2),
+              lambda d, ox, oy, x=x, y=y, r=r: d.ellipse(
+                  (_s(x - r) - ox, _s(y - r) - oy, _s(x + r) - ox, _s(y + r) - oy), fill=230))
+        draw.ellipse(_box(x - r * 0.5, y - r * 0.5, x + r * 0.5, y + r * 0.5), fill=(245, 252, 255, 240))
 
-def _frost_glass(base, box, radius, tint=(7, 16, 34), opacity=0.66):
-    left, top, right, bottom = _box(*box)
+
+def _frost_glass(base, points, tint=(7, 16, 34), opacity=0.66):
+    """Blur and tint the backdrop inside a logical-pixel polygon."""
+    scaled = _pts(points)
+    xs, ys = [p[0] for p in scaled], [p[1] for p in scaled]
+    left, top, right, bottom = min(xs), min(ys), max(xs), max(ys)
     size = (right - left, bottom - top)
     region = base.crop((left, top, right, bottom)).filter(ImageFilter.GaussianBlur(_s(12)))
     region = Image.blend(region, Image.new("RGB", size, tint), opacity)
     sheen = _ramp_mask(size, "y", ((0.0, 34), (0.4, 6), (1.0, 0)))
     region.paste(Image.new("RGB", size, (190, 225, 255)), (0, 0), sheen)
-    base.paste(region, (left, top), _rounded_mask(size, _s(radius)))
+    base.paste(region, (left, top), _shape_mask(size, scaled, (left, top)))
+
+
+def _crystal(draw, x, y, length, width, angle):
+    """One two-faced ice shard rising from (x, y), tilted by ``angle`` degrees."""
+    radians = math.radians(angle)
+    left_face = ((-0.5, 0), (-0.42, -0.7), (0, -1), (0, 0))
+    right_face = ((0, 0), (0, -1), (0.42, -0.7), (0.5, 0))
+
+    def shape(points):
+        cos_a, sin_a = math.cos(radians), math.sin(radians)
+        return [
+            (_s(x + (px * width) * cos_a - (py * length) * sin_a), _s(y + (px * width) * sin_a + (py * length) * cos_a))
+            for px, py in points
+        ]
+
+    draw.polygon(shape(left_face), fill=(170, 222, 255, 235))
+    draw.polygon(shape(right_face), fill=(44, 100, 186, 240))
+    outline = shape(((-0.5, 0), (-0.42, -0.7), (0, -1), (0.42, -0.7), (0.5, 0)))
+    draw.line(outline, fill=(225, 246, 255, 230), width=_s(1), joint="curve")
+    draw.line(shape(((0, -1), (0, -0.1))), fill=(235, 250, 255, 170), width=_s(1))
+
+
+def _paint_crystals(base):
+    clusters = (
+        (14, 904, ((0, 168, 30, 6), (-12, 112, 24, -18), (22, 84, 18, 20), (-4, 60, 16, -40))),
+        (WIDTH - 14, 904, ((0, 168, 30, -6), (12, 112, 24, 18), (-22, 84, 18, -20), (4, 60, 16, 40))),
+    )
+    for anchor_x, anchor_y, shards in clusters:
+        _paint_radial(base, (anchor_x, anchor_y - 70), (80, 150), (70, 170, 255), 150)
+        draw = ImageDraw.Draw(base, "RGBA")
+        for dx, length, width, angle in sorted(shards, key=lambda s: -s[1]):
+            _crystal(draw, anchor_x + dx, anchor_y, length, width, angle)
 
 
 def _paint_vignette(base):
     mask = Image.radial_gradient("L").resize(base.size, Image.BILINEAR)
-    mask = mask.point(lambda v: int(min(200, max(0, (v - 110) * 1.5))))
+    mask = mask.point(lambda v: int(min(210, max(0, (v - 105) * 1.6))))
     base.paste(Image.new("RGB", base.size, (1, 3, 8)), (0, 0), mask)
+
+
+def _paint_grain(base):
+    small = (base.width // 2, base.height // 2)
+    noise = Image.effect_noise(small, 22).resize(base.size, Image.BILINEAR).convert("RGB")
+    return Image.blend(base, ImageChops.overlay(base, noise), 0.35)
 
 
 def _paint_frame(base):
     draw = ImageDraw.Draw(base, "RGBA")
     inset = 14
-    draw.rounded_rectangle(
-        _box(inset, inset, WIDTH - inset, HEIGHT - inset),
-        radius=_s(8),
-        outline=(120, 180, 235, 60),
-        width=_s(1),
-    )
-    for x, y, h_profile, v_profile in (
-        (inset, inset, "left", "left"),
-        (WIDTH - inset, inset, "right", "left"),
-        (inset, HEIGHT - inset, "left", "right"),
-        (WIDTH - inset, HEIGHT - inset, "right", "right"),
+    draw.rectangle(_box(inset, inset, WIDTH - inset, HEIGHT - inset), outline=(120, 180, 235, 70), width=_s(1))
+    draw.rectangle(_box(inset + 6, inset + 6, WIDTH - inset - 6, HEIGHT - inset - 6), outline=(120, 180, 235, 26), width=_s(1))
+    for x, y, sx, sy in (
+        (inset, inset, 1, 1), (WIDTH - inset, inset, -1, 1),
+        (inset, HEIGHT - inset, 1, -1), (WIDTH - inset, HEIGHT - inset, -1, -1),
     ):
-        hx = x if h_profile == "left" else x - 160
-        vy = y if v_profile == "left" else y - 110
-        _fade_line(base, hx, y, 160, ICE, 200, 1.4, h_profile)
-        _fade_line(base, x, vy, 110, ICE, 200, 1.4, v_profile, vertical=True)
-        _icon_diamond(draw, x, y, 7, fill=_rgba(NIGHT, 255), outline=_rgba(ICE, 230), width=1.2)
-        _icon_diamond(draw, x, y, 2.6, fill=_rgba(FROST, 255))
+        _fade_line(base, x if sx > 0 else x - 200, y, 200, ICE, 210, 1.4, "left" if sx > 0 else "right")
+        _fade_line(base, x, y if sy > 0 else y - 130, 130, ICE, 210, 1.4, "left" if sy > 0 else "right", vertical=True)
+        bracket = [(x + sx * 10, y + sy * 34), (x + sx * 10, y + sy * 10), (x + sx * 34, y + sy * 10)]
+        draw.line(_pts(bracket), fill=(200, 240, 255, 200), width=_s(1.6), joint="curve")
+        _gem(base, draw, x, y, 7, ICE)
     for y in (inset, HEIGHT - inset):
-        _fade_line(base, WIDTH / 2 - 220, y, 440, ICE, 230, 1.4)
-        _glow(
-            base, _box(WIDTH / 2 - 14, y - 14, WIDTH / 2 + 14, y + 14), ICE, _s(6),
-            lambda d, ox, oy, y=y: d.polygon(
-                [(px - ox, py - oy) for px, py in _poly(WIDTH / 2, y, 11, ((0, -1), (0.68, 0), (0, 1), (-0.68, 0)))],
-                fill=220,
-            ),
-        )
-        _icon_diamond(draw, WIDTH / 2, y, 10, fill=_rgba(NIGHT, 255), outline=_rgba(ICE, 255), width=1.4)
-        _icon_diamond(draw, WIDTH / 2, y, 4, fill=_rgba(FROST, 255))
+        _fade_line(base, WIDTH / 2 - 260, y, 520, ICE, 235, 1.6)
+        for dx in (-34, 34):
+            _icon_diamond(draw, WIDTH / 2 + dx, y, 4, fill=_rgba(ICE, 230))
+        _gem(base, draw, WIDTH / 2, y, 12, ICE)
 
 
 @lru_cache(maxsize=1)
 def _static_base():
     """Build the data-independent backdrop once; renders draw on a copy."""
     size = (_s(WIDTH), _s(HEIGHT))
-    base = _gradient(size, ((0.0, (12, 27, 56)), (0.5, (6, 14, 31)), (1.0, (2, 5, 12))), axis="y")
-    _paint_radial(base, (1180, 200), (760, 440), (38, 104, 200), 120)
+    base = _gradient(size, ((0.0, (12, 27, 58)), (0.5, (6, 14, 31)), (1.0, (2, 5, 12))), axis="y")
+    _paint_radial(base, (900, 220), (820, 470), (38, 104, 200), 130)
+    _paint_light_rays(base)
     _paint_hero_art(base)
     _paint_aurora(base)
-    scrim = _ramp_mask(size, "x", ((0.0, 210), (0.3, 150), (0.5, 0)))
-    scrim = ImageChops.multiply(scrim, _ramp_mask(size, "y", ((0.0, 255), (0.44, 255), (0.52, 90))))
+    _paint_radial(base, MOUTH, (140, 110), (120, 210, 255), 90)
+
+    scrim = _ramp_mask(size, "x", ((0.0, 215), (0.24, 165), (0.42, 0)))
+    scrim = ImageChops.multiply(scrim, _ramp_mask(size, "y", ((0.0, 255), (0.42, 255), (0.5, 60))))
     base.paste(Image.new("RGB", size, NIGHT), (0, 0), scrim)
-    _paint_radial(base, (800, 930), (980, 300), (26, 84, 168), 80)
+    lower = _ramp_mask(size, "y", ((0.5, 0), (0.64, 120), (1.0, 170)))
+    base.paste(Image.new("RGB", size, (2, 6, 14)), (0, 0), lower)
+    _paint_radial(base, (800, 940), (1000, 320), (26, 84, 168), 90)
+
     _paint_snow(base)
     for box in CARD_BOXES:
-        _frost_glass(base, box, 18)
+        _frost_glass(base, _chamfer(box, CARD_CUT))
     for box in TILE_BOXES:
-        _frost_glass(base, box, 14, opacity=0.6)
+        _frost_glass(base, _chamfer(box, 10), opacity=0.62)
+    base = _paint_grain(base)
     _paint_vignette(base)
+    _paint_crystals(base)
     _paint_frame(base)
     return base
 
@@ -537,27 +748,42 @@ def _chip(draw, x, cy, text, font, color, icon=None, height=30):
     return width
 
 
-def _bar(img, draw, box, ratio, stops, radius, glow_color=None, ticks=0):
+def _bar(img, draw, box, ratio, stops, radius, glow_color=None, ticks=0, shimmer=False):
     left, top, right, bottom = _box(*box)
     corner = _s(radius)
     fill_width = int((right - left) * max(0.0, min(1.0, ratio)))
     if glow_color and fill_width > 0:
         _glow(
-            img, (left, top, left + fill_width, bottom), glow_color, _s(7),
+            img, (left, top, left + fill_width, bottom), glow_color, _s(8),
             lambda d, ox, oy: d.rounded_rectangle(
-                (left - ox, top - oy, left + fill_width - ox, bottom - oy), radius=corner, fill=150
+                (left - ox, top - oy, left + fill_width - ox, bottom - oy), radius=corner, fill=160
             ),
         )
     draw.rounded_rectangle((left, top, right, bottom), radius=corner, fill=(200, 225, 255, 20))
     if fill_width > 0:
         height = bottom - top
         fill = _gradient((right - left, height), stops).crop((0, 0, fill_width, height))
-        gloss = _ramp_mask(fill.size, "y", ((0.0, 90), (0.45, 18), (1.0, 0)))
+        gloss = _ramp_mask(fill.size, "y", ((0.0, 110), (0.42, 20), (0.6, 0), (1.0, 0)))
         fill.paste(Image.new("RGB", fill.size, (255, 255, 255)), (0, 0), gloss)
+        if shimmer:
+            stripes = Image.new("L", fill.size, 0)
+            stripe_draw = ImageDraw.Draw(stripes)
+            step = _s(46)
+            for x in range(-height, fill_width + height, step):
+                stripe_draw.polygon(
+                    [(x, height), (x + height, 0), (x + height + _s(14), 0), (x + _s(14), height)], fill=34
+                )
+            fill.paste(Image.new("RGB", fill.size, (255, 255, 255)), (0, 0), stripes)
+            shade = _ramp_mask(fill.size, "y", ((0.55, 0), (1.0, 80)))
+            fill.paste(Image.new("RGB", fill.size, (10, 20, 60)), (0, 0), shade)
         img.paste(fill, (left, top), _rounded_mask(fill.size, corner))
     for i in range(1, ticks):
         x = left + (right - left) * i / ticks
-        draw.line((x, top + _s(3), x, bottom - _s(3)), fill=(3, 10, 26, 120), width=_s(1))
+        major = ticks % 4 == 0 and i % (ticks // 4) == 0
+        draw.line(
+            (x, top + (_s(2) if major else _s(6)), x, bottom - (_s(2) if major else _s(6))),
+            fill=(3, 10, 26, 170 if major else 110), width=_s(1.4 if major else 1),
+        )
 
 
 def _icon_badge(draw, cx, cy, radius, icon, color, icon_size):
@@ -580,37 +806,90 @@ def _signature_move(moves):
     return best_name, max(0, best_damage)
 
 
+def _threat_tier(level):
+    return max(1, min(len(THREAT_TIERS), (int(level) - 1) // 5 + 1))
+
+
+def _title_layout(draw, name, max_width):
+    """Pick one huge line, or two balanced stacked lines for long names."""
+    for size in range(100, 75, -2):
+        font = _font(size, True, "Black")
+        if _text_width(draw, name, font) <= max_width:
+            return [name], font
+
+    words = name.split()
+    if len(words) > 1:
+        probe = _font(60, True, "Black")
+        split = min(
+            range(1, len(words)),
+            key=lambda i: max(
+                _text_width(draw, " ".join(words[:i]), probe),
+                _text_width(draw, " ".join(words[i:]), probe),
+            ),
+        )
+        lines = [" ".join(words[:split]), " ".join(words[split:])]
+        for size in range(92, 47, -2):
+            font = _font(size, True, "Black")
+            if all(_text_width(draw, line, font) <= max_width for line in lines):
+                return lines, font
+
+    text, font = _fit_text(draw, name, max_width, 76, 40, display=True, weight="Black")
+    return [text], font
+
+
+def _draw_title(img, draw, dragon):
+    x = BOSS_LEFT
+    name = _clean_name(dragon.get("name"), "Ice Dragon").upper()
+    lines, font = _title_layout(draw, name, BOSS_RIGHT - x)
+    line_height = font.size / SS * 0.98
+    center = 156
+    first = center - line_height * (len(lines) - 1) / 2
+    stops = ((0.0, (255, 255, 255)), (0.5, (196, 234, 255)), (1.0, (96, 166, 246)))
+    for index, line in enumerate(lines):
+        y = first + index * line_height
+        _glow_text(img, draw, (x, y), line, font, (0, 2, 8), 255, blur=10, anchor="lm", offset=(0, 7))
+        _glow_text(img, draw, (x, y), line, font, (40, 140, 255), 175, blur=20, anchor="lm")
+        draw.text(
+            (_s(x), _s(y)), line, font=font, fill=(8, 20, 46, 255), anchor="lm",
+            stroke_width=_s(1.6), stroke_fill=(8, 20, 46, 255),
+        )
+        _gradient_text(img, draw, (x, y), line, font, stops, anchor="lm")
+
+    stage_key = str(dragon.get("stage") or dragon.get("name") or "").strip().lower()
+    tagline = TAGLINES.get(stage_key, DEFAULT_TAGLINE)
+    _fade_line(img, x, 256, 40, ICE, 200, 1.4, "right")
+    tagline_text, tagline_font = _fit_text(draw, tagline, BOSS_RIGHT - x - 52, 18, 12, display=True, weight="Regular")
+    draw.text((_s(x + 52), _s(256)), tagline_text, font=tagline_font, fill=(176, 206, 236, 255), anchor="lm")
+
+
 def _draw_boss(img, draw, dragon):
     x, right = BOSS_LEFT, BOSS_RIGHT
 
-    _icon_diamond(draw, x + 5, 52, 6, fill=_rgba(ICE, 255))
-    kicker_width = _tracked(draw, (x + 20, 52), "ICE DRAGON CHALLENGE", _font(14), _rgba(ICE, 255), 3.6)
-    _fade_line(img, x + 34 + kicker_width, 52, 180, ICE, 140, 1.2, "left")
+    tag_font = _font(12)
+    tag_text = "WORLD BOSS"
+    tag_width = _tracked_width(draw, tag_text, tag_font, 3) + 30
+    slant = [(x + 8, 38), (x + tag_width + 8, 38), (x + tag_width, 62), (x, 62)]
+    _glow_points(img, _pts(slant), CRIMSON, _s(8), 150)
+    tag_fill = _gradient(_box(0, 0, tag_width + 8, 24)[2:], ((0.0, (255, 112, 132)), (1.0, (178, 28, 60))))
+    img.paste(tag_fill, (_s(x), _s(38)), _shape_mask(tag_fill.size, _pts(slant), (_s(x), _s(38))))
+    _tracked(draw, (x + 4 + tag_width / 2, 50), tag_text, tag_font, (255, 255, 255, 255), 3, anchor="mm")
+    kicker_width = _tracked(draw, (x + tag_width + 24, 50), "ICE DRAGON CHALLENGE", _font(14), _rgba(ICE, 255), 3.6)
+    _fade_line(img, x + tag_width + 38 + kicker_width, 50, 140, ICE, 140, 1.2, "left")
 
-    name = _clean_name(dragon.get("name"), "Ice Dragon").upper()
-    name, name_font = _fit_text(draw, name, right - x, 74, 36, display=True, weight="Black")
-    _glow_text(img, draw, (x, 112), name, name_font, (40, 140, 255), 170, blur=16, anchor="lm")
-    _gradient_text(img, draw, (x, 112), name, name_font, (255, 255, 255), (150, 214, 255), anchor="lm")
+    _draw_title(img, draw, dragon)
 
-    cy = 172
-    level_text = f"LV {int(_num(dragon.get('level', 1)))}"
+    cy = 298
+    level = int(_num(dragon.get("level", 1)))
+    level_text = f"LV {level}"
     level_font = _font(17)
     badge_width = _text_width(draw, level_text, level_font) + 38
-    hexagon = [
-        (_s(px), _s(py))
-        for px, py in (
-            (x, cy), (x + 12, cy - 15), (x + badge_width - 12, cy - 15),
-            (x + badge_width, cy), (x + badge_width - 12, cy + 15), (x + 12, cy + 15),
-        )
-    ]
-    _glow(
-        img, _box(x, cy - 15, x + badge_width, cy + 15), ICE, _s(8),
-        lambda d, ox, oy: d.polygon([(px - ox, py - oy) for px, py in hexagon], fill=170),
-    )
-    hex_fill = _gradient((_s(badge_width), _s(30)), ((0.0, (190, 242, 255)), (1.0, ICE_DEEP)))
-    hex_mask = Image.new("L", hex_fill.size, 0)
-    ImageDraw.Draw(hex_mask).polygon([(px - _s(x), py - _s(cy - 15)) for px, py in hexagon], fill=255)
-    img.paste(hex_fill, (_s(x), _s(cy - 15)), hex_mask)
+    hexagon = _pts((
+        (x, cy), (x + 12, cy - 15), (x + badge_width - 12, cy - 15),
+        (x + badge_width, cy), (x + badge_width - 12, cy + 15), (x + 12, cy + 15),
+    ))
+    _glow_points(img, hexagon, ICE, _s(8), 170)
+    hex_fill = _gradient((_s(badge_width), _s(30)), ((0.0, (200, 245, 255)), (1.0, ICE_DEEP)))
+    img.paste(hex_fill, (_s(x), _s(cy - 15)), _shape_mask(hex_fill.size, hexagon, (_s(x), _s(cy - 15))))
     draw.text((_s(x + badge_width / 2), _s(cy)), level_text, font=level_font, fill=_rgba(NIGHT, 255), anchor="mm")
 
     chip_font = _font(13)
@@ -631,53 +910,90 @@ def _draw_boss(img, draw, dragon):
             break
         cursor += _chip(draw, cursor, cy, passive, chip_font, VIOLET) + 10
 
-    hp = _num(dragon.get("hp", 0))
-    _icon_heart(draw, x + 8, 218, 8, _rgba(ICE, 255))
-    _tracked(draw, (x + 26, 218), "HEALTH", _font(13), _rgba(MUTED, 255), 3.2)
-    hp_text, hp_font = _fit_text(draw, _format_stat(hp), 300, 28, 18)
-    draw.text((_s(right), _s(228)), hp_text, font=hp_font, fill=_rgba(FROST, 255), anchor="rs")
-    _bar(
-        img, draw, (x, 238, right, 266), 1.0,
-        ((0.0, (98, 70, 230)), (0.5, (64, 170, 255)), (0.88, (150, 236, 255)), (1.0, (236, 252, 255))),
-        radius=7, glow_color=(70, 160, 255), ticks=10,
+    tier = _threat_tier(level)
+    ty = 342
+    label_width = _tracked(draw, (x, ty), "THREAT", _font(12), _rgba(MUTED, 255), 3.2)
+    px = x + label_width + 24
+    for index in range(len(THREAT_TIERS)):
+        cx = px + index * 26
+        if index < tier:
+            _glow(
+                img, _box(cx - 10, ty - 10, cx + 10, ty + 10), CRIMSON, _s(6),
+                lambda d, ox, oy, cx=cx: d.ellipse(
+                    (_s(cx - 8) - ox, _s(ty - 8) - oy, _s(cx + 8) - ox, _s(ty + 8) - oy), fill=150
+                ),
+            )
+            _icon_skull(draw, cx, ty, 10, _rgba((255, 196, 204), 255))
+        else:
+            _icon_skull(draw, cx, ty, 10, _rgba(DIM, 150))
+    _tracked(
+        draw, (px + len(THREAT_TIERS) * 26 + 6, ty), THREAT_TIERS[tier - 1],
+        _font(14), _rgba(CRIMSON, 255), 3.4,
     )
 
-    for box, key, label in (
-        (TILE_BOXES[0], "atk", "ATTACK"),
-        (TILE_BOXES[1], "def", "DEFENSE"),
+    _draw_boss_tiles(img, draw, dragon)
+    _draw_boss_bar(img, draw, dragon)
+
+
+def _tile_frame(img, draw, box):
+    points = _pts(_chamfer(box, 10))
+    _metal_stroke(img, points, ((0.0, (170, 220, 255)), (1.0, (40, 76, 128))), _s(1.2))
+
+
+def _draw_boss_tiles(img, draw, dragon):
+    for box, key, label, field in (
+        (TILE_BOXES[0], "atk", "ATTACK", "damage"),
+        (TILE_BOXES[1], "def", "DEFENSE", "armor"),
     ):
-        value = dragon.get("damage" if key == "atk" else "armor", 0)
-        left, top, tile_right, bottom = box
+        left, top, right, bottom = box
         mid = (top + bottom) / 2
-        draw.rounded_rectangle(_box(*box), radius=_s(14), outline=(150, 205, 255, 50), width=_s(1))
-        _icon_badge(draw, left + 34, mid, 19, STAT_ICONS[key], STAT_COLORS[key], 10)
-        _tracked(draw, (left + 64, top + 21), label, _font(11), _rgba(MUTED, 255), 2.6)
-        text, font = _fit_text(draw, _format_stat(value), tile_right - left - 80, 25, 15)
-        draw.text((_s(left + 64), _s(top + 46)), text, font=font, fill=_rgba(FROST, 255), anchor="lm")
+        _tile_frame(img, draw, box)
+        _icon_badge(draw, left + 36, mid, 20, STAT_ICONS[key], STAT_COLORS[key], 11)
+        _tracked(draw, (left + 68, top + 22), label, _font(11), _rgba(MUTED, 255), 2.8)
+        text, font = _fit_text(draw, _format_stat(dragon.get(field, 0)), right - left - 84, 27, 15)
+        draw.text((_s(left + 68), _s(top + 47)), text, font=font, fill=_rgba(FROST, 255), anchor="lm")
 
-    left, top, tile_right, bottom = TILE_BOXES[2]
+    left, top, right, bottom = TILE_BOXES[2]
     mid = (top + bottom) / 2
-    draw.rounded_rectangle(_box(*TILE_BOXES[2]), radius=_s(14), outline=(150, 205, 255, 50), width=_s(1))
-    _icon_badge(draw, left + 34, mid, 19, _icon_claw, VIOLET, 10)
-    _tracked(draw, (left + 64, top + 21), "SIGNATURE MOVE", _font(11), _rgba(MUTED, 255), 2.6)
+    _tile_frame(img, draw, TILE_BOXES[2])
+    _icon_badge(draw, left + 36, mid, 20, _icon_claw, VIOLET, 11)
+    _tracked(draw, (left + 68, top + 22), "SIGNATURE", _font(11), _rgba(MUTED, 255), 2.8)
     move_name, move_damage = _signature_move(dragon.get("moves"))
-    damage_width = 0
     if move_name:
-        damage_text = _format_stat(move_damage)
-        damage_font = _font(18)
-        damage_width = _text_width(draw, damage_text, damage_font)
-        draw.text(
-            (_s(tile_right - 16), _s(top + 46)), damage_text,
-            font=damage_font, fill=_rgba(VIOLET, 255), anchor="rm",
+        _tracked(
+            draw, (right - 16, top + 22), f"{_format_stat(move_damage)} DMG",
+            _font(11), _rgba(VIOLET, 255), 1.6, anchor="rm",
         )
-        _tracked(draw, (tile_right - 16, top + 21), "DMG", _font(10), _rgba(MUTED, 255), 2.4, anchor="rm")
     move_text, move_font = _fit_text(
-        draw,
-        _clean_name(move_name, "Unknown"),
-        tile_right - left - 64 - 16 - damage_width - 12,
-        19, 12, display=True, weight="Bold",
+        draw, _clean_name(move_name, "Unknown"), right - left - 68 - 16, 20, 12, display=True, weight="Bold"
     )
-    draw.text((_s(left + 64), _s(top + 46)), move_text, font=move_font, fill=_rgba(FROST, 255), anchor="lm")
+    draw.text((_s(left + 68), _s(top + 47)), move_text, font=move_font, fill=_rgba(FROST, 255), anchor="lm")
+
+
+def _draw_boss_bar(img, draw, dragon):
+    left, right = CARD_LEFT, CARD_RIGHT
+    hp = _num(dragon.get("hp", 0))
+
+    label_y = BAR_TOP - 20
+    _icon_heart(draw, left + 8, label_y, 8, _rgba(CRIMSON, 255))
+    _tracked(draw, (left + 26, label_y), "DRAGON HEALTH", _font(13), _rgba(MUTED, 255), 3.4)
+    hp_text, hp_font = _fit_text(draw, _format_stat(hp), 360, 24, 14)
+    draw.text((_s(right - 34), _s(label_y + 8)), hp_text, font=hp_font, fill=_rgba(FROST, 255), anchor="rs")
+    draw.text((_s(right), _s(label_y + 8)), "HP", font=_font(13), fill=_rgba(MUTED, 255), anchor="rs")
+    hp_width = _text_width(draw, hp_text, hp_font)
+    _tracked(draw, (right - 46 - hp_width, label_y), "100%", _font(12), _rgba(ICE, 255), 2.4, anchor="rm")
+
+    plate = _pts(_chamfer((left - 8, BAR_TOP - 7, right + 8, BAR_BOTTOM + 7), 10))
+    draw.polygon(plate, fill=(2, 7, 18, 235))
+    _metal_stroke(img, plate, ICE_METAL, _s(1.6))
+    _bar(
+        img, draw, (left, BAR_TOP, right, BAR_BOTTOM), 1.0,
+        ((0.0, (104, 64, 236)), (0.45, (58, 156, 255)), (0.85, (140, 232, 255)), (1.0, (240, 252, 255))),
+        radius=4, glow_color=(70, 160, 255), ticks=20, shimmer=True,
+    )
+    mid = (BAR_TOP + BAR_BOTTOM) / 2
+    for x in (left - 8, right + 8):
+        _gem(img, draw, x, mid, 15, ICE)
 
 
 def _party_totals(party):
@@ -694,7 +1010,10 @@ def _draw_party_header(img, draw, party):
     y = HEADER_Y
     title_font = _font(25, display=True, weight="Black")
     title = "THE HUNTING PARTY"
-    _gradient_text(img, draw, (CARD_LEFT, y), title, title_font, (255, 255, 255), (160, 214, 255), anchor="lm")
+    _gradient_text(
+        img, draw, (CARD_LEFT, y), title, title_font,
+        ((0.0, (255, 255, 255)), (1.0, (160, 214, 255))), anchor="lm",
+    )
     cursor = CARD_LEFT + _text_width(draw, title, title_font) + 24
 
     for index in range(4):
@@ -711,7 +1030,7 @@ def _draw_party_header(img, draw, party):
             _icon_diamond(draw, cx, y, 8, outline=_rgba(DIM, 255), width=1.2)
     cursor += 4 * 22 + 4
     ready_color = ICE if party else MUTED
-    _tracked(draw, (cursor, y), f"{len(party)}/4 READY", _font(13), _rgba(ready_color, 255), 2.6)
+    cursor += _tracked(draw, (cursor, y), f"{len(party)}/4 READY", _font(13), _rgba(ready_color, 255), 2.6)
 
     totals = _party_totals(party)
     value_font = _font(18)
@@ -722,9 +1041,31 @@ def _draw_party_header(img, draw, party):
         x -= _text_width(draw, text, value_font) + 10
         STAT_ICONS[key](draw, x - 7, y, 8, _rgba(STAT_COLORS[key], 255))
         x -= 14 + 24
-    _tracked(draw, (x + 8, y), "PARTY POWER", _font(11), _rgba(MUTED, 255), 2.8, anchor="rm")
+    x += 8
+    x -= _tracked(draw, (x, y), "PARTY POWER", _font(11), _rgba(MUTED, 255), 2.8, anchor="rm")
 
-    _fade_line(img, CARD_LEFT, y + 24, CARD_RIGHT - CARD_LEFT, ICE, 120, 1.2, "left")
+    medallion_x = WIDTH / 2
+    _fade_line(img, cursor + 20, y, medallion_x - 34 - cursor - 20, ICE, 170, 1.2, "right")
+    _fade_line(img, medallion_x + 34, y, x - 20 - medallion_x - 34, ICE, 170, 1.2, "left")
+    _draw_medallion(img, draw, medallion_x, y)
+
+
+def _draw_medallion(img, draw, cx, cy):
+    """Crossed swords between the boss and the party."""
+    radius = 27
+    _glow(
+        img, _box(cx - radius, cy - radius, cx + radius, cy + radius), ICE, _s(12),
+        lambda d, ox, oy: d.ellipse(
+            (_s(cx - radius) - ox, _s(cy - radius) - oy, _s(cx + radius) - ox, _s(cy + radius) - oy), fill=170
+        ),
+    )
+    diamond = _poly(cx, cy, radius + 8, ((0, -1), (1, 0), (0, 1), (-1, 0)))
+    draw.polygon(diamond, fill=(4, 10, 24, 255))
+    _metal_stroke(img, diamond, ICE_METAL, _s(1.8))
+    inner = _poly(cx, cy, radius + 2, ((0, -1), (1, 0), (0, 1), (-1, 0)))
+    draw.line(inner + [inner[0]], fill=(127, 227, 255, 70), width=_s(1))
+    _icon_sword(draw, cx, cy, 19, _rgba(FROST, 255), angle=45)
+    _icon_sword(draw, cx, cy, 19, _rgba(ICE, 255), angle=-45)
 
 
 def _decode_avatar(data, diameter):
@@ -739,26 +1080,29 @@ def _decode_avatar(data, diameter):
 
 
 def _monogram(name, diameter, accent):
-    shade = ImageOps.invert(Image.radial_gradient("L")).resize((diameter, diameter), Image.BILINEAR)
-    avatar = ImageOps.colorize(ImageOps.invert(shade), black=accent, white=(10, 24, 52), mid=ICE_DEEP)
+    shade = Image.radial_gradient("L").resize((diameter, diameter), Image.BILINEAR)
+    avatar = ImageOps.colorize(shade, black=accent, white=(10, 24, 52), mid=ICE_DEEP)
     letter = next((ch for ch in name if ch.isalnum()), "?").upper()
     font = _font(diameter / SS * 0.5, display=True, weight="Black")
     draw = ImageDraw.Draw(avatar)
-    center = (diameter / 2, diameter / 2 + diameter * 0.02)
-    draw.text(center, letter, font=font, fill=(4, 12, 28), anchor="mm")
+    draw.text((diameter / 2, diameter / 2 + diameter * 0.02), letter, font=font, fill=(4, 12, 28), anchor="mm")
     return avatar.convert("RGBA")
 
 
 def _draw_avatar(img, draw, cx, cy, radius, name, data, accent, leader):
     ring = radius + 5
     _glow(
-        img, _box(cx - ring, cy - ring, cx + ring, cy + ring), accent, _s(8),
+        img, _box(cx - ring, cy - ring, cx + ring, cy + ring), accent, _s(9),
         lambda d, ox, oy: d.ellipse(
             (_s(cx - ring) - ox, _s(cy - ring) - oy, _s(cx + ring) - ox, _s(cy + ring) - oy),
-            outline=210, width=_s(4),
+            outline=220, width=_s(4),
         ),
     )
-    draw.ellipse(_box(cx - ring, cy - ring, cx + ring, cy + ring), outline=_rgba(accent, 240), width=_s(2.2))
+    ring_box = _box(cx - ring, cy - ring, cx + ring, cy + ring)
+    ring_mask = Image.new("L", (ring_box[2] - ring_box[0] + 1, ring_box[3] - ring_box[1] + 1), 0)
+    ImageDraw.Draw(ring_mask).ellipse((0, 0, ring_mask.width - 1, ring_mask.height - 1), outline=255, width=_s(2.6))
+    metal = GOLD_METAL if leader else ICE_METAL
+    img.paste(_gradient(ring_mask.size, metal, axis="y"), ring_box[:2], ring_mask)
     draw.ellipse(_box(cx - radius - 1, cy - radius - 1, cx + radius + 1, cy + radius + 1), fill=_rgba(NIGHT, 255))
 
     diameter = _s(radius * 2)
@@ -767,183 +1111,157 @@ def _draw_avatar(img, draw, cx, cy, radius, name, data, accent, leader):
     ImageDraw.Draw(mask).ellipse((0, 0, diameter - 1, diameter - 1), fill=255)
     mask = ImageChops.multiply(mask, avatar.getchannel("A"))
     img.paste(avatar.convert("RGB"), (_s(cx - radius), _s(cy - radius)), mask)
+    inner_shade = _ramp_mask((diameter, diameter), "y", ((0.55, 0), (1.0, 90)))
+    img.paste(Image.new("RGB", (diameter, diameter), (2, 6, 16)), (_s(cx - radius), _s(cy - radius)), ImageChops.multiply(inner_shade, mask))
 
     if leader:
         top = cy - ring
-        draw.ellipse(_box(cx - 13, top - 13, cx + 13, top + 13), fill=_rgba(NIGHT, 255), outline=_rgba(GOLD, 255), width=_s(1.5))
-        _icon_crown(draw, cx, top, 8, _rgba(GOLD, 255))
+        draw.ellipse(_box(cx - 12, top - 12, cx + 12, top + 12), fill=_rgba(NIGHT, 255), outline=_rgba(GOLD, 255), width=_s(1.5))
+        _icon_crown(draw, cx, top, 7.5, _rgba(GOLD, 255))
 
 
-def _card_frame(img, draw, box, accent, strength):
+def _card_frame(img, draw, box, accent, leader):
     left, top, right, bottom = box
-    corner = _s(18)
-    scaled = _box(*box)
-    _glow(
-        img, scaled, accent, _s(9),
-        lambda d, ox, oy: d.rounded_rectangle(
-            (scaled[0] - ox, scaled[1] - oy, scaled[2] - ox, scaled[3] - oy),
-            radius=corner, outline=strength, width=_s(2),
-        ),
-    )
-    draw.rounded_rectangle(scaled, radius=corner, outline=_rgba(accent, 170), width=_s(1.4))
-    _fade_line(img, left + 30, top + 1, right - left - 60, FROST, 230, 2.0)
+    outline = _pts(_chamfer(box, CARD_CUT))
+    _glow_points(img, outline, accent, _s(10), 150 if leader else 110, width=_s(3))
+    _metal_stroke(img, outline, GOLD_METAL if leader else ICE_METAL, _s(1.8))
+    inner = _pts(_chamfer((left + 6, top + 6, right - 6, bottom - 6), CARD_CUT - 3))
+    draw.line(inner + [inner[0]], fill=_rgba(accent, 40), width=_s(1), joint="curve")
+    _fade_line(img, left + 40, top + 1, right - left - 80, FROST, 220, 1.6)
+    _gem(img, draw, (left + right) / 2, top, 9, accent)
 
 
 def _draw_hunter(img, draw, box, player, index, maxima):
     left, top, right, bottom = box
     leader = bool(player.get("leader"))
     accent = GOLD if leader else ICE
-    _card_frame(img, draw, box, accent, 120 if leader else 90)
+    _card_frame(img, draw, box, accent, leader)
 
-    _tracked(draw, (left + 20, top + 26), f"HUNTER {ROMAN[index]}", _font(11), _rgba(MUTED, 255), 3)
+    _tracked(draw, (left + 22, top + 24), f"HUNTER {ROMAN[index]}", _font(11), _rgba(MUTED, 255), 3)
     if leader:
         pill_font = _font(11)
-        pill_width = _text_width(draw, "LEADER", pill_font) + 3 * 5 + 40
+        pill_width = _tracked_width(draw, "LEADER", pill_font, 3) + 40
         draw.rounded_rectangle(
-            _box(right - 18 - pill_width, top + 14, right - 18, top + 38),
-            radius=_s(12), fill=_rgba(GOLD, 34), outline=_rgba(GOLD, 190), width=_s(1),
+            _box(right - 20 - pill_width, top + 13, right - 20, top + 35),
+            radius=_s(11), fill=_rgba(GOLD, 34), outline=_rgba(GOLD, 190), width=_s(1),
         )
-        _icon_crown(draw, right - pill_width - 2, top + 26, 6, _rgba(GOLD, 255))
-        _tracked(draw, (right - 30, top + 26), "LEADER", pill_font, _rgba(GOLD, 255), 3, anchor="rm")
+        _icon_crown(draw, right - pill_width - 4, top + 24, 6, _rgba(GOLD, 255))
+        _tracked(draw, (right - 32, top + 24), "LEADER", pill_font, _rgba(GOLD, 255), 3, anchor="rm")
 
     name = _clean_name(player.get("name"), "Unknown Hunter")
-    _draw_avatar(img, draw, left + 62, top + 98, 38, name, player.get("avatar"), accent, leader)
+    _draw_avatar(img, draw, left + 58, top + 84, 34, name, player.get("avatar"), accent, leader)
 
-    text_left = left + 122
-    name_text, name_font = _fit_text(draw, name, right - text_left - 18, 26, 14, display=True, weight="Bold")
-    draw.text((_s(text_left), _s(top + 86)), name_text, font=name_font, fill=_rgba(FROST, 255), anchor="lm")
+    text_left = left + 108
+    name_text, name_font = _fit_text(draw, name, right - text_left - 18, 25, 13, display=True, weight="Bold")
+    _glow_text(img, draw, (text_left, top + 72), name_text, name_font, accent, 70, blur=8, anchor="lm")
+    draw.text((_s(text_left), _s(top + 72)), name_text, font=name_font, fill=_rgba(FROST, 255), anchor="lm")
 
     level_text = f"LV {int(_num(player.get('level', 1)))}"
     level_font = _font(12)
     pill_width = _text_width(draw, level_text, level_font) + 18
+    pill_y = top + 103
     draw.rounded_rectangle(
-        _box(text_left, top + 106, text_left + pill_width, top + 128),
+        _box(text_left, pill_y - 11, text_left + pill_width, pill_y + 11),
         radius=_s(11), fill=_rgba(accent, 40), outline=_rgba(accent, 170), width=_s(1),
     )
-    draw.text((_s(text_left + pill_width / 2), _s(top + 117)), level_text, font=level_font, fill=_rgba(accent, 255), anchor="mm")
+    draw.text((_s(text_left + pill_width / 2), _s(pill_y)), level_text, font=level_font, fill=_rgba(accent, 255), anchor="mm")
     class_text, class_font = _fit_text(
         draw, _clean_name(player.get("class"), "Adventurer"), right - text_left - pill_width - 28, 14, 10
     )
-    draw.text((_s(text_left + pill_width + 10), _s(top + 117)), class_text, font=class_font, fill=_rgba(MUTED, 255), anchor="lm")
+    draw.text((_s(text_left + pill_width + 10), _s(pill_y)), class_text, font=class_font, fill=_rgba(MUTED, 255), anchor="lm")
 
-    _fade_line(img, left + 20, top + 158, right - left - 40, ICE, 90, 1.0)
+    _fade_line(img, left + 20, top + 134, right - left - 40, ICE, 90, 1.0)
 
-    for row, (key, label, field) in enumerate((("atk", "ATK", "attack"), ("def", "DEF", "defense"), ("hp", "HP", "hp"))):
-        ry = top + 180 + row * 42
+    column_width = (right - left - 40) / 3
+    for column, (key, field) in enumerate((("atk", "attack"), ("def", "defense"), ("hp", "hp"))):
+        cx = left + 20 + column * column_width
+        cy = top + 156
         color = STAT_COLORS[key]
         value = _num(player.get(field))
-        STAT_ICONS[key](draw, left + 29, ry, 8, _rgba(color, 255))
-        _tracked(draw, (left + 46, ry), label, _font(12), _rgba(MUTED, 255), 2.6)
-        text, font = _fit_text(draw, _format_stat(value), 170, 21, 13)
-        draw.text((_s(right - 20), _s(ry)), text, font=font, fill=_rgba(FROST, 255), anchor="rm")
+        STAT_ICONS[key](draw, cx + 8, cy, 8, _rgba(color, 255))
+        text, font = _fit_text(draw, _format_stat(value), column_width - 34, 19, 11)
+        draw.text((_s(cx + 22), _s(cy)), text, font=font, fill=_rgba(FROST, 255), anchor="lm")
         _bar(
-            img, draw, (left + 20, ry + 15, right - 20, ry + 20),
+            img, draw, (cx, cy + 15, cx + column_width - 12, cy + 19),
             value / maxima[key] if maxima[key] else 0,
-            ((0.0, tuple(int(c * 0.55) for c in color)), (1.0, color)),
-            radius=2.5,
+            ((0.0, tuple(int(c * 0.5) for c in color)), (1.0, color)),
+            radius=2,
         )
 
-    _draw_pet_panel(img, draw, (left + 14, top + 304, right - 14, bottom - 14), player.get("pet"))
+    _draw_pet_panel(img, draw, (left + 14, top + 192, right - 14, bottom - 14), player.get("pet"))
 
 
 def _draw_pet_panel(img, draw, box, pet):
     left, top, right, bottom = box
-    draw.rounded_rectangle(
-        _box(*box), radius=_s(14), fill=(2, 7, 18, 150), outline=(170, 160, 255, 46), width=_s(1)
-    )
+    outline = _pts(_chamfer(box, 10))
+    draw.polygon(outline, fill=(2, 7, 18, 160))
+    draw.line(outline + [outline[0]], fill=(170, 160, 255, 54), width=_s(1), joint="curve")
     if not pet:
         cx, cy = (left + right) / 2, (top + bottom) / 2
-        _icon_paw(draw, cx, cy - 14, 14, _rgba(DIM, 160))
-        _tracked(draw, (cx, cy + 22), "NO COMPANION", _font(12), _rgba(DIM, 255), 3, anchor="mm")
+        _icon_paw(draw, cx, cy - 13, 13, _rgba(DIM, 160))
+        _tracked(draw, (cx, cy + 20), "NO COMPANION", _font(12), _rgba(DIM, 255), 3, anchor="mm")
         return
 
-    _icon_badge(draw, left + 32, top + 34, 19, _icon_paw, VIOLET, 10)
-    _tracked(draw, (left + 62, top + 22), "COMPANION", _font(10), _rgba(MUTED, 255), 2.8)
+    _icon_badge(draw, left + 30, top + 31, 18, _icon_paw, VIOLET, 9.5)
+    _tracked(draw, (left + 58, top + 20), "COMPANION", _font(10), _rgba(MUTED, 255), 2.8)
 
     level_text = f"LV {int(_num(pet.get('level', 1)))}"
     level_font = _font(11)
     pill_width = _text_width(draw, level_text, level_font) + 16
     draw.rounded_rectangle(
-        _box(right - 14 - pill_width, top + 12, right - 14, top + 32),
+        _box(right - 14 - pill_width, top + 11, right - 14, top + 31),
         radius=_s(10), fill=_rgba(VIOLET, 36), outline=_rgba(VIOLET, 170), width=_s(1),
     )
-    draw.text((_s(right - 14 - pill_width / 2), _s(top + 22)), level_text, font=level_font, fill=_rgba(VIOLET, 255), anchor="mm")
+    draw.text((_s(right - 14 - pill_width / 2), _s(top + 21)), level_text, font=level_font, fill=_rgba(VIOLET, 255), anchor="mm")
 
     pet_name, pet_font = _fit_text(
-        draw, _clean_name(pet.get("name"), "Unknown"), right - left - 62 - 14, 18, 11, display=True, weight="Bold"
+        draw, _clean_name(pet.get("name"), "Unknown"), right - left - 58 - 14, 18, 11, display=True, weight="Bold"
     )
-    draw.text((_s(left + 62), _s(top + 46)), pet_name, font=pet_font, fill=_rgba(FROST, 255), anchor="lm")
+    draw.text((_s(left + 58), _s(top + 42)), pet_name, font=pet_font, fill=_rgba(FROST, 255), anchor="lm")
 
     column_width = (right - left - 24) / 3
     for column, (key, field) in enumerate((("atk", "attack"), ("def", "defense"), ("hp", "hp"))):
         cx = left + 12 + column * column_width
-        cy = bottom - 26
+        cy = bottom - 22
         STAT_ICONS[key](draw, cx + 10, cy, 7, _rgba(STAT_COLORS[key], 255))
         text, font = _fit_text(draw, _format_stat(_num(pet.get(field))), column_width - 28, 16, 10)
         draw.text((_s(cx + 22), _s(cy)), text, font=font, fill=_rgba(FROST, 255), anchor="lm")
         if column:
-            draw.line(_box(cx - 2, cy - 12, cx - 2, cy + 12), fill=(150, 190, 240, 40), width=_s(1))
-
-
-def _dashed_rounded_rect(draw, box, radius, color, dash=10, gap=8, width=1.4):
-    left, top, right, bottom = box
-    line_width = max(1, _s(width))
-    for x0, y0, x1, y1 in (
-        (left + radius, top, right - radius, top),
-        (left + radius, bottom, right - radius, bottom),
-        (left, top + radius, left, bottom - radius),
-        (right, top + radius, right, bottom - radius),
-    ):
-        length = math.hypot(x1 - x0, y1 - y0)
-        position = 0.0
-        while position < length:
-            end = min(length, position + dash)
-            a, b = position / length, end / length
-            draw.line(
-                _box(x0 + (x1 - x0) * a, y0 + (y1 - y0) * a, x0 + (x1 - x0) * b, y0 + (y1 - y0) * b),
-                fill=color, width=line_width,
-            )
-            position += dash + gap
-    for (cx, cy), start in (
-        ((left + radius, top + radius), 180),
-        ((right - radius, top + radius), 270),
-        ((right - radius, bottom - radius), 0),
-        ((left + radius, bottom - radius), 90),
-    ):
-        draw.arc(_box(cx - radius, cy - radius, cx + radius, cy + radius), start, start + 90, fill=color, width=line_width)
+            draw.line(_box(cx - 2, cy - 11, cx - 2, cy + 11), fill=(150, 190, 240, 40), width=_s(1))
 
 
 def _draw_open_slot(img, draw, box, index):
     left, top, right, bottom = box
     cx = (left + right) / 2
-    _dashed_rounded_rect(draw, box, 18, (120, 160, 210, 110))
-    _tracked(draw, (left + 20, top + 26), f"HUNTER {ROMAN[index]}", _font(11), _rgba(DIM, 255), 3)
+    _dashed_path(draw, _chamfer(box, CARD_CUT), (120, 160, 210, 120), 10, 8, 1.4)
+    _icon_diamond(draw, cx, top, 7, fill=_rgba((6, 14, 30), 255), outline=_rgba(DIM, 255), width=1.2)
+    _tracked(draw, (left + 22, top + 24), f"HUNTER {ROMAN[index]}", _font(11), _rgba(DIM, 255), 3)
 
-    cy = top + 150
+    cy = top + 86
     for k in range(18):
         start = k * 20
-        draw.arc(_box(cx - 46, cy - 46, cx + 46, cy + 46), start, start + 11, fill=(127, 227, 255, 120), width=_s(1.6))
+        draw.arc(_box(cx - 38, cy - 38, cx + 38, cy + 38), start, start + 11, fill=(127, 227, 255, 120), width=_s(1.6))
     _glow(
-        img, _box(cx - 20, cy - 20, cx + 20, cy + 20), ICE, _s(6),
-        lambda d, ox, oy: d.ellipse((_s(cx - 16) - ox, _s(cy - 16) - oy, _s(cx + 16) - ox, _s(cy + 16) - oy), fill=90),
+        img, _box(cx - 18, cy - 18, cx + 18, cy + 18), ICE, _s(6),
+        lambda d, ox, oy: d.ellipse((_s(cx - 14) - ox, _s(cy - 14) - oy, _s(cx + 14) - ox, _s(cy + 14) - oy), fill=90),
     )
-    draw.rounded_rectangle(_box(cx - 15, cy - 2.5, cx + 15, cy + 2.5), radius=_s(2.5), fill=_rgba(ICE, 220))
-    draw.rounded_rectangle(_box(cx - 2.5, cy - 15, cx + 2.5, cy + 15), radius=_s(2.5), fill=_rgba(ICE, 220))
+    draw.rounded_rectangle(_box(cx - 13, cy - 2.2, cx + 13, cy + 2.2), radius=_s(2.2), fill=_rgba(ICE, 220))
+    draw.rounded_rectangle(_box(cx - 2.2, cy - 13, cx + 2.2, cy + 13), radius=_s(2.2), fill=_rgba(ICE, 220))
 
     draw.text(
-        (_s(cx), _s(top + 236)), "OPEN SLOT",
-        font=_font(24, display=True, weight="Black"), fill=(196, 214, 236, 255), anchor="mm",
+        (_s(cx), _s(top + 148)), "OPEN SLOT",
+        font=_font(23, display=True, weight="Black"), fill=(196, 214, 236, 255), anchor="mm",
     )
     draw.text(
-        (_s(cx), _s(top + 268)), "Press Join to claim this spot",
+        (_s(cx), _s(top + 174)), "Press Join to answer the call",
         font=_font(14, weight="Regular"), fill=_rgba(MUTED, 255), anchor="mm",
     )
 
-    pet_box = (left + 14, top + 304, right - 14, bottom - 14)
-    _dashed_rounded_rect(draw, pet_box, 14, (150, 140, 230, 70), dash=6, gap=6, width=1.1)
+    pet_box = (left + 14, top + 192, right - 14, bottom - 14)
+    _dashed_path(draw, _chamfer(pet_box, 10), (150, 140, 230, 80), 6, 6, 1.1)
     pcx, pcy = (pet_box[0] + pet_box[2]) / 2, (pet_box[1] + pet_box[3]) / 2
-    _icon_paw(draw, pcx, pcy - 14, 13, _rgba(DIM, 120))
-    _tracked(draw, (pcx, pcy + 22), "COMPANION SLOT", _font(11), _rgba(DIM, 255), 3, anchor="mm")
+    _icon_paw(draw, pcx, pcy - 13, 12, _rgba(DIM, 120))
+    _tracked(draw, (pcx, pcy + 20), "COMPANION SLOT", _font(11), _rgba(DIM, 255), 3, anchor="mm")
 
 
 # ---------------------------------------------------------------------------
@@ -970,8 +1288,8 @@ def render_dragon_party_card(dragon, party_members):
         else:
             _draw_open_slot(image, draw, box, index)
 
-    image = image.resize((WIDTH, HEIGHT), Image.LANCZOS)
+    image = image.resize(OUTPUT_SIZE, Image.LANCZOS)
     output = BytesIO()
-    image.save(output, format="JPEG", quality=92, subsampling=0)
+    image.save(output, format="JPEG", quality=93, subsampling=0)
     output.seek(0)
     return output
