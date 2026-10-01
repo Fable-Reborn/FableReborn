@@ -31,6 +31,7 @@ class PvPBattle(Battle):
                 "allow_pets": settings_cog.get_setting("pvp", "allow_pets", default=True),
                 "class_buffs": settings_cog.get_setting("pvp", "class_buffs", default=True),
                 "element_effects": settings_cog.get_setting("pvp", "element_effects", default=True),
+                "element_procs": settings_cog.get_setting("pvp", "element_procs", default=True),
                 "luck_effects": settings_cog.get_setting("pvp", "luck_effects", default=True),
                 "reflection_damage": settings_cog.get_setting("pvp", "reflection_damage", default=True),
                 "hp_bar_style": normalized_hp_bar_style,

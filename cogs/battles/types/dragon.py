@@ -659,6 +659,12 @@ class DragonBattle(Battle):
                 if self._move_cooldowns[effect_key] <= 0:
                     del self._move_cooldowns[effect_key]
 
+        # Element proc states on the dragon: Dread weakens this attack, Hex strips its element.
+        dread_scale, dread_messages, _ = self.element_procs.consume_attacker_states(dragon, Decimal("1"))
+        move_element = self.element_procs.hexed_attack_element(dragon, self.dragon_element or "Water")
+        if dread_messages:
+            await self.add_to_log("\n".join(dread_messages))
+
         # Get dragon stage and available moves
         available_moves = self.dragon_moves or {}
 
@@ -744,7 +750,7 @@ class DragonBattle(Battle):
                 return
             target = random.choice(alive_allies)
             base_damage = 300 * (1 + (0.1 * (self.dragon_level - 1)))
-            base_damage = Decimal(str(base_damage))
+            base_damage = Decimal(str(base_damage)) * dread_scale
             target_armor = target.armor if isinstance(target.armor, Decimal) else Decimal(str(target.armor))
             damage = max(base_damage - target_armor, Decimal("10"))
             spec_defense_messages = []
@@ -755,6 +761,10 @@ class DragonBattle(Battle):
                     damage,
                     self.get_team_for_combatant(target),
                 )
+            dodge_message = self.element_procs.consume_dodge(target)
+            if dodge_message:
+                damage = Decimal("0")
+                spec_defense_messages = [*spec_defense_messages, dodge_message]
             self.apply_damage(dragon, target, damage)
             pending_class_messages = self.consume_pending_class_messages(target)
             element_key = str(self.dragon_element or "Unknown").capitalize()
@@ -881,7 +891,7 @@ class DragonBattle(Battle):
             return
             
         # Apply the move to targets
-        base_damage = move_info["dmg"] * (1 + (0.1 * (self.dragon_level - 1)))
+        base_damage = move_info["dmg"] * (1 + (0.1 * (self.dragon_level - 1))) * float(dread_scale)
         effect = move_info["effect"]
         effect_chance = move_info.get("chance", 0) or 0
         effect_chance = _normalize_chance(effect_chance)
@@ -893,7 +903,7 @@ class DragonBattle(Battle):
             element_modifier = 1.0
             element_message = ""
             if self.config.get("element_effects", True) and hasattr(self.ctx.bot.cogs["Battles"], "element_ext"):
-                dragon_element = self.dragon_element or "Water"
+                dragon_element = move_element
                 target_element = self.resolve_defense_element(target)
                 
                 if target_element:
@@ -996,6 +1006,11 @@ class DragonBattle(Battle):
                     self.get_team_for_combatant(target),
                 )
             
+            dodge_message = self.element_procs.consume_dodge(target) if damage > 0 else None
+            if dodge_message:
+                damage = Decimal("0")
+                defender_messages.append(dodge_message)
+
             # Track damage taken for reflection calculations
             if hasattr(target, 'damage_taken_this_turn'):
                 target.damage_taken_this_turn = damage
@@ -1289,18 +1304,28 @@ class DragonBattle(Battle):
             bypass_defenses = getattr(target, 'bypass_defenses', False) if is_dragon_target else False
             ignore_all = getattr(target, 'ignore_all_defenses', False) if is_dragon_target else False
 
+            target_armor = self.element_procs.effective_armor(target)
             if ignore_all or true_damage or ignore_armor or bypass_defenses:
                 final_damage = damage  # No armor reduction
                 blocked_damage = Decimal('0')
             else:
-                blocked_damage = min(damage, target.armor)
-                final_damage = max(damage - target.armor, Decimal('10'))
+                blocked_damage = min(damage, target_armor)
+                final_damage = max(damage - target_armor, Decimal('10'))
 
             # Clear special damage flags for non-pet path.
             if is_dragon_target:
                 for flag in ['ignore_armor_this_hit', 'true_damage', 'bypass_defenses', 'ignore_all_defenses', 'partial_true_damage']:
                     if hasattr(target, flag):
                         delattr(target, flag)
+
+            final_damage, proc_messages, _ = self.apply_element_proc_hit(
+                player,
+                target,
+                Decimal(str(damage)),
+                Decimal(str(final_damage)),
+                defense_element=(self.dragon_element or "Water") if is_dragon_target else None,
+            )
+            skill_messages.extend(proc_messages)
         
         # Apply damage reduction from passive effects AFTER standard damage calculation
         damage_reduction = Decimal('0.0')

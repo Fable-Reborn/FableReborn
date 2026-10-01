@@ -32,6 +32,7 @@ import discord
 from discord.ext import commands
 
 from .ascension import AscensionCombat
+from ..extensions.element_procs import ElementProcExtension
 from classes.warrior import (
     WARRIOR_MOMENTUM_CAP,
     WARRIOR_SPLASH_RATIO,
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 class Battle(AscensionCombat, ABC):
     """Base class for all battle types"""
+    element_procs = ElementProcExtension()
     HP_BAR_STYLE_NORMAL = "normal"
     HP_BAR_STYLE_COLORFUL = "colorful"
     HP_BAR_STYLE_TEAM = "team"
@@ -141,6 +143,7 @@ class Battle(AscensionCombat, ABC):
             "allow_pets": kwargs.get("allow_pets", True),
             "class_buffs": kwargs.get("class_buffs", True),
             "element_effects": kwargs.get("element_effects", True),
+            "element_procs": kwargs.get("element_procs", True),
             "luck_effects": kwargs.get("luck_effects", True),
             "reflection_damage": kwargs.get("reflection_damage", True),
             "hp_bar_style": hp_bar_style,
@@ -680,8 +683,54 @@ class Battle(AscensionCombat, ABC):
         if not attacker:
             return "Unknown"
         if hasattr(attacker, "get_attack_element_for_turn"):
-            return attacker.get_attack_element_for_turn() or "Unknown"
-        return getattr(attacker, "attack_element", getattr(attacker, "element", "Unknown")) or "Unknown"
+            element = attacker.get_attack_element_for_turn() or "Unknown"
+        else:
+            element = getattr(attacker, "attack_element", getattr(attacker, "element", "Unknown")) or "Unknown"
+        element = self.element_procs.hexed_attack_element(attacker, element)
+        # Remembered for element procs on paths that apply the element mod themselves.
+        try:
+            setattr(attacker, "element_proc_last_attack", element)
+        except AttributeError:
+            pass
+        return element
+
+    def pop_last_attack_element(self, attacker):
+        element = getattr(attacker, "element_proc_last_attack", None)
+        if element is not None:
+            try:
+                delattr(attacker, "element_proc_last_attack")
+            except AttributeError:
+                pass
+        return element
+
+    def apply_element_proc_hit(
+        self,
+        attacker,
+        defender,
+        raw_damage,
+        final_damage,
+        *,
+        attack_element=None,
+        defense_element=None,
+    ):
+        """Element proc step for attack paths outside resolve_pet_attack_outcome.
+
+        Returns ``(final_damage, messages, dodged)``.
+        """
+        stashed = self.pop_last_attack_element(attacker)
+        if attack_element is None:
+            attack_element = stashed
+        if defense_element is None:
+            defense_element = self.resolve_defense_element(defender)
+        return self.element_procs.resolve_hit(
+            self,
+            attacker,
+            defender,
+            raw_damage,
+            final_damage,
+            attack_element,
+            defense_element,
+        )
 
     def resolve_defense_element(self, defender):
         """Resolve incoming element used for defense checks."""
@@ -2157,11 +2206,31 @@ class Battle(AscensionCombat, ABC):
         pet_ext = self._get_pet_extension()
         element_ext = self._get_element_extension()
 
+        # 0) Element proc states on the attacker (Eclipse fallback, Dread).
+        raw_damage, proc_state_messages, eclipsed = self.element_procs.consume_attacker_states(
+            attacker, raw_damage
+        )
+        skill_messages.extend(proc_state_messages)
+        if eclipsed:
+            self.pop_last_attack_element(attacker)
+            return PetAttackOutcome(
+                final_damage=Decimal("0"),
+                blocked_damage=Decimal("0"),
+                skill_messages=skill_messages,
+                defender_messages=defender_messages,
+                metadata={
+                    "raw_damage_after_mods": Decimal("0"),
+                    "ignore_reflection_this_hit": True,
+                    "partial_true_damage": Decimal("0"),
+                },
+            )
+
         # 1) Element modifier on base damage (mode-configurable).
         if apply_element_mod and self.config.get("element_effects", True) and element_ext:
+            self.resolve_attack_element(attacker)
             element_mod = element_ext.calculate_damage_modifier(
                 self.ctx,
-                self.resolve_attack_element(attacker),
+                getattr(attacker, "element_proc_last_attack", "Unknown"),
                 self.resolve_defense_element(defender),
             )
             # Void affinity protection is a pet-only defensive mechanic.
@@ -2197,6 +2266,7 @@ class Battle(AscensionCombat, ABC):
             defender_messages.extend(barrier_messages)
 
         # 5) Apply armor/defense bypass rules to the barrier overflow.
+        defender_armor = self.element_procs.effective_armor(defender)
         ignore_armor = getattr(defender, "ignore_armor_this_hit", False)
         true_damage = getattr(defender, "true_damage", False)
         bypass_defenses = getattr(defender, "bypass_defenses", False)
@@ -2210,12 +2280,12 @@ class Battle(AscensionCombat, ABC):
             final_damage = raw_damage
             blocked_damage = Decimal("0")
         elif partial_true_damage > 0:
-            normal_after_armor = max(raw_damage - defender.armor, minimum_damage)
+            normal_after_armor = max(raw_damage - defender_armor, minimum_damage)
             final_damage = normal_after_armor + partial_true_damage
-            blocked_damage = min(raw_damage, defender.armor)
+            blocked_damage = min(raw_damage, defender_armor)
         else:
-            blocked_damage = min(raw_damage, defender.armor)
-            final_damage = max(raw_damage - defender.armor, minimum_damage)
+            blocked_damage = min(raw_damage, defender_armor)
+            final_damage = max(raw_damage - defender_armor, minimum_damage)
 
         # 6) Clear one-hit flags in one place.
         for flag in [
@@ -2227,6 +2297,18 @@ class Battle(AscensionCombat, ABC):
         ]:
             if hasattr(defender, flag):
                 delattr(defender, flag)
+
+        # 6b) Element procs: defender states (dodge, burn) then the attacker's proc roll.
+        final_damage, proc_messages, dodged = self.apply_element_proc_hit(
+            attacker,
+            defender,
+            raw_damage_after_mods,
+            final_damage,
+        )
+        skill_messages.extend(proc_messages)
+        if dodged:
+            blocked_damage = Decimal("0")
+            ignore_reflection_this_hit = True
 
         # 7) Defender pet mitigation effects.
         if pet_ext and getattr(defender, "is_pet", False):
@@ -2302,6 +2384,10 @@ class Battle(AscensionCombat, ABC):
     def consume_pet_skill_action_lock(self, combatant):
         if combatant is None:
             return None
+
+        eclipse_message = self.element_procs.action_lock_message(combatant)
+        if eclipse_message:
+            return eclipse_message
 
         for status_name, message in (
             ("stunned", "is stunned and cannot act!"),

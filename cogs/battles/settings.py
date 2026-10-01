@@ -19,6 +19,7 @@ class BattleSettings(commands.Cog):
                 "allow_pets": True,
                 "class_buffs": True,
                 "element_effects": True,
+                "element_procs": True,  # opt-in element procs test; players still have to opt in
                 "luck_effects": True,
                 "reflection_damage": True,
                 "fireball_chance": 0.3,

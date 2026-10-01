@@ -23,6 +23,14 @@ from discord.ui import View, Button, Select, select
 from discord.enums import ButtonStyle
 
 from .factory import BattleFactory
+from .extensions.element_procs import (
+    MYTHIC_MIN_STARS,
+    POWER_WORD_MIN_STARS,
+    PROC_DESCRIPTIONS,
+    PROC_EMOJI,
+    PROC_NAMES,
+    ElementProcExtension,
+)
 from .jury_tower_data import (
     build_jury_tower_data,
     JURY_BRACKET_BASE_SNAPSHOT,
@@ -2003,6 +2011,7 @@ class Battles(commands.Cog):
                 """
             )
             await ensure_omnithrone_schema(conn)
+            await ElementProcExtension.ensure_table(conn)
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS pve_preferences (
@@ -11583,6 +11592,102 @@ class Battles(commands.Cog):
             import traceback
             error_message = f"An unexpected error occurred: {e}\n{traceback.format_exc()}"
             await ctx.send(error_message[:1900] + "..." if len(error_message) > 1900 else error_message)
+
+    @commands.group(
+        name="elementprocs",
+        aliases=["eprocs", "elementproc"],
+        invoke_without_command=True,
+        brief=_("Opt in or out of the element procs test"),
+    )
+    @has_char()
+    @locale_doc
+    async def elementprocs(self, ctx):
+        _(
+            """Show your element proc status and what your weapons can do.
+
+            Element procs are a test feature. While opted in, your normal attacks can trigger your weapon element's ability, but only when your element is strong against the target's.
+            Starforge stars on the weapon unlock and scale them: ★1 common procs, ★5 mythic procs, ★10 Light's Power Word: Die.
+
+            Opting in also means other players' procs can hit you. In PvP, procs only work when both players have opted in. In Ice Dragon fights, the party host's setting applies to the whole party.
+
+            Use `{prefix}elementprocs on` or `{prefix}elementprocs off`."""
+        )
+        async with self.bot.pool.acquire() as conn:
+            equipped_items = await conn.fetch(
+                "SELECT ai.id, ai.type, ai.damage, ai.armor, ai.element FROM profile p "
+                "JOIN allitems ai ON (p.user=ai.owner) JOIN inventory i ON (ai.id=i.item) "
+                "WHERE i.equipped IS TRUE AND p.user=$1;",
+                ctx.author.id,
+            )
+            enabled, stars_by_element = await self.battle_factory._load_element_proc_state(
+                conn, ctx.author.id, equipped_items
+            )
+
+        embed = discord.Embed(
+            title=_("Element Procs (test)"),
+            description=_("Status: **{status}**").format(status=_("ON") if enabled else _("OFF")),
+            color=discord.Color.gold() if enabled else discord.Color.dark_grey(),
+        )
+        weapon_lines = []
+        for element, stars in sorted(stars_by_element.items()):
+            common_name, mythic_name = PROC_NAMES[element]
+            line = _("{emoji} **{element}** ★{stars} — {common}: {common_chance}").format(
+                emoji=PROC_EMOJI[element],
+                element=element,
+                stars=stars,
+                common=common_name,
+                common_chance=f"{ElementProcExtension.common_chance(stars) * 100:.2f}%",
+            )
+            mythic_chance = ElementProcExtension.mythic_chance(element, stars)
+            if mythic_chance > 0:
+                line += f" · {mythic_name}: {mythic_chance * 100:.2f}%"
+            else:
+                needed = POWER_WORD_MIN_STARS if element == "Light" else MYTHIC_MIN_STARS
+                line += _(" · {mythic} unlocks at ★{needed}").format(mythic=mythic_name, needed=needed)
+            weapon_lines.append(line)
+        embed.add_field(
+            name=_("Your weapons"),
+            value="\n".join(weapon_lines)
+            or _("No starforged elemental weapon equipped. Procs need a weapon with at least ★1."),
+            inline=False,
+        )
+        proc_lines = [
+            f"{PROC_EMOJI[element]} **{common}**: {PROC_DESCRIPTIONS[element][0]}\n"
+            f"\u2003✨ **{mythic}**: {PROC_DESCRIPTIONS[element][1]}"
+            for element, (common, mythic) in PROC_NAMES.items()
+        ]
+        embed.add_field(name=_("Procs"), value="\n".join(proc_lines[:5]), inline=False)
+        embed.add_field(name="\u200b", value="\n".join(proc_lines[5:]), inline=False)
+        embed.set_footer(
+            text=_(
+                "Procs only fire with elemental advantage. Bosses ignore mythics. "
+                "Pets and class abilities are unaffected."
+            )
+        )
+        await ctx.send(embed=embed)
+
+    @elementprocs.command(name="on", aliases=["enable", "optin"])
+    @has_char()
+    @locale_doc
+    async def elementprocs_on(self, ctx):
+        _("""Opt in to the element procs test. Other opted-in players' procs can hit you too.""")
+        async with self.bot.pool.acquire() as conn:
+            await ElementProcExtension.set_opted_in(conn, ctx.author.id, True)
+        await ctx.send(
+            _(
+                "✨ Element procs **enabled**. Your starforged weapons can now proc, and other "
+                "opted-in players' procs can hit you."
+            )
+        )
+
+    @elementprocs.command(name="off", aliases=["disable", "optout"])
+    @has_char()
+    @locale_doc
+    async def elementprocs_off(self, ctx):
+        _("""Opt out of the element procs test.""")
+        async with self.bot.pool.acquire() as conn:
+            await ElementProcExtension.set_opted_in(conn, ctx.author.id, False)
+        await ctx.send(_("Element procs **disabled**. Procs can no longer hit you in PvP."))
 
     @commands.group(name="battlesettings", aliases=["battleconfig", "bconfig"])
     @is_gm()

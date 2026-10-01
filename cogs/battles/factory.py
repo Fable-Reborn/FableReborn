@@ -21,6 +21,7 @@ from .types.dragon import DragonBattle
 from .types.couples_tower import CouplesTowerBattle
 from .types.brawl import BrawlBattle
 from .extensions.elements import ElementExtension
+from .extensions.element_procs import ElementProcExtension
 from .extensions.classes import ClassBuffExtension
 from .extensions.pets import PetExtension
 from .extensions.dragon import DragonExtension
@@ -801,6 +802,16 @@ class BattleFactory:
         await self.add_birthday_assistant_to_team(ctx, player_team)
         player_combatants = player_team.combatants
 
+        # Ice Dragon: the party host's opt-in decides element procs for everyone.
+        try:
+            async with self.bot.pool.acquire() as conn:
+                host_procs = await ElementProcExtension.is_opted_in(conn, ctx.author.id)
+        except Exception:
+            host_procs = False
+        for combatant in player_combatants:
+            if hasattr(combatant, "element_procs_enabled"):
+                combatant.element_procs_enabled = host_procs
+
         class_buffs_enabled = kwargs.get(
             "class_buffs",
             self.settings.get_setting("dragon", "class_buffs", default=True),
@@ -983,7 +994,7 @@ class BattleFactory:
             dmg, deff = await ctx.bot.get_raidstats(player, conn=conn)
             
             equipped_items = await conn.fetch(
-                "SELECT ai.type, ai.damage, ai.armor, ai.element FROM profile p "
+                "SELECT ai.id, ai.type, ai.damage, ai.armor, ai.element FROM profile p "
                 "JOIN allitems ai ON (p.user=ai.owner) JOIN inventory i ON (ai.id=i.item) "
                 "WHERE i.equipped IS TRUE AND p.user=$1;",
                 player.id,
@@ -992,6 +1003,9 @@ class BattleFactory:
             attack_element = element_data.get("attack_element", "Unknown")
             defense_element = element_data.get("defense_element", attack_element)
             dual_attack_elements = element_data.get("dual_attack_elements")
+            element_procs_enabled, element_proc_stars = await self._load_element_proc_state(
+                conn, player.id, equipped_items
+            )
             
             # Get class buffs
             classes = result['class'] if isinstance(result['class'], list) else [result['class']]
@@ -1076,7 +1090,39 @@ class BattleFactory:
                 ascension_survival_used=False,
                 display_level=level,
                 display_classes=classes,
+                element_procs_enabled=element_procs_enabled,
+                element_proc_stars=element_proc_stars,
             )
+
+    async def _load_element_proc_state(self, conn, user_id, equipped_items):
+        """Opt-in flag plus best weapon starforge level per element.
+
+        Stars load even when opted out: Ice Dragon parties follow the host's flag.
+        """
+        try:
+            enabled = await ElementProcExtension.is_opted_in(conn, user_id)
+            item_ids = [int(item["id"]) for item in equipped_items if item["id"] is not None]
+            star_map = {}
+            star_table_exists = await conn.fetchval(
+                "SELECT to_regclass('public.starforged_items') IS NOT NULL;"
+            )
+            if item_ids and star_table_exists:
+                rows = await conn.fetch(
+                    "SELECT item_id, stars FROM starforged_items WHERE item_id = ANY($1);",
+                    item_ids,
+                )
+                star_map = {int(row["item_id"]): int(row["stars"] or 0) for row in rows}
+            items = [
+                {
+                    "type": item["type"],
+                    "element": item["element"],
+                    "stars": star_map.get(int(item["id"]), 0),
+                }
+                for item in equipped_items
+            ]
+            return enabled, ElementProcExtension.weapon_stars_by_element(items)
+        except Exception:
+            return False, {}
 
     async def create_monster_combatant(self, monster_data, level=1, name=None, mask_name=False):
         """Create a combatant object for a monster or boss"""
