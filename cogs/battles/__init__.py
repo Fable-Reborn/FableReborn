@@ -1696,6 +1696,8 @@ class Battles(commands.Cog):
         self.macro_alert_user_id = battles_ids.get("macro_alert_user_id")
         # Floor 16: faces shown in the dialogue, reused by the fight that follows.
         self._tower_borrowed_faces = {}
+        # Ice Dragon party card: avatar bytes keyed by Discord asset key.
+        self._dragon_party_avatars = {}
         self.debug_user_id = battles_ids.get("debug_user_id")
         self.forceleg = False
         self.battle_factory = BattleFactory(bot)
@@ -11788,6 +11790,21 @@ class Battles(commands.Cog):
 
         return " / ".join(class_lines) if class_lines else "Adventurer"
 
+    async def _dragon_party_avatar(self, member):
+        """Fetch a small avatar for the party card, reusing recent downloads."""
+        asset = member.display_avatar.with_size(128).with_static_format("png")
+        cached = self._dragon_party_avatars.get(asset.key)
+        if cached is not None:
+            return cached
+        try:
+            data = await asyncio.wait_for(asset.read(), timeout=3)
+        except Exception:
+            return None
+        if len(self._dragon_party_avatars) >= 64:
+            self._dragon_party_avatars.pop(next(iter(self._dragon_party_avatars)))
+        self._dragon_party_avatars[asset.key] = data
+        return data
+
     async def _build_dragon_party_payload(self, ctx, party_members):
         """Build the rendered party card and its minimal Discord embed."""
         try:
@@ -11841,9 +11858,10 @@ class Battles(commands.Cog):
 
         party_stats = []
         for member in party_members:
-            player_combatant, pet_combatant = await asyncio.gather(
+            player_combatant, pet_combatant, avatar = await asyncio.gather(
                 self.battle_factory.create_player_combatant(ctx, member, include_pet=True),
                 self.battle_factory.pet_ext.get_pet_combatant(ctx, member),
+                self._dragon_party_avatar(member),
             )
             profile = profiles.get(member.id)
             party_stats.append(
@@ -11854,12 +11872,13 @@ class Battles(commands.Cog):
                     rpgtools.xptolevel(profile["xp"]) if profile else 1,
                     profile["class"] if profile else [],
                     pet_levels.get(member.id, 1),
+                    avatar,
                 )
             )
 
         rendered_party = []
         for stats in party_stats:
-            member, player, pet, level, classes, pet_level = stats
+            member, player, pet, level, classes, pet_level, avatar = stats
             rendered_party.append(
                 {
                     "name": member.display_name,
@@ -11869,6 +11888,7 @@ class Battles(commands.Cog):
                     "attack": player.damage,
                     "defense": player.armor,
                     "hp": player.max_hp,
+                    "avatar": avatar,
                     "pet": (
                         {
                             "name": pet.name,

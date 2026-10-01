@@ -1,8 +1,10 @@
 import importlib.util
 import unittest
+from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 
-from PIL import Image, ImageChops
+from PIL import Image
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
@@ -21,44 +23,47 @@ class TestDragonPartyCard(unittest.TestCase):
     def setUpClass(cls):
         cls.renderer = _load_renderer_module()
 
-    def test_renders_expected_template_size_and_dynamic_content(self):
+    def test_renders_full_and_empty_parties(self):
         dragon = {
             "name": "Polar Vortex",
             "level": 32,
             "hp": 43050,
             "damage": 1189,
             "armor": 902,
+            "element": "Water",
+            "passives": ["Eternal Winter", "Death's Embrace", "Reality Bender"],
+            "moves": {"Time Freeze": {"dmg": 2000}, "Apocalypse": {"dmg": 1200}},
         }
-        party = [
-            {
-                "name": "Lunar",
-                "leader": True,
-                "level": 71,
-                "class": "Tank / Mage",
-                "attack": 1589,
-                "defense": 2253,
-                "hp": 4627,
-                "pet": {
-                    "name": "Noctridium [FINAL]",
-                    "level": 100,
-                    "attack": 19527,
-                    "defense": 14388,
-                    "hp": 19316,
-                },
-            }
-        ]
+        avatar = BytesIO()
+        Image.new("RGB", (64, 64), (200, 40, 40)).save(avatar, format="PNG")
+        member = {
+            "name": "Lunar 🌙",
+            "leader": True,
+            "level": 71,
+            "class": "Tank / Mage",
+            "attack": Decimal("1589.5"),
+            "defense": 2253.25,
+            "hp": 4627,
+            "avatar": avatar.getvalue(),
+            "pet": {
+                "name": "Noctridium [FINAL]",
+                "level": 100,
+                "attack": 19527,
+                "defense": 14388,
+                "hp": 19316,
+            },
+        }
+        party = [member, dict(member, leader=False, avatar=b"not an image", pet=None)] * 2
 
-        rendered_buffer = self.renderer.render_dragon_party_card(dragon, party)
-        rendered = Image.open(rendered_buffer).convert("RGB")
-        template = Image.open(self.renderer.TEMPLATE_PATH).convert("RGB")
+        for members in ([], party):
+            rendered_buffer = self.renderer.render_dragon_party_card(dragon, members)
+            rendered = Image.open(rendered_buffer)
+            self.assertEqual("JPEG", rendered.format)
+            self.assertEqual((self.renderer.WIDTH, self.renderer.HEIGHT), rendered.size)
+            self.assertLess(len(rendered_buffer.getvalue()), 1_000_000)
 
-        self.assertEqual((1672, 941), rendered.size)
-        self.assertEqual("JPEG", Image.open(rendered_buffer).format)
-        self.assertIsNotNone(ImageChops.difference(template, rendered).getbbox())
-        self.assertLess(len(rendered_buffer.getvalue()), 1_000_000)
-
-    def test_template_decode_is_cached_between_renders(self):
-        self.renderer._load_template.cache_clear()
+    def test_static_background_is_cached_between_renders(self):
+        self.renderer._static_base.cache_clear()
         dragon = {
             "name": "Polar Vortex",
             "level": 32,
@@ -70,7 +75,7 @@ class TestDragonPartyCard(unittest.TestCase):
         self.renderer.render_dragon_party_card(dragon, [])
         self.renderer.render_dragon_party_card(dragon, [])
 
-        cache_info = self.renderer._load_template.cache_info()
+        cache_info = self.renderer._static_base.cache_info()
         self.assertEqual(1, cache_info.misses)
         self.assertEqual(1, cache_info.hits)
 
@@ -86,6 +91,5 @@ class TestDragonPartyCard(unittest.TestCase):
             display=True,
         )
 
-        bounds = draw.textbbox((0, 0), fitted, font=font)
-        self.assertLessEqual(bounds[2] - bounds[0], 180)
+        self.assertLessEqual(self.renderer._text_width(draw, fitted, font), 180)
         self.assertTrue(fitted.endswith("..."))
