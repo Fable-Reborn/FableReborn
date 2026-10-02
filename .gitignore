@@ -108,5 +108,4 @@ tests/test_theme_trade_contract.py
 tests/test_dragon_party_card.py
 tests/test_dragon_party_card.py
 tests/test_dragon_party_card.py
-utils/fable_bugs.py
 tests/test_fable_bug_reports.py
