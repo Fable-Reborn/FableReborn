@@ -1,8 +1,11 @@
+import asyncpg
 import discord
 from discord.ext import commands
 
 from utils.checks import is_gm
+from utils.fable_bugs import FILTERS, BugReportStore
 from utils.fables import complete_fable, unlock_fable, unlocked_fables
+from .bug_reports import BugReportQueue
 from .showcase import FableShowcase
 
 
@@ -51,6 +54,33 @@ class Fables(commands.Cog):
         await ctx.send(f"{user.display_name}: {fable_id} " + (
             "marked completed." if changed else "is already completed or has not been unlocked."
         ))
+
+
+    @commands.command(name="bugs", hidden=True, brief="Review in-game Fable bug reports")
+    @is_gm()
+    async def bugs(self, ctx, *filters: str):
+        """$bugs [fable] [open|new|reviewing|resolved|dismissed|all]  e.g. $bugs tiamat all"""
+        fable_id, filter_name = None, "open"
+        for value in (item.strip().lower() for item in filters):
+            if value in FILTERS:
+                filter_name = value
+            elif value:
+                fable_id = value
+        if fable_id and not await self.bot.pool.fetchval("SELECT 1 FROM fables WHERE id=$1", fable_id):
+            return await ctx.send(f"There is no Fable called `{fable_id[:40]}`.")
+        store = BugReportStore(self.bot.pool)
+        try:
+            reports = await store.list_reports(fable_id=fable_id, statuses=FILTERS[filter_name])
+            counts = await store.status_counts(fable_id=fable_id)
+        except asyncpg.UndefinedTableError:
+            return await ctx.send("No bug reports yet: the game server creates `fable_bug_reports` the first time it starts.")
+        view = BugReportQueue(ctx.author.id, store, reports, counts, fable_id=fable_id, filter_name=filter_name)
+        embed, file = await view.render()
+        try:
+            view.message = await ctx.send(embed=embed, files=[file] if file else [], view=view)
+        finally:
+            if file:
+                file.close()
 
 
 async def setup(bot):
