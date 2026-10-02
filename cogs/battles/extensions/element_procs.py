@@ -65,20 +65,47 @@ PROC_NAMES = {
 
 PROC_DESCRIPTIONS = {
     "Light": (
-        "+true damage equal to 5% of the target's missing HP",
-        "the target takes 9,999,999 damage",
+        "Adds armor-ignoring damage equal to 5% of the target's missing HP before this hit, "
+        "capped at 100% of your attack stat. A full-health target gives no bonus.",
+        "Raises this hit's damage to at least 9,999,999 before shields and other damage mitigation.",
     ),
-    "Dark": ("the target's next attack deals 25% less", "the target loses its next 2 turns"),
+    "Dark": (
+        "The target's next normal attack deals 25% less damage before armor. Reapplying refreshes the effect.",
+        "The target loses its next 2 turns. Reapplying resets the remaining duration to 2 turns.",
+    ),
     "Corrupted": (
-        "the target's next 2 attacks are elementless",
-        "the target's attacks are elementless for the rest of the fight",
+        "The target's next 2 normal attacks lose their element, removing elemental matchup bonuses "
+        "and preventing elemental procs on those attacks. Its defensive element is unchanged.",
+        "The target's normal attacks become elementless for the rest of the battle, removing "
+        "elemental matchup bonuses and preventing its elemental procs. Its defensive element is unchanged.",
     ),
-    "Fire": ("the next 2 hits on the target burn for 1.5% of its max HP", "+15% of the target's max HP as true damage"),
-    "Nature": ("heal 4% of your max HP", "full heal (once per battle)"),
-    "Water": ("-5% target armor, stacking to 3", "the target's armor drops to 0 for the rest of the fight"),
-    "Earth": ("the attack hits again at 40%", "the hit lands twice and strikes every other enemy"),
-    "Electric": ("+30% bonus damage that ignores armor", "an instant full-power second strike that ignores armor"),
-    "Wind": ("dodge the next incoming attack", "dodge the next 3 incoming attacks"),
+    "Fire": (
+        "The next 2 normal hits that land on the target each add burn damage equal to 1.5% of its max HP, "
+        "capped at 50% of your attack stat per burn. Burn bypasses armor; reapplying refreshes it.",
+        "Adds armor-ignoring damage equal to 15% of the target's maximum HP to this hit.",
+    ),
+    "Nature": (
+        "Immediately heals you for 4% of your maximum HP, up to full health.",
+        "Immediately restores you to full HP. Can trigger only once per battle; common healing can still trigger afterward.",
+    ),
+    "Water": (
+        "Reduces the target's effective armor by 5% per stack for the rest of the battle. "
+        "Stacks up to 3 times for 15% total reduction, affecting subsequent hits.",
+        "Sets the target's effective armor to zero for the rest of the battle, affecting subsequent hits. Does not remove shields.",
+    ),
+    "Earth": (
+        "Adds 40% of this hit's damage after armor as extra damage. For example, a 100-damage hit becomes 140.",
+        "Doubles this hit's damage and also deals that doubled amount to every other living, eligible "
+        "enemy. The extra targets' armor is bypassed; bosses and players who opted out are excluded.",
+    ),
+    "Electric": (
+        "Adds 30% of this attack's damage before armor as bonus damage that bypasses armor.",
+        "Adds 100% of this attack's damage before armor as an immediate bonus strike that bypasses armor.",
+    ),
+    "Wind": (
+        "Dodge the next incoming normal attack that would deal damage. Reapplying refreshes the charge rather than stacking it.",
+        "Dodge the next 3 incoming normal attacks that would deal damage. Reapplying restores the charges to 3.",
+    ),
 }
 
 PROC_EMOJI = {

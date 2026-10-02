@@ -23,14 +23,8 @@ from discord.ui import View, Button, Select, select
 from discord.enums import ButtonStyle
 
 from .factory import BattleFactory
-from .extensions.element_procs import (
-    MYTHIC_MIN_STARS,
-    POWER_WORD_MIN_STARS,
-    PROC_DESCRIPTIONS,
-    PROC_EMOJI,
-    PROC_NAMES,
-    ElementProcExtension,
-)
+from .extensions.element_procs import ElementProcExtension
+from .element_proc_view import ElementProcView
 from .jury_tower_data import (
     build_jury_tower_data,
     JURY_BRACKET_BASE_SNAPSHOT,
@@ -11597,13 +11591,13 @@ class Battles(commands.Cog):
         name="elementprocs",
         aliases=["eprocs", "elementproc"],
         invoke_without_command=True,
-        brief=_("Opt in or out of the element procs test"),
+        brief=_("Browse elemental weapon effects and your proc chances"),
     )
     @has_char()
     @locale_doc
     async def elementprocs(self, ctx):
         _(
-            """Show your element proc status and what your weapons can do.
+            """Browse element procs with a dropdown starting on your current battle element.
 
             Element procs are a test feature. While opted in, your normal attacks can trigger your weapon element's ability, but only when your element is strong against the target's.
             Starforge stars on the weapon unlock and scale them: ★1 common procs, ★5 mythic procs, ★10 Light's Power Word: Die.
@@ -11623,48 +11617,16 @@ class Battles(commands.Cog):
                 conn, ctx.author.id, equipped_items
             )
 
-        embed = discord.Embed(
-            title=_("Element Procs (test)"),
-            description=_("Status: **{status}**").format(status=_("ON") if enabled else _("OFF")),
-            color=discord.Color.gold() if enabled else discord.Color.dark_grey(),
+        view = ElementProcView(
+            author_id=ctx.author.id,
+            enabled=enabled,
+            stars_by_element=stars_by_element,
+            combat_elements=self.element_ext.resolve_player_combat_elements(equipped_items),
+            equipped_items=equipped_items,
+            emoji_to_element=self.emoji_to_element,
+            prefix=ctx.clean_prefix,
         )
-        weapon_lines = []
-        for element, stars in sorted(stars_by_element.items()):
-            common_name, mythic_name = PROC_NAMES[element]
-            line = _("{emoji} **{element}** ★{stars} — {common}: {common_chance}").format(
-                emoji=PROC_EMOJI[element],
-                element=element,
-                stars=stars,
-                common=common_name,
-                common_chance=f"{ElementProcExtension.common_chance(stars) * 100:.2f}%",
-            )
-            mythic_chance = ElementProcExtension.mythic_chance(element, stars)
-            if mythic_chance > 0:
-                line += f" · {mythic_name}: {mythic_chance * 100:.2f}%"
-            else:
-                needed = POWER_WORD_MIN_STARS if element == "Light" else MYTHIC_MIN_STARS
-                line += _(" · {mythic} unlocks at ★{needed}").format(mythic=mythic_name, needed=needed)
-            weapon_lines.append(line)
-        embed.add_field(
-            name=_("Your weapons"),
-            value="\n".join(weapon_lines)
-            or _("No starforged elemental weapon equipped. Procs need a weapon with at least ★1."),
-            inline=False,
-        )
-        proc_lines = [
-            f"{PROC_EMOJI[element]} **{common}**: {PROC_DESCRIPTIONS[element][0]}\n"
-            f"\u2003✨ **{mythic}**: {PROC_DESCRIPTIONS[element][1]}"
-            for element, (common, mythic) in PROC_NAMES.items()
-        ]
-        embed.add_field(name=_("Procs"), value="\n".join(proc_lines[:5]), inline=False)
-        embed.add_field(name="\u200b", value="\n".join(proc_lines[5:]), inline=False)
-        embed.set_footer(
-            text=_(
-                "Procs only fire with elemental advantage. Bosses ignore mythics. "
-                "Pets and class abilities are unaffected."
-            )
-        )
-        await ctx.send(embed=embed)
+        view.message = await ctx.send(embed=view.build_embed(), view=view)
 
     @elementprocs.command(name="on", aliases=["enable", "optin"])
     @has_char()
