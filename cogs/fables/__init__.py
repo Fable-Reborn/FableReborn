@@ -60,27 +60,32 @@ class Fables(commands.Cog):
     @is_gm()
     async def bugs(self, ctx, *filters: str):
         """$bugs [fable] [open|new|reviewing|resolved|dismissed|all]  e.g. $bugs tiamat all"""
-        fable_id, filter_name = None, "open"
-        for value in (item.strip().lower() for item in filters):
-            if value in FILTERS:
-                filter_name = value
-            elif value:
-                fable_id = value
-        if fable_id and not await self.bot.pool.fetchval("SELECT 1 FROM fables WHERE id=$1", fable_id):
-            return await ctx.send(f"There is no Fable called `{fable_id[:40]}`.")
-        store = BugReportStore(self.bot.pool)
         try:
-            reports = await store.list_reports(fable_id=fable_id, statuses=FILTERS[filter_name])
-            counts = await store.status_counts(fable_id=fable_id)
-        except asyncpg.UndefinedTableError:
-            return await ctx.send("No bug reports yet: the game server creates `fable_bug_reports` the first time it starts.")
-        view = BugReportQueue(ctx.author.id, store, reports, counts, fable_id=fable_id, filter_name=filter_name)
-        embed, file = await view.render()
-        try:
-            view.message = await ctx.send(embed=embed, files=[file] if file else [], view=view)
-        finally:
-            if file:
-                file.close()
+            fable_id, filter_name = None, "open"
+            for value in (item.strip().lower() for item in filters):
+                if value in FILTERS:
+                    filter_name = value
+                elif value:
+                    fable_id = value
+            if fable_id and not await self.bot.pool.fetchval("SELECT 1 FROM fables WHERE id=$1", fable_id):
+                return await ctx.send(f"There is no Fable called `{fable_id[:40]}`.")
+            store = BugReportStore(self.bot.pool)
+            try:
+                reports = await store.list_reports(fable_id=fable_id, statuses=FILTERS[filter_name])
+                counts = await store.status_counts(fable_id=fable_id)
+            except asyncpg.UndefinedTableError:
+                return await ctx.send("No bug reports yet: the game server creates `fable_bug_reports` the first time it starts.")
+            view = BugReportQueue(ctx.author.id, store, reports, counts, fable_id=fable_id, filter_name=filter_name)
+            embed, file = await view.render()
+            try:
+                view.message = await ctx.send(embed=embed, files=[file] if file else [], view=view)
+            finally:
+                if file:
+                    file.close()
+        except Exception as e:
+            # The global handler hides Discord HTTP errors, so report everything here.
+            detail = getattr(e, "text", "") or str(e)
+            await ctx.send(f"An error occurred in bugs: `{type(e).__name__}: {detail[:1500]}`")
 
 
 async def setup(bot):

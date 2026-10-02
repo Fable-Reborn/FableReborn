@@ -225,6 +225,14 @@ class BugReportQueue(discord.ui.View):
             if self.message:
                 await self.show(self.message.edit)
 
+    async def on_error(self, interaction, error, item):
+        detail = getattr(error, "text", "") or str(error)
+        message = f"An error occurred: `{type(error).__name__}: {detail[:1500]}`"
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
     async def on_timeout(self):
         async with self.lock:
             for child in self.children:
