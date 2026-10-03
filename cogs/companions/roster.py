@@ -69,6 +69,21 @@ COMPANIONS = (
         accent=(214, 52, 58),
         focus=(0.5, 0.2),
     ),
+    Companion(
+        key="xandra",
+        name="Xandra",
+        title="Scholar of Draslin",
+        alignment=GOOD,
+        description=(
+            "A scholar of Draslin and Az'uar's steadfast ally, Xandra hides a royal name: "
+            "Princess Alexandra, King Khytiel's surviving heir. She stands against Ry'jin's "
+            "tyranny, choosing the people she can protect and the family she has found "
+            "over the safety of a crown."
+        ),
+        hint="Among forbidden books, a lost heir keeps hope alive.",
+        accent=(214, 116, 150),
+        focus=(0.52, 0.19),
+    ),
 )
 
 BY_KEY = {companion.key: companion for companion in COMPANIONS}

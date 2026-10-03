@@ -1,0 +1,17 @@
+{
+  "tool": "Built-in image_gen",
+  "source_project": "E:\\Preserved\\MMORPG Test Grounds\\TiamatSacramentMZFullEditable",
+  "character_reference": [
+    "data/Actors.json: actor 2, Xandra (Scholar)",
+    "img/characters/hero4.png: characterIndex 4",
+    "img/faces/newfaces_0.png: faceIndex 1",
+    "img/tiamat2k3/battlechars/xandrastatus.png"
+  ],
+  "lore_reference": [
+    "data/Map012.json: Princess Alexandra reveal and uprising",
+    "data/Map016.json: scholar hideout and Khytiel's sole heir"
+  ],
+  "style_reference": "assets/companions/gyle/portrait.png",
+  "portrait_prompt": "Use case: stylized-concept. Asset type: RPG companion selection portrait. Create Xandra from Tiamat Sacrament as a polished hand-painted fantasy RPG character illustration matching the rendering style, dramatic lighting, and portrait composition of the Gyle knight reference. Reference roles: xandrastatus.png is Xandra's character design and clothing; hero4.png shows her walking sprite at character index 4 (first character of bottom half); newfaces_0.png shows Xandra's face in the top row second portrait; gyle/portrait.png is STYLE AND FRAMING ONLY, do not copy his armor or helmet. Xandra is an adult female scholar and hidden heir, chestnut brown shoulder-length hair with side-swept bangs, warm brown eyes, fair skin, alert compassionate determined expression. Preserve the sprite's rose-pink fitted long-sleeved tunic/jacket, dark rose accents, pale front detailing, belt, blue-gray trousers, practical dark boots. Depict a travelling scholar, one worn closed book held at her waist. Three-quarter view, head and upper thighs visible, crown of head comfortably inside frame, face centered horizontally near 20 percent from top, portrait 2:3 aspect ratio. Detailed painterly fabric and leather, strong readable silhouette, warm restrained rose rim lighting, no scene or floor, actual transparent background. No text, no border, no watermark, no crown, no heavy armor, no additional characters.",
+  "silhouette_prompt": "Use case: precise-object-edit. Asset type: locked companion silhouette. Edit the supplied Xandra portrait into its exact solid black silhouette. Preserve canvas dimensions 1024x1536, position, pose, all hair and clothing contours, and the exact existing alpha transparency including soft edges. Every visible subject pixel must be pure black with no face, eye, garment, book, highlight, texture, glow or internal detail remaining. Keep all transparent pixels transparent. No new background, no frame, no text. This silhouette must align exactly with the input portrait for the locked version of the same game card."
+}
