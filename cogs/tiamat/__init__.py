@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import discord
@@ -7,10 +8,12 @@ from discord.ext import commands
 
 from utils import checks
 
+from .dragon_card import DragonCard, render_dragon_card
 from .service import (
     GOLD_PER_CROWN,
     LINK_CODE_TTL_MINUTES,
     convert_gold_to_crowns,
+    fetch_dragon_card,
     fetch_rpg_profile,
     issue_link_code,
     revoke_link_code,
@@ -30,6 +33,38 @@ def format_playtime(seconds: int) -> str:
 def format_last_map(name: str | None) -> str:
     normalized = " ".join(str(name or "").split())
     return normalized or "Not visited yet"
+
+
+def build_dragon_card(data: dict, fallback_name: str) -> DragonCard:
+    unlock, player, clutch, journey = data["unlock"], data["player"], data["clutch"], data["journey"]
+    companions = data["companions"]
+    name = (clutch and clutch["display_name"]) or (player and (player["display_name"] or player["game_username"])) or fallback_name
+    hue = clutch["hue"] if clutch else (player["dragon_hue"] if player and player["dragon_hue"] is not None else 0)
+    hatched = unlock["started_at"]
+    if journey and journey["true_ending"]:
+        story = "true_ending"
+    elif (journey and journey["story_complete"]) or unlock["completed_at"]:
+        story = "complete"
+    else:
+        story = "journey"
+    return DragonCard(
+        name=str(name)[:24],
+        hue=int(hue or 0) % 360,
+        form=(clutch and clutch["form"]) or "whelp",
+        title=clutch and clutch["title"],
+        hatched_on=f"{hatched.day} {hatched:%b %Y}",
+        hatch_rank=int(unlock["rank"]),
+        level=journey and journey["level"],
+        playtime_seconds=journey and journey["playtime_seconds"],
+        battles_won=journey and journey["battles_won"],
+        runes=(journey["earth_runes"], journey["fire_runes"], journey["air_runes"], journey["water_runes"]) if journey else None,
+        runes_sealed=journey["runes_sealed"] if journey else 0,
+        soul_gems=journey["soul_gems"] if journey else 0,
+        story=story,
+        companion=companions and companions["selected"],
+        companions_unlocked=len(set(companions["unlocked"] or [])) if companions else 0,
+        titles_earned=data["titles"],
+    )
 
 
 class CrownConversionModal(discord.ui.Modal, title="Convert Fable gold to crowns"):
@@ -209,6 +244,24 @@ class Tiamat(commands.Cog):
             if isinstance(child, discord.ui.Button) and child.label == "Convert gold to crowns":
                 child.disabled = not linked
         await ctx.send(embed=embed, view=view)
+
+
+    @commands.command(name="dragon", aliases=["dragoncard"], brief="Show your Tiamat dragon card, or someone else's")
+    async def dragon(self, ctx, *, member: discord.Member = None) -> None:
+        """Show the dragon card for you or `[member]`: form, title, Runes, Soul Gems and story.
+
+        Dragons hidden from the Clutch can only be viewed by their owner."""
+        member = member or ctx.author
+        data = await fetch_dragon_card(self.bot.pool, member.id)
+        if data is None:
+            whose = "You haven't" if member == ctx.author else f"**{member.display_name}** hasn't"
+            return await ctx.send(f"{whose} hatched in The Tiamat Sacrament yet.")
+        if data["clutch"] and data["clutch"]["hidden"] and member != ctx.author:
+            return await ctx.send(f"**{member.display_name}**'s dragon keeps to the shadows.")
+        card = build_dragon_card(data, member.display_name)
+        async with ctx.typing():
+            image = await asyncio.to_thread(render_dragon_card, card)
+        await ctx.send(file=discord.File(image, filename="dragon.png"))
 
 
 async def setup(bot):

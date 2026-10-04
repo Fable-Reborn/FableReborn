@@ -5,6 +5,8 @@ import secrets
 import uuid
 from dataclasses import dataclass
 
+import asyncpg
+
 
 GOLD_PER_CROWN = 1_000
 LINK_CODE_TTL_MINUTES = 15
@@ -164,3 +166,42 @@ async def convert_gold_to_crowns(
                 GOLD_PER_CROWN,
             )
     return ConversionResult(crowns, crown_balance, gold_balance, request_id)
+
+
+# ---- dragon cards ----------------------------------------------------------------
+# The game server creates clutch_entries, player_titles and tiamat_journeys on startup;
+# until it has, the card simply shows less.
+DRAGON_TITLES = ("firstborn", "remembers_jardan", "fought_bravely", "freed_blades",
+                 "ring_champion", "tiamats_blessed", "only_hope")
+
+
+async def _optional(connection, method, query, *args):
+    try:
+        return await getattr(connection, method)(query, *args)
+    except (asyncpg.UndefinedTableError, asyncpg.UndefinedColumnError):
+        return None
+
+
+async def fetch_dragon_card(pool, discord_id: int) -> dict | None:
+    """Everything the dragon card shows, or None if this player hasn't hatched in Tiamat."""
+    async with pool.acquire() as connection:
+        unlock = await _optional(connection, "fetchrow", """
+            SELECT u.started_at, u.completed_at,
+                   (SELECT count(*) FROM fable_unlocks o
+                     WHERE o.fable_id='tiamat' AND o.started_at < u.started_at) + 1 AS rank
+            FROM fable_unlocks u WHERE u.discord_id=$1 AND u.fable_id='tiamat'""", discord_id)
+        if not unlock or unlock["started_at"] is None:
+            return None
+        player = await connection.fetchrow("""
+            SELECT display_name, game_username, dragon_hue FROM tiamat_players
+            WHERE profile_user=$1 ORDER BY last_seen_at DESC NULLS LAST LIMIT 1""", discord_id)
+        clutch = await _optional(connection, "fetchrow",
+            "SELECT display_name, hue, form, title, hidden FROM clutch_entries WHERE discord_id=$1", discord_id)
+        journey = await _optional(connection, "fetchrow", "SELECT * FROM tiamat_journeys WHERE discord_id=$1", discord_id)
+        titles = await _optional(connection, "fetchval",
+            "SELECT count(*) FROM player_titles WHERE discord_id=$1 AND title = ANY($2::text[])",
+            discord_id, list(DRAGON_TITLES))
+        companions = await _optional(connection, "fetchrow",
+            "SELECT unlocked, selected FROM companions WHERE user_id=$1", discord_id)
+    return {"unlock": unlock, "player": player, "clutch": clutch, "journey": journey,
+            "titles": int(titles or 0), "companions": companions}
