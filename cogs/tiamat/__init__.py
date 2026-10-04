@@ -246,7 +246,7 @@ class Tiamat(commands.Cog):
         await ctx.send(embed=embed, view=view)
 
 
-    @commands.command(name="dragon", aliases=["dragoncard"], brief="Show your Tiamat dragon card, or someone else's")
+    @commands.command(name="Tdragon", aliases=["dragoncard"], brief="Show your Tiamat dragon card, or someone else's")
     async def dragon(self, ctx, *, member: discord.Member = None) -> None:
         """Show the dragon card for you or `[member]`: form, title, Runes, Soul Gems and story.
 
