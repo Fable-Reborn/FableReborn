@@ -3,7 +3,8 @@
 `companions` stores one row per player: the keys of the companions they have
 unlocked (a text array) and the one they have selected. The roster lives in
 roster.py and the select screen is drawn by card.py; locked companions show as
-silhouettes named "???" with only their alignment revealed.
+silhouettes named "???" with only their alignment revealed, and secret ones
+reveal nothing at all.
 """
 
 import asyncio
@@ -43,12 +44,12 @@ class CompanionView(discord.ui.View):
         options = []
         for i, companion in enumerate(COMPANIONS):
             known = companion.key in self.unlocked
-            alignment = companion.alignment.capitalize()
+            alignment = "Secret" if companion.secret and not known else companion.alignment.capitalize()
             options.append(discord.SelectOption(
                 label=companion.name if known else f"??? #{i + 1}",
                 value=str(i),
                 description=f"{alignment} · {companion.title}" if known else f"{alignment} · Locked",
-                emoji=("😇" if companion.alignment == GOOD else "😈") if known else "🔒",
+                emoji=("😇" if companion.alignment == GOOD else "😈") if known else "❔" if companion.secret else "🔒",
                 default=i == self.index,
             ))
         return options
@@ -166,7 +167,8 @@ class Companions(commands.Cog):
     async def companions(self, ctx):
         """Browse the companion roster and pick who travels with you.
 
-        Locked companions appear as silhouettes; only their alignment is known."""
+        Locked companions appear as silhouettes; only their alignment is known.
+        Some companions are secret and reveal nothing until found."""
         unlocked, selected = await self.get_row(ctx.author.id)
         view = CompanionView(self, ctx.author, unlocked, selected)
         view.refresh_items()

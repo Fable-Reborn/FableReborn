@@ -1,7 +1,9 @@
 """The companion roster: who can be unlocked and how they are shown.
 
 Each companion's art lives in assets/companions/<key>/ as portrait.png and
-silhouette.png (the blacked-out art shown while locked). `focus` is the point,
+silhouette.png (the blacked-out art shown while locked). A `secret` companion
+shows nothing while locked (no art, alignment or hint) beyond a "???" slot.
+`focus` is the point,
 as fractions of the portrait's width and height, that the diagonal tiles crop
 around (usually the face). Lore comes from Tiamat Sacrament.
 """
@@ -23,6 +25,7 @@ class Companion:
     accent: tuple
     focus: tuple = (0.5, 0.22)
     zoom: float = 0.42
+    secret: bool = False
 
 
 COMPANIONS = (
@@ -40,20 +43,6 @@ COMPANIONS = (
         accent=(74, 140, 246),
         focus=(0.74, 0.4),
         zoom=0.4,
-    ),
-    Companion(
-        key="ryjin",
-        name="Ry'jin",
-        title="Tyrant of Ildria",
-        alignment=EVIL,
-        description=(
-            "The usurper who slew King Khytiel and his entire royal guard to seize Ildria. "
-            "Ry'jin splices dragon DNA into his own flesh, stealing the breath of earth, air, "
-            "water and fire, and reads the minds of those who would betray him."
-        ),
-        hint="The throne of Ildria casts a long and hollow shadow.",
-        accent=(150, 132, 214),
-        focus=(0.5, 0.2),
     ),
     Companion(
         key="gyle",
@@ -83,6 +72,21 @@ COMPANIONS = (
         hint="Among forbidden books, a lost heir keeps hope alive.",
         accent=(214, 116, 150),
         focus=(0.52, 0.19),
+    ),
+    Companion(
+        key="ryjin",
+        name="Ry'jin",
+        title="Tyrant of Ildria",
+        alignment=EVIL,
+        description=(
+            "The usurper who slew King Khytiel and his entire royal guard to seize Ildria. "
+            "Ry'jin splices dragon DNA into his own flesh, stealing the breath of earth, air, "
+            "water and fire, and reads the minds of those who would betray him."
+        ),
+        hint="The throne of Ildria casts a long and hollow shadow.",
+        accent=(150, 132, 214),
+        focus=(0.5, 0.2),
+        secret=True,
     ),
 )
 

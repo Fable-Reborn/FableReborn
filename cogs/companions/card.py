@@ -1,7 +1,8 @@
 """Pillow renderer for the companion select screen.
 
 The focused companion fills the right side (its silhouette with a rim of
-alignment light while locked) with its details on the left, and the whole
+alignment light while locked; a glowing "?" for a secret companion) with its
+details on the left, and the whole
 roster runs along a diagonal band of slanted tiles at the bottom. Rendering is
 pure and cached per state, so it can run in a worker thread.
 """
@@ -25,6 +26,9 @@ MUTED = (152, 148, 162)
 INK = (10, 10, 15)
 GOLD = (236, 190, 92)
 ALIGNMENT_COLOURS = {GOOD: (96, 178, 255), EVIL: (222, 58, 70)}
+# A locked secret companion hides its alignment behind this colour.
+SECRET_COLOUR = (178, 160, 214)
+SECRET_HINT = "Some stories don't end when the credits roll."
 
 PORTRAIT_H = 1010
 TILE_W, TILE_H, TILE_SKEW, TILE_GAP = 132, 206, 46, 14
@@ -161,6 +165,22 @@ def _pill(draw, xy, label, fill, text_colour=INK):
     return x + width + 10
 
 
+def _hidden(companion, unlocked):
+    return companion.secret and not unlocked
+
+
+def _colour(companion, unlocked):
+    return SECRET_COLOUR if _hidden(companion, unlocked) else ALIGNMENT_COLOURS[companion.alignment]
+
+
+@lru_cache(maxsize=4)
+def _mystery_art(colour):
+    """A tall glowing question mark that stands in for a secret companion's silhouette."""
+    art = Image.new("RGBA", (760, PORTRAIT_H), (0, 0, 0, 0))
+    ImageDraw.Draw(art).text((380, 470), "?", font=display(720), fill=(14, 14, 20, 255), anchor="mm")
+    return _glow(art, colour, 26, 2.4)
+
+
 # ---- layers --------------------------------------------------------------------
 def _background(accent):
     fade = Image.linear_gradient("L").rotate(90).resize((WIDTH, HEIGHT))
@@ -194,7 +214,9 @@ def _edge_fade(size):
 
 @lru_cache(maxsize=8)
 def _hero_art(key, unlocked, colour):
-    if unlocked:
+    if _hidden(BY_KEY[key], unlocked):
+        art = _mystery_art(colour).copy()
+    elif unlocked:
         art = _scaled(key, "portrait", PORTRAIT_H)
         art = _glow(art, colour, 22, 0.9) if art is not None else None
     else:
@@ -229,15 +251,16 @@ def _details(draw, companion, unlocked, selected, colour):
         draw.rectangle((x, top, x + 3, top + 128), fill=(255, 255, 255, round(30 * (1 - x / 980))))
     draw.rectangle((0, top, 10, top + 128), fill=colour)
 
+    hidden = _hidden(companion, unlocked)
     name = companion.name if unlocked else "???"
     draw.text((MARGIN, top + 64), name, font=display(92), fill=TEXT, anchor="lm", stroke_width=2, stroke_fill=INK)
 
     y = top + 150
-    title = companion.title if unlocked else "Unknown companion"
+    title = companion.title if unlocked else "Secret companion" if hidden else "Unknown companion"
     draw.text((MARGIN, y), title.upper(), font=bold(24), fill=_mix(colour, TEXT, 0.45))
 
     y += 48
-    x = _pill(draw, (MARGIN, y), companion.alignment.upper(), colour)
+    x = _pill(draw, (MARGIN, y), "SECRET" if hidden else companion.alignment.upper(), colour)
     if selected:
         x = _pill(draw, (x, y), "SELECTED", GOLD)
     if not unlocked:
@@ -245,12 +268,13 @@ def _details(draw, companion, unlocked, selected, colour):
 
     y += 62
     font = regular(25)
-    text = companion.description if unlocked else f"\u201c{companion.hint}\u201d"
+    text = companion.description if unlocked else f"\u201c{SECRET_HINT if hidden else companion.hint}\u201d"
     for line in _wrap(draw, text, font, 720):
         draw.text((MARGIN, y), line, font=font, fill=_mix(TEXT, MUTED, 0.25) if unlocked else MUTED)
         y += 36
     if not unlocked:
-        draw.text((MARGIN, y + 10), "Unlock this companion to learn their story.", font=bold(19),
+        prompt = "Find this companion to learn who they are." if hidden else "Unlock this companion to learn their story."
+        draw.text((MARGIN, y + 10), prompt, font=bold(19),
                   fill=_mix(MUTED, INK, 0.25))
 
 
@@ -264,11 +288,14 @@ def _tile(key, unlocked, size, focused):
         fill = _gradient(box, _mix(companion.accent, (255, 255, 255), 0.15), _mix(companion.accent, INK, 0.75))
         art = _art(key, "portrait")
     else:
-        light = _mix(ALIGNMENT_COLOURS[companion.alignment], (200, 200, 210), 0.55)
+        light = _mix(_colour(companion, unlocked), (200, 200, 210), 0.55)
         fill = _gradient(box, light, _mix(light, INK, 0.65))
-        art = _art(key, "silhouette")
+        art = None if companion.secret else _art(key, "silhouette")
     if art is not None:
         fill.alpha_composite(_crop_focus(art, companion.focus, companion.zoom, box))
+    elif _hidden(companion, unlocked):
+        _layer(fill, lambda draw: draw.text((box[0] // 2, height // 2 - 14), "?", font=display(height // 2),
+                                            fill=(20, 20, 28, 230), anchor="mm"))
     if not focused:
         _layer(fill, lambda draw: draw.rectangle((0, 0) + box, fill=(8, 8, 12, 96)))
     if not unlocked:
@@ -340,7 +367,7 @@ def _footer(draw, index):
 def _render(index, states, selected_key):
     companion = COMPANIONS[index]
     unlocked = states[index]
-    colour = ALIGNMENT_COLOURS[companion.alignment]
+    colour = _colour(companion, unlocked)
     accent = companion.accent if unlocked else _mix(colour, (60, 60, 70), 0.45)
 
     canvas = _background(accent)
