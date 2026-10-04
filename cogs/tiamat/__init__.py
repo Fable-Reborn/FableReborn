@@ -251,17 +251,21 @@ class Tiamat(commands.Cog):
         """Show the dragon card for you or `[member]`: form, title, Runes, Soul Gems and story.
 
         Dragons hidden from the Clutch can only be viewed by their owner."""
-        member = member or ctx.author
-        data = await fetch_dragon_card(self.bot.pool, member.id)
-        if data is None:
-            whose = "You haven't" if member == ctx.author else f"**{member.display_name}** hasn't"
-            return await ctx.send(f"{whose} hatched in The Tiamat Sacrament yet.")
-        if data["clutch"] and data["clutch"]["hidden"] and member != ctx.author:
-            return await ctx.send(f"**{member.display_name}**'s dragon keeps to the shadows.")
-        card = build_dragon_card(data, member.display_name)
-        async with ctx.typing():
-            image = await asyncio.to_thread(render_dragon_card, card)
-        await ctx.send(file=discord.File(image, filename="dragon.png"))
+        try:
+            member = member or ctx.author
+            data = await fetch_dragon_card(self.bot.pool, member.id)
+            if data is None:
+                whose = "You haven't" if member == ctx.author else f"**{member.display_name}** hasn't"
+                return await ctx.send(f"{whose} hatched in The Tiamat Sacrament yet.")
+            if data["clutch"] and data["clutch"]["hidden"] and member != ctx.author:
+                return await ctx.send(f"**{member.display_name}**'s dragon keeps to the shadows.")
+            card = build_dragon_card(data, member.display_name)
+            async with ctx.typing():
+                image = await asyncio.to_thread(render_dragon_card, card)
+            await ctx.send(file=discord.File(image, filename="dragon.png"))
+        except Exception as e:
+            print(f"Error in dragon command: {e}")
+            await ctx.send(f"An error occurred while processing your request. {e}")
 
 
 async def setup(bot):
