@@ -2484,4 +2484,3 @@ FableRPG is a global bot, your characters are valid everywhere"""
 
 async def setup(bot):
     await bot.add_cog(Miscellaneous(bot))
-    await bot.tree.sync()
