@@ -1,0 +1,3 @@
+-- No new profile column.
+-- The Last Lantern uses the existing seasonal-background stock, profile.ssbg.
+-- A GM shop reset already sets ssbg back to 1.
