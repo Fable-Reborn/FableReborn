@@ -26,6 +26,7 @@ log = logging.getLogger(__name__)
 JOIN_SECONDS = 180
 SEARCH_SECONDS = 90
 ACTIVE_KEY = "halloween:manor:active"
+# Must match the event theme key in cogs/profile/themes.py (EVENT_THEMES).
 THEME_KEY = "hallowmanor"
 
 STORY = {

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 
 import discord
 from discord.ext import commands
@@ -9,6 +10,7 @@ from discord.ext import commands
 from utils import checks
 
 from .dragon_card import DragonCard, render_dragon_card
+from .online import build_online_embeds, build_player_embed, fetch_online, find_player
 from .service import (
     GOLD_PER_CROWN,
     LINK_CODE_TTL_MINUTES,
@@ -265,6 +267,34 @@ class Tiamat(commands.Cog):
             await ctx.send(file=discord.File(image, filename="dragon.png"))
         except Exception as e:
             print(f"Error in dragon command: {e}")
+            await ctx.send(f"An error occurred while processing your request. {e}")
+
+    @checks.is_gm()
+    @commands.command(name="tonline", aliases=["rpgonline", "whosonline"], brief="GM: who is online in the RPG and where")
+    async def tonline(self, ctx) -> None:
+        """List everyone connected to the RPG right now: map, tile, what they're doing, level and HP."""
+        try:
+            rows = await fetch_online(self.bot.pool)
+            embeds = build_online_embeds(rows)
+            for start in range(0, len(embeds), 10):
+                await ctx.send(embeds=embeds[start:start + 10], allowed_mentions=discord.AllowedMentions.none())
+        except Exception as e:
+            log.exception("tonline failed")
+            await ctx.send(f"An error occurred while processing your request. {e}")
+
+    @checks.is_gm()
+    @commands.command(name="twhere", aliases=["rpgwhere", "findplayer"], brief="GM: where an RPG player is")
+    async def twhere(self, ctx, *, who: str) -> None:
+        """Show one player: online status, map and tile, activity, level, crowns.
+
+        `who` is their game username, display name, a Discord mention or a Discord ID."""
+        try:
+            mention = re.fullmatch(r"<@!?(\d+)>|(\d{15,20})", who.strip())
+            discord_id = int(mention.group(1) or mention.group(2)) if mention else None
+            found = await find_player(self.bot.pool, who, discord_id)
+            await ctx.send(embed=build_player_embed(who, found), allowed_mentions=discord.AllowedMentions.none())
+        except Exception as e:
+            log.exception("twhere failed")
             await ctx.send(f"An error occurred while processing your request. {e}")
 
 

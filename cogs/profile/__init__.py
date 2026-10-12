@@ -51,7 +51,7 @@ from utils.april_fools import get_pet_display_name, mask_pet_record_for_display
 from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
-from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent
+from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent, render_fable
 from .theme_contract import is_contract_alias, start_trade_in
 from .theme_picker import ProfileThemePicker
 from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme, grant_random_theme, theme_drop_message
@@ -2756,7 +2756,7 @@ class Profile(commands.Cog):
         #draw.text((width - 16 - tw(footer, tiny_font), height - (19 if theme.classic else 25)), footer, font=tiny_font, fill=colors["muted"])
 
         output = BytesIO()
-        if theme.rarity == "Transcendent":
+        if theme.rarity in ("Transcendent", "Fable"):
             # Pass the already resolved gameplay values to a separate visual format.
             # The folio never reads stats back from pixels or recalculates combat.
             companion = None
@@ -2774,7 +2774,8 @@ class Profile(commands.Cog):
                     detail=(f"{item_type_name(item)} / Power {self._format_stat_value(self._effective_item_primary_stat(item))}"
                             f" / {str(item.get('element') or 'No element').title()}") if item else "Empty slot",
                 ))
-            canvas = render_transcendent(theme, dict(
+            folio = render_fable if theme.rarity == "Fable" else render_transcendent
+            canvas = folio(theme, dict(
                 name=card_name, race=race_name, classes=classes, level=level, rarity=rarity,
                 xp_progress=xp_progress, power=power, luck=luck_percent,
                 attack=raid_attack_value, defense=raid_defense_value, health=total_health_value,
@@ -2787,7 +2788,7 @@ class Profile(commands.Cog):
         elif not theme.classic:
             canvas = add_theme_banner(canvas, theme)
         # The folio is large and richly lit; exhaustive PNG optimisation costs ~1s for ~4%.
-        png_options = dict(compress_level=6) if theme.rarity == "Transcendent" else dict(optimize=True)
+        png_options = dict(compress_level=6) if theme.rarity in ("Transcendent", "Fable") else dict(optimize=True)
         canvas.convert("RGB").save(output, format="PNG", **png_options)
         output.seek(0)
         return output

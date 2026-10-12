@@ -123,6 +123,29 @@ All collectible rows below use the shared pool: **Adventure, PvE, Battle Tower a
 | Transcendent | `nightpalace` | The Velvet Singularity | Transcendent |
 | Transcendent | `worldtreeheart` | The Worldtree's Heart | Transcendent |
 
+## Fables (story editions)
+
+Three themes from The Tiamat Sacrament sit outside the drop pool, in a **Fables**
+collection with its own **Fable** tier. They use a 2400×1700 widescreen folio
+(`render_fable` in `cogs/profile/themes.py`). It keeps each 3:1 painting whole and
+reflects the scene below it, under frosted-glass stat panels.
+
+| Key | Theme | Painting | Unlocks with companion |
+| --- | --- | --- | --- |
+| `sacrament` | The Tiamat Sacrament | `tiamat-sacrament-banner-v1.png` | `azuar` (story complete) |
+| `gyle` | The Penitent Blade | `gyle-nether-garrison-v2.png` | `gyle` (Gyle's fate) |
+| `ryjin` | Ry'jin's Dominion | `ryjin-dominion-banner-v2.png` | `ryjin` (secret true ending) |
+
+Each edition has its own look:
+- **Sacrament:** sapphire-and-white-gold metal, a rippling lake reflection, light rays, a crown of Az'uar's horns on the portrait, and water-magic spirals.
+- **Penitent Blade:** gunmetal and crimson, a polished-steel reflection, rising embers, a riveted frame, and crossed swords point-down behind the portrait.
+- **Dominion:** black iron and sulphur green, a toxic-pool reflection with vapour and bubbles, a spiked summoning circle, and a thorned frame.
+
+Ownership follows the Companions cog. When the game server writes a companion to
+`companions.unlocked`, the matching theme is claimed (source `story:<companion>`)
+the next time that player's themes sync. If the table is missing, the theme stays
+locked. `$gmprpgtheme @player <key>` still grants any of them by hand.
+
 ## Player commands and collection browser
 
 Use your server's command prefix in place of `$` if different.
