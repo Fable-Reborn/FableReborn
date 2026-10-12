@@ -512,6 +512,47 @@ def event_theme(key, name, *, accent, event, epithet="", description="", emoji="
 
 EVENT_THEMES = (
     # Add event themes here ↓
+    event_theme(
+        "hallowmanor", "Hallow Manor",
+        accent="#ff7a1a",
+        event="Halloween 2026",
+        emoji="🎃",
+        motif="lantern",
+        epithet="SOMETHING IS KNOCKING.",
+        description="SEASONAL / LEGENDARY / CHRONICLE 53",
+    ),
+    event_theme(
+        "headlesshorseman", "Hollow Rider",
+        accent="#f28c28",
+        event="Halloween 2026",
+        emoji="🎃",
+        motif="claw",
+        title_lines=("HOLLOW", "RIDER"),
+        epithet="THE ROAD CLAIMS EVERY SOUL.",
+        description="SEASONAL / RARE / CHRONICLE 50",
+    ),
+
+    event_theme(
+        "ghostship", "Wraithwake",
+        accent="#7bdac6",
+        event="Halloween 2026",
+        emoji="👻",
+        motif="wave",
+        title_lines=("WRAITHWAKE",),
+        epithet="THE DEAD STILL TAKE THEIR TEA.",
+        description="SEASONAL / RARE / CHRONICLE 51",
+    ),
+
+    event_theme(
+        "dancingskeletons", "Bonecourt Revel",
+        accent="#b58cff",
+        event="Halloween 2026",
+        emoji="💀",
+        motif="crown",
+        title_lines=("BONECOURT", "REVEL"),
+        epithet="THE MUSIC OUTLIVED THE GUESTS.",
+        description="SEASONAL / RARE / CHRONICLE 52",
+    ),
 
     # Database-flag example: everyone who unlocked the Halloween class
     # (profile.spookyclass = true, set by cogs/halloween) gets this theme.
