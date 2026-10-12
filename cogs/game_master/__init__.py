@@ -7320,6 +7320,8 @@ class GameMaster(commands.Cog):
         self.event_flags = {row["event_key"]: bool(row["enabled"]) for row in rows}
         for key, default in self.EVENT_DEFAULTS.items():
             self.event_flags.setdefault(key, default)
+        # A restart must not turn Halloween back on. $gmevent halloween on is the switch.
+        self.event_flags["halloween"] = False
         self.bot.event_flags = self.event_flags
 
     async def _init_april_fools_settings(self):

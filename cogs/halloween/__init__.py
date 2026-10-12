@@ -184,7 +184,7 @@ class Halloween(commands.Cog):
                     ("<:F_Legendary:1139514868400132116> Legendary Crate", 1300, sslegendary_value),
                     ("<:f_money:1146593710516224090> Fortune Crate", 1750, ssfortune_value),
                     ("<:f_divine:1169412814612471869> Divine Crate", 2900, ssdivine_value),
-                    ("🖼️ Seasonal Background", 650, ssbg_value),
+                    ("🎃 The Last Lantern", 2500, ssbg_value),
                     ("🧙 Seasonal Class", 1000, ssclass_value),
                     ("🟡 Weapon Type Token", 200, sstoken_value),
                     ("🛍️ 3 Trick or Treat Bags", 200, sstot_value)
@@ -226,7 +226,7 @@ class Halloween(commands.Cog):
         if not await self._ensure_event_enabled(ctx):
             return
 
-        if item < 0 and item > 10:
+        if item < 1 or item > 10:
             await ctx.send("Invalid choice")
             return
 
@@ -269,7 +269,7 @@ class Halloween(commands.Cog):
             await ctx.send("You have successfully purchased a <:F_uncommon:1139514875828252702> for 30 Bones!")
 
         if item == 2:
-            if bones_count < 50:
+            if bones_count < 60:
                 await ctx.send("You cannot afford this")
                 return
             item1 = await self.bot.pool.fetchrow(
@@ -287,7 +287,7 @@ class Halloween(commands.Cog):
             )
 
             await self.bot.pool.execute(
-                'UPDATE profile SET bones = bones - 50 WHERE "user"=$1;',
+                'UPDATE profile SET bones = bones - 60 WHERE "user"=$1;',
                 ctx.author.id
             )
 
@@ -295,7 +295,7 @@ class Halloween(commands.Cog):
                 'UPDATE profile SET crates_rare = crates_rare + 1 WHERE "user"=$1;',
                 ctx.author.id
             )
-            await ctx.send("You have successfully purchased a <:F_rare:1139514880517484666> for 50 Bones!")
+            await ctx.send("You have successfully purchased a <:F_rare:1139514880517484666> for 60 Bones!")
 
         if item == 3:
             if bones_count < 250:
@@ -324,7 +324,7 @@ class Halloween(commands.Cog):
                 'UPDATE profile SET crates_magic = crates_magic + 1 WHERE "user"=$1;',
                 ctx.author.id
             )
-            await ctx.send("You have successfully purchased a <:F_Magic:1139514865174720532> for 500 Bones!")
+            await ctx.send("You have successfully purchased a <:F_Magic:1139514865174720532> for 250 Bones!")
 
         if item == 4:
             if bones_count < 1300:
@@ -421,7 +421,18 @@ class Halloween(commands.Cog):
 
 
         if item == 7:
-            if bones_count < 650:
+            from cogs.profile.theme_unlocks import grant_event_theme
+
+            theme_key = "hallowmanor"
+            already_owned = await self.bot.pool.fetchval(
+                "SELECT 1 FROM profile_theme_unlocks WHERE user_id=$1 AND theme_key=$2;",
+                ctx.author.id,
+                theme_key,
+            )
+            if already_owned:
+                await ctx.send("You already own The Last Lantern.")
+                return
+            if bones_count < 2500:
                 await ctx.send("You cannot afford this")
                 return
             item1 = await self.bot.pool.fetchrow(
@@ -434,37 +445,25 @@ class Halloween(commands.Cog):
                 return
 
             await self.bot.pool.execute(
-                'UPDATE profile SET ssbg = ssbg - 1 WHERE "user"=$1;',
+                'UPDATE profile SET ssbg = ssbg - 1, bones = bones - 2500 WHERE "user"=$1;',
                 ctx.author.id
             )
-
-            await self.bot.pool.execute(
-                'UPDATE profile SET bones = bones - 650 WHERE "user"=$1;',
-                ctx.author.id
-            )
-
-            await self.bot.pool.execute(
-                'UPDATE profile SET ssbg1 = true WHERE "user"=$1;',
-                ctx.author.id
-            )
-
-            backgrounds = [
-                "https://i.ibb.co/FmwWpF4/ssbg.png",
-            ]
-            async with self.bot.pool.acquire() as conn:
-                background = random.choice(backgrounds)
-                current_backgrounds = await conn.fetchval(
-                    'SELECT "backgrounds" FROM profile WHERE "user"=$1;', ctx.author.id
+            granted = False
+            try:
+                granted = await grant_event_theme(self.bot.pool, ctx.author.id, theme_key, "halloween_shop")
+            except Exception:
+                granted = False
+            if not granted:
+                await self.bot.pool.execute(
+                    'UPDATE profile SET ssbg = ssbg + 1, bones = bones + 2500 WHERE "user"=$1;',
+                    ctx.author.id
                 )
-                if current_backgrounds is None or background not in current_backgrounds:
-                    await conn.execute(
-                        'UPDATE profile SET "backgrounds"=array_append("backgrounds", $1) WHERE "user"=$2;',
-                        background,
-                        ctx.author.id,
-                    )
-
-            await ctx.send("You have successfully purchased a Seasonal Background for 650 Bones!")
-            await ctx.send("You can find it in $eventbackgrounds")
+                await ctx.send("The lantern did not take. Your bones were returned.")
+                return
+            await ctx.send(
+                "You have successfully purchased The Last Lantern for 2500 Bones! "
+                "It is in `$prpg themes`. Equip it with `$prpg theme hallowmanor`."
+            )
 
         if item == 8:
             if bones_count < 1000:

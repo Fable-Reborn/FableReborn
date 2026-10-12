@@ -68,4 +68,4 @@ The house clears when searches reach about 70% of (investigators × 3). A solo i
 
 ## Profile theme
 
-**The Last Lantern** (`hollowmanor`) replaces the seasonal background in `$spookyshop`. It costs 2,500 bones, one purchase, and it is a `$prpg` theme. It can also drop from an active manor search. It is not in the normal profile-theme drop pool. The banner file is `assets/halloween/hollowmanor.png`, and it is a stand-in until finished art replaces it. On ship, copy that file to `assets/profile_themes/hollowmanor.png`.
+**The Last Lantern** (`hallowmanor`) replaces the seasonal background in `$spookyshop`. It costs 2,500 bones, one purchase, and it is a `$prpg` theme. It can also drop from an active manor search. It is not in the normal profile-theme drop pool. The banner file is `assets/profile_themes/hallowmanor.png`. Equip it with `$prpg theme hallowmanor`.

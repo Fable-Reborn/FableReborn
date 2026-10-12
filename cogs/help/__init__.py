@@ -1327,6 +1327,8 @@ class Help(commands.Cog):
                         "spookyshop bal",
                         "yummy",
                         "bags",
+                        "manor",
+                        "manor status",
                         "calendar",
                         "calendar open",
                         "xmasshop",

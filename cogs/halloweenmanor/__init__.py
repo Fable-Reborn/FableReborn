@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 JOIN_SECONDS = 180
 SEARCH_SECONDS = 90
 ACTIVE_KEY = "halloween:manor:active"
-THEME_KEY = "hollowmanor"
+THEME_KEY = "hallowmanor"
 
 STORY = {
     "gate": (
@@ -537,7 +537,7 @@ class HalloweenManor(commands.Cog):
         if receipt["uncommon"]:
             lines.append("Uncommon crate: **1**")
         if receipt["theme"]:
-            lines.append("🎃 Profile theme: **The Last Lantern**. Equip it with `$prpg theme hollowmanor`.")
+            lines.append(f"🎃 Profile theme: **The Last Lantern**. Equip it with `$prpg theme {THEME_KEY}`.")
         elif receipt.get("theme_owned"):
             lines.append("You already own The Last Lantern, so the house paid extra bones instead.")
         return "\n".join(lines)
@@ -639,12 +639,9 @@ class HalloweenManor(commands.Cog):
                 user_id,
             )
         if receipt["theme"]:
-            from cogs.profile.theme_unlocks import grant_theme
-            from cogs.profile.themes import resolve_theme
+            from cogs.profile.theme_unlocks import grant_event_theme
 
-            theme = resolve_theme(THEME_KEY)
-            if theme is not None:
-                await grant_theme(self.bot.pool, user_id, theme, "hollow_manor")
+            await grant_event_theme(self.bot.pool, user_id, THEME_KEY, "hollow_manor")
 
     async def _send_receipts(self, grants):
         async def send_one(user_id, receipt):

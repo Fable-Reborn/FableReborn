@@ -136,8 +136,12 @@ def paint_theme_banner() -> Image.Image:
 
 
 def write_assets() -> None:
+    """Write stand-in paintings only where a file is missing. Finished art is left in place."""
     MANOR_DIR.mkdir(parents=True, exist_ok=True)
     THEME_BANNER.parent.mkdir(parents=True, exist_ok=True)
     for phase in PHASES:
-        paint_phase(phase).save(MANOR_DIR / f"{phase}.png", format="PNG", optimize=True)
-    paint_theme_banner().save(THEME_BANNER, format="PNG", optimize=True)
+        path = MANOR_DIR / f"{phase}.png"
+        if not path.is_file():
+            paint_phase(phase).save(path, format="PNG", optimize=True)
+    if not THEME_BANNER.is_file():
+        paint_theme_banner().save(THEME_BANNER, format="PNG", optimize=True)
