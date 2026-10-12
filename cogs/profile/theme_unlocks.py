@@ -16,9 +16,12 @@ class UnlockRule:
     target: int = 0
     god: str = ""
     flag: str = ""
+    note: str = ""
 
     @property
     def label(self):
+        if self.note:
+            return self.note
         if self.stat == "free":
             return "Available to every adventurer"
         if self.stat == "drop":
@@ -39,6 +42,9 @@ class UnlockRule:
         if self.stat == "event":
             # Granted explicitly, or claimed when its boolean profile column is true.
             return bool(self.flag) and facts.get(self.flag) is True
+        if self.stat == "story":
+            # Claimed once the Tiamat Sacrament companion of the same name is unlocked.
+            return self.flag in facts.get("companions", ())
         return self.stat in ("free", "drop") or (
             int(facts.get(self.stat, 0) or 0) >= self.target
             and (not self.god or str(facts.get("god") or "").casefold() == self.god.casefold())
@@ -49,7 +55,7 @@ class UnlockRule:
             return self.label
         if self.stat == "drop":
             return "Must be discovered"
-        if self.stat == "event":
+        if self.stat in ("event", "story"):
             return self.label
         value = max(0, int(facts.get(self.stat, 0) or 0))
         progress = f"{min(value, self.target):,}/{self.target:,}"
@@ -80,6 +86,7 @@ RARITY_EMOJI = {
     "Legendary": "🔴",
     "Mythic": "💠",
     "Transcendent": "🌟",
+    "Fable": "📖",
     "Event": "🎟️",
 }
 
@@ -199,6 +206,16 @@ COLLECTIBLE_THEMES: dict[str, ThemeDrop] = {
 }
 
 
+# Fable editions never drop. Each follows a Tiamat Sacrament companion: the game
+# server writes the unlock to `companions` at the story milestone, and the theme
+# is claimed the next time the player's themes sync. GMs can still grant them.
+FABLE_RULES = {
+    "sacrament": UnlockRule("story", flag="azuar", note="Finish The Tiamat Sacrament"),
+    "gyle": UnlockRule("story", flag="gyle", note="Decide Gyle's fate in The Tiamat Sacrament"),
+    "ryjin": UnlockRule("story", flag="ryjin", note="Uncover the true ending of The Tiamat Sacrament"),
+}
+
+
 # Unified rule catalog: free starters + collectible prerequisites.
 RULES = {
     "classic": UnlockRule("free"),
@@ -210,6 +227,7 @@ RULES = {
     "frost": UnlockRule("free"),
     **{key: drop.unlock for key, drop in COLLECTIBLE_THEMES.items()},
     **{theme.key: UnlockRule("event", flag=theme.unlock_flag) for theme in EVENT_THEMES},
+    **FABLE_RULES,
 }
 
 
@@ -346,21 +364,27 @@ async def _claim_locked(conn, user_id):
         'SELECT COUNT(*) AS pet_count, COALESCE(MAX(trust_level), 0) AS pet_trust FROM monster_pets WHERE user_id = $1;', user_id,
     )
     facts.update(dict(pets))
+    # The companions table belongs to the Companions cog and may not exist yet.
+    companions = None
+    if await conn.fetchval("SELECT to_regclass('companions') IS NOT NULL;"):
+        companions = await conn.fetchval('SELECT unlocked FROM companions WHERE user_id = $1;', user_id)
+    facts["companions"] = frozenset(companions or ())
     rows = await conn.fetch('SELECT theme_key FROM profile_theme_unlocks WHERE user_id = $1;', user_id)
     owned = {row["theme_key"] for row in rows if row["theme_key"] in THEMES} | {"classic"}
     # Only auto-claim free (starter) themes; collectible themes come from drops.
     new = tuple(key for key, rule in RULES.items() if key not in owned and key not in COLLECTIBLE_THEMES and rule.met(facts))
-    starters = [key for key in new if RULES[key].stat != "event"]
+    starters = [key for key in new if RULES[key].stat not in ("event", "story")]
     if starters:
         await conn.executemany(
             'INSERT INTO profile_theme_unlocks (user_id, theme_key) VALUES ($1, $2) ON CONFLICT (user_id, theme_key) DO NOTHING;',
             [(user_id, key) for key in starters],
         )
-    flagged = [key for key in new if RULES[key].stat == "event"]
+    sources = {"event": "event-flag", "story": "story"}
+    flagged = [key for key in new if RULES[key].stat in sources]
     if flagged:
         await conn.executemany(
             'INSERT INTO profile_theme_unlocks (user_id, theme_key, source) VALUES ($1, $2, $3) ON CONFLICT (user_id, theme_key) DO NOTHING;',
-            [(user_id, key, f"event-flag:{RULES[key].flag}") for key in flagged],
+            [(user_id, key, f"{sources[RULES[key].stat]}:{RULES[key].flag}") for key in flagged],
         )
     owned.update(new)
     current = resolve_theme(profile["prpg_theme"])

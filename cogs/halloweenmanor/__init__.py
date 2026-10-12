@@ -26,7 +26,8 @@ log = logging.getLogger(__name__)
 JOIN_SECONDS = 180
 SEARCH_SECONDS = 90
 ACTIVE_KEY = "halloween:manor:active"
-THEME_KEY = "hollowmanor"
+# Must match the event theme key in cogs/profile/themes.py (EVENT_THEMES).
+THEME_KEY = "hallowmanor"
 
 STORY = {
     "gate": (
@@ -537,7 +538,7 @@ class HalloweenManor(commands.Cog):
         if receipt["uncommon"]:
             lines.append("Uncommon crate: **1**")
         if receipt["theme"]:
-            lines.append("🎃 Profile theme: **The Last Lantern**. Equip it with `$prpg theme hollowmanor`.")
+            lines.append("🎃 Profile theme: **The Last Lantern**. Equip it with `$prpg theme {THEME_KEY}`.")
         elif receipt.get("theme_owned"):
             lines.append("You already own The Last Lantern, so the house paid extra bones instead.")
         return "\n".join(lines)

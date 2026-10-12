@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import re
 
+import numpy as np
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 
@@ -40,6 +41,8 @@ class ProfileTheme:
     def card_size(self):
         if self.classic:
             return (1660, 940)
+        if self.rarity == "Fable":
+            return FABLE_SIZE
         return TRANSCENDENT_SIZE if self.rarity == "Transcendent" else (1660, 1460)
 
     @property
@@ -409,6 +412,19 @@ THEMES = {
                      "A mahogany dryad queen shelters an entire living kingdom inside an emerald seed.",
                      "#e3e2b3", "#8aa493", "#132724", "#283d35", "#f6f6e3", "#cbd8c5", "🌳", "Transcendent", "Transcendent", "leaf",
                      title_lines=("The Worldtree's", "Heart"), finish="prismatic", layout="sanctum"),
+        # Fables: story editions from The Tiamat Sacrament, drawn by render_fable.
+        ProfileTheme("sacrament", "The Tiamat Sacrament", "THE ONLY HOPE TOOK WING.",
+                     "Az'uar, Kelburn and Xandra above the waterfall kingdom.",
+                     "#9ccfff", "#4d6f9c", "#08111f", "#132339", "#eef6ff", "#a8bdd8", "🐉", "Fables", "Fable", "wave",
+                     title_lines=("The Tiamat", "Sacrament"), finish="prismatic", layout="sacrament"),
+        ProfileTheme("gyle", "The Penitent Blade", "SOME DEBTS ARE PAID IN STEEL.",
+                     "Gyle stands sword-down in the Nether Garrison at dawn.",
+                     "#f09a86", "#7d4a42", "#120e0c", "#2a201b", "#faf1e6", "#cdb9a6", "⚔️", "Fables", "Fable", "claw",
+                     title_lines=("The Penitent", "Blade"), finish="prismatic", layout="garrison"),
+        ProfileTheme("ryjin", "Ry'jin's Dominion", "EVERY DRAGON'S BREATH IS MINE.",
+                     "The Tyrant of Ildria and Az'golath in the breath laboratories.",
+                     "#c6f06a", "#5c7a30", "#070b07", "#151d12", "#f1f8e4", "#adbd98", "🧪", "Fables", "Fable", "rift",
+                     title_lines=("Ry'jin's", "Dominion"), finish="prismatic", layout="dominion"),
     )
 }
 
@@ -580,6 +596,13 @@ ALIASES = {
     "avatar tynfdarius": "tynfdarius", "mech-a-knight": "mechaknight",
     "umbracrown basilisk": "umbracrown", "void dragon": "voiddragon",
     "nullstar behemoth": "nullstar",
+    "tiamat": "sacrament", "tiamat sacrament": "sacrament", "azuar": "sacrament", "az'uar": "sacrament",
+    "kelburn": "sacrament", "xandra": "sacrament", "heroes": "sacrament",
+    "penitent": "gyle", "penance": "gyle", "nether garrison": "gyle",
+    "ry'jin": "ryjin", "ryjins dominion": "ryjin", "dominion": "ryjin", "tyrant": "ryjin",
+    "az'golath": "ryjin", "azgolath": "ryjin",
+    # The Halloween manor docs and announcement call it hollowmanor / The Last Lantern.
+    "hollowmanor": "hallowmanor", "the last lantern": "hallowmanor", "last lantern": "hallowmanor",
     **{theme.name.lower(): theme.key for theme in THEMES.values()},
 }
 
@@ -1554,6 +1577,694 @@ def render_transcendent(theme, data):
         sprite = data["sprite"].convert("RGBA")
         canvas.paste(sprite, (100, 892), sprite)
         text(166, 1053, data["sprite_name"], 17, theme.muted, 210, center=True)
+    return canvas
+
+
+# ===========================================================================
+#  FABLE FOLIOS  —  story editions from The Tiamat Sacrament
+# ===========================================================================
+# The Fable paintings are 3:1 panoramas, so this folio is a landscape card that
+# keeps each one whole. Below the painting the scene is reflected (in a lake, on
+# polished steel, in a toxic pool) under frosted glass, gilded in the edition's metal.
+
+FABLE_SIZE = (2400, 1700)
+_FABLE_ART = {"sacrament": "tiamat-sacrament-banner-v1.png",
+              "gyle": "gyle-nether-garrison-v2.png",
+              "ryjin": "ryjin-dominion-banner-v2.png"}
+_FABLE_ART_H = 800
+_MEDALLION = (300, 930)
+_FABLE_PLAQUES = ((600, 1098, 1146, 1258), (1187, 1098, 1733, 1258), (1774, 1098, 2320, 1258))
+_FABLE_LEDGER = (80, 1280, 1560, 1590)
+_FABLE_BOND = (1600, 1280, 2320, 1590)
+_FABLE_QUEST = (420, 1610, 1980, 1652)
+_FABLE_HEADERS = ((110, 1298, "I   /   ARMAMENT", 548), (600, 1298, "II   /   ALLEGIANCE", 1038),
+                  (1090, 1298, "III   /   LEGACY", 1530), (1630, 1298, "IV   /   SOUL COMPANION", 2290))
+_FABLE_STATS = ("VITALITY  /  HEALTH", "OFFENSE  /  ATTACK", "WARD  /  DEFENSE")
+
+# `foil` runs over the engraved metal, `ink` top-to-bottom through chrome lettering.
+_FABLES = {
+    "sacrament": dict(
+        chapter=1, kicker="AZ'UAR   ·   KELBURN   ·   XANDRA", legend="THE TIAMAT SACRAMENT",
+        foil=((84, 70, 46), (196, 162, 98), (255, 240, 204), (255, 255, 252), (168, 208, 255), (212, 176, 108), (250, 234, 186)),
+        ink=((255, 255, 255), (232, 243, 255), (178, 210, 252), (70, 104, 176), (198, 224, 255), (250, 252, 255)),
+        glow=(110, 186, 255), jewel=((46, 122, 255), (206, 236, 255), (10, 28, 104)),
+        lower="lake", tint=(130, 178, 238), haze=(176, 214, 255), sun=(1440, 170), rays=(255, 226, 168),
+        motes=((214, 240, 255), (120, 230, 255))),
+    "garrison": dict(
+        chapter=2, kicker="GYLE   ·   THE NETHER GARRISON", legend="GYLE  ·  THE PENITENT",
+        foil=((52, 54, 62), (146, 150, 162), (232, 236, 244), (255, 255, 255), (178, 182, 194), (92, 94, 106), (210, 214, 224)),
+        ink=((255, 255, 255), (236, 236, 242), (196, 198, 208), (96, 100, 112), (212, 214, 224), (252, 250, 250)),
+        glow=(255, 104, 74), jewel=((214, 38, 48), (255, 196, 186), (86, 6, 14)),
+        lower="steel", tint=(186, 146, 108), haze=(255, 222, 170), sun=(1400, 90), rays=(255, 214, 156),
+        motes=((255, 226, 186), (255, 120, 54))),
+    "dominion": dict(
+        chapter=3, kicker="RY'JIN   ·   TYRANT OF ILDRIA", legend="RY'JIN  ·  TYRANT OF ILDRIA",
+        foil=((28, 32, 24), (94, 108, 58), (208, 238, 118), (246, 255, 200), (148, 188, 68), (66, 76, 42), (198, 228, 108)),
+        ink=((250, 255, 232), (226, 246, 160), (182, 222, 82), (68, 94, 30), (202, 236, 122), (244, 255, 216)),
+        glow=(160, 255, 54), jewel=((140, 232, 36), (234, 255, 186), (36, 76, 8)),
+        lower="pool", tint=(118, 196, 74), haze=(150, 255, 70), sun=None, rays=None,
+        motes=((210, 255, 140), (150, 255, 60))),
+}
+
+
+def _fable(theme):
+    return _FABLES.get(theme.layout, _FABLES["sacrament"])
+
+
+@lru_cache(maxsize=3)
+def _fable_art(key):
+    with Image.open(ASSET_ROOT / _FABLE_ART.get(key, f"{key}.png")) as source:
+        return ImageOps.fit(source.convert("RGB"), (FABLE_SIZE[0], _FABLE_ART_H), method=Image.Resampling.LANCZOS)
+
+
+def _ripple(image, seed):
+    """Water: each row slides sideways, wider and slower the further it is from the shore."""
+    pixels = np.asarray(image)
+    h, w = pixels.shape[:2]
+    rows = np.arange(h)
+    depth = rows / max(1, h - 1)
+    phase = random.Random(seed).uniform(0, math.tau)
+    shift = ((3 + 30*depth) * np.sin(rows * .23 / (1 + depth*2.2) + phase)
+             + (2 + 12*depth) * np.sin(rows * .051 + 1.7)).round().astype(int)
+    cols = (np.arange(w)[None, :] - shift[:, None]) % w
+    return Image.fromarray(pixels[rows[:, None], cols])
+
+
+def _noise(size, cells, rng, blur=0):
+    """Smooth value noise: a coarse random grid enlarged with bicubic filtering."""
+    small = Image.new("L", cells)
+    small.putdata([rng.randint(0, 255) for _ in range(cells[0] * cells[1])])
+    image = small.resize(size, Image.Resampling.BICUBIC)
+    return image.filter(ImageFilter.GaussianBlur(blur)) if blur else image
+
+
+def _fable_lower(art, ed, w, h, bg):
+    """The painting continues beneath its own edge: mirrored in water, or as open ground."""
+    top = _FABLE_ART_H
+    height = h - top
+    mirror = art.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    field = Image.new("RGB", (w, height))
+    field.paste(mirror, (0, 0))
+    if height > mirror.height:
+        field.paste(mirror.crop((0, mirror.height - 1, w, mirror.height)).resize((w, height - mirror.height)),
+                    (0, mirror.height))
+    if ed["lower"] == "steel":
+        # Polished plate: the reflection smears downward like light on brushed metal.
+        field = field.resize((w, height // 30), Image.Resampling.BOX).resize((w, height), Image.Resampling.BICUBIC)
+        field = field.filter(ImageFilter.GaussianBlur(3))
+    else:
+        sharp = _ripple(field, ed["legend"])
+        soft = _ripple(field.filter(ImageFilter.GaussianBlur(9)), ed["legend"])
+        field = Image.composite(soft, sharp, Image.linear_gradient("L").resize((w, height)).point(lambda v: min(255, v*3)))
+    field = ImageChops.multiply(field, Image.new("RGB", field.size, ed["tint"]))
+    fade = Image.linear_gradient("L").resize((w, height)).point(lambda v: round(70 + v*.62))
+    return top, Image.composite(Image.new("RGB", field.size, bg), field, fade)
+
+
+def _rays(size, origin, rng, count=36):
+    """A fan of soft light shafts falling from the painting's light source."""
+    mask = Image.new("L", size)
+    d = ImageDraw.Draw(mask)
+    ox, oy = origin
+    for _ in range(count):
+        a = rng.uniform(math.radians(38), math.radians(152))
+        spread = rng.uniform(.005, .022)
+        d.polygon([(ox, oy), (ox + math.cos(a-spread)*3000, oy + math.sin(a-spread)*3000),
+                   (ox + math.cos(a+spread)*3000, oy + math.sin(a+spread)*3000)], fill=rng.randint(16, 58))
+    return mask.filter(ImageFilter.GaussianBlur(16))
+
+
+def _motes(size, rng, count, area, radius, value=(120, 255), trail=0, rings=False):
+    mask = Image.new("L", size)
+    d = ImageDraw.Draw(mask)
+    x1, y1, x2, y2 = area
+    for _ in range(count):
+        x, y = rng.uniform(x1, x2), rng.uniform(y1, y2)
+        r, v = rng.uniform(*radius), rng.randint(*value)
+        if rings:
+            d.ellipse((x-r, y-r, x+r, y+r), outline=v, width=max(1, round(r/5)))
+            d.ellipse((x-r*.55, y-r*.65, x-r*.25, y-r*.35), fill=v)
+        else:
+            d.ellipse((x-r, y-r, x+r, y+r), fill=v)
+        if trail:
+            # Rising sparks leave a fading streak beneath them.
+            length = rng.uniform(trail*.4, trail)
+            drift = rng.uniform(-.3, .3) * length
+            for i in range(8):
+                t0, t1 = i/8, (i+1)/8
+                d.line((x + drift*t0, y + length*t0, x + drift*t1, y + length*t1),
+                       fill=round(v*(1-t1)*.7), width=max(1, round(r*.9*(1-t0))))
+    return mask
+
+
+def _frost(canvas, box, cut, deep, alpha):
+    """Frosted glass: the scene behind is blurred and darkened, with a lit upper edge."""
+    x1, y1, x2, y2 = box
+    size = (x2-x1, y2-y1)
+    region = canvas.crop(box).filter(ImageFilter.GaussianBlur(18))
+    region = Image.blend(region, Image.new("RGB", size, deep), alpha)
+    sheen = Image.linear_gradient("L").transpose(Image.Transpose.FLIP_TOP_BOTTOM).resize(size)
+    sheen = sheen.point(lambda v: round(max(0, v-150) * .3))
+    region = _screen(region, sheen, (255, 255, 255))
+    mask = Image.new("L", size)
+    ImageDraw.Draw(mask).polygon(_chamfer((0, 0, size[0]-1, size[1]-1), cut), fill=255)
+    canvas.paste(region, box[:2], mask)
+
+
+def _sword(pen, hilt, tip):
+    (hx, hy), (tx, ty) = hilt, tip
+    length = math.hypot(tx-hx, ty-hy)
+    ux, uy = (tx-hx)/length, (ty-hy)/length
+
+    def at(t, s):
+        return (hx + ux*t - uy*s, hy + uy*t + ux*s)
+    pen.disc(*at(-36, 0), 10)
+    pen.line([at(-28, 0), at(0, 0)], 8)
+    pen.line([at(0, -66), at(0, 66)], 7)
+    for side in (-1, 1):
+        pen.disc(*at(0, side*68), 6.5)
+    pen.line([at(10, -14), at(length-50, -12), at(length, 0), at(length-50, 12), at(10, 14), at(10, -14)], 2.4)
+    pen.line([at(24, 0), at(length-70, 0)], 1.2)
+
+
+def _horn(pen, root, angle, length, width, bend):
+    """A tapering horn that curls by `bend` radians from root to tip."""
+    x, y = root
+    spine = []
+    for i in range(25):
+        t = i / 24
+        spine.append((x, y, angle + bend*t*t, width/2 * (1 - t) ** .85))
+        a = angle + bend*t*t
+        x, y = x + math.cos(a)*length/24, y + math.sin(a)*length/24
+    left = [(px - math.sin(a)*half, py + math.cos(a)*half) for px, py, a, half in spine]
+    right = [(px + math.sin(a)*half, py - math.cos(a)*half) for px, py, a, half in spine]
+    pen.poly(left + right[::-1])
+
+
+def _fable_medallion(pen, layout, gems, extra):
+    """The portrait's setting. `extra` receives linework that must stay outside the rim."""
+    cx, cy = _MEDALLION
+    for r, width in ((128, 3), (134, 1), (172, 1), (178, 2.4)):
+        pen.ring(cx, cy, r, width)
+    if layout == "sacrament":
+        # Az'uar's swept crown of horns, and a collar of overlapping scales.
+        for side in (-1, 1):
+            for k in range(5):
+                a = -math.pi/2 + side*(.26 + k*.25)
+                _horn(pen, (cx + math.cos(a)*176, cy + math.sin(a)*176), a + side*.15, 190 - k*30, 30 - k*4, side*(1.05 - k*.08))
+        for i in range(44):
+            a = i * math.tau / 44
+            x, y = cx + math.cos(a)*190, cy + math.sin(a)*190
+            pen.line([(x + math.cos(t)*13, y + math.sin(t)*13) for t in _steps(a - math.pi/2, a + math.pi/2, 12)], 1.6)
+        for a in (math.pi*.25, math.pi*.75, math.pi*.5):
+            gems.append((cx + math.cos(a)*204, cy + math.sin(a)*204, 9))
+    elif layout == "garrison":
+        # Two swords crossed point-down behind a riveted steel rim.
+        for sign in (-1, 1):
+            _sword(extra, (cx - sign*178, cy - 178), (cx + sign*172, cy + 172))
+        pen.ring(cx, cy, 188, 3)
+        pen.ring(cx, cy, 200, 1)
+        for i in range(28):
+            a = i * math.tau / 28
+            pen.disc(cx + math.cos(a)*194, cy + math.sin(a)*194, 4.4 if i % 7 else 6.5)
+        for a in (-math.pi/2, 0, math.pi):
+            gems.append((cx + math.cos(a)*194, cy + math.sin(a)*194, 8))
+    else:
+        # A spiked crown inside a summoning circle.
+        for i in range(36):
+            a = i * math.tau / 36
+            reach, half = (52, .05) if i % 3 == 0 else (24, .035)
+            pen.poly([(cx + math.cos(a-half)*180, cy + math.sin(a-half)*180),
+                      (cx + math.cos(a)*(180+reach), cy + math.sin(a)*(180+reach)),
+                      (cx + math.cos(a+half)*180, cy + math.sin(a+half)*180)])
+        pen.ring(cx, cy, 252, 1.4)
+        pen.ring(cx, cy, 262, .8)
+        for flip in (0, math.pi):
+            points = [(cx + math.cos(flip - math.pi/2 + i*math.tau/3)*262, cy + math.sin(flip - math.pi/2 + i*math.tau/3)*262)
+                      for i in range(4)]
+            extra.line(points, 1.4)
+        for i in range(12):
+            a = i * math.tau / 12 + math.pi/12
+            x, y = cx + math.cos(a)*257, cy + math.sin(a)*257
+            extra.ring(x, y, 7, 1.2)
+            extra.line([(x - math.cos(a)*12, y - math.sin(a)*12), (x + math.cos(a)*12, y + math.sin(a)*12)], 1.2)
+        for a in (-math.pi/2, math.pi/6, math.pi*5/6):
+            gems.append((cx + math.cos(a)*262, cy + math.sin(a)*262, 9))
+
+
+def _fable_frame(pen, layout, w, h, gems):
+    pen.rrect((14, 14, w-14, h-14), 26, 3)
+    pen.rrect((24, 24, w-24, h-24), 20, 1)
+    pen.rrect((32, 32, w-32, h-32), 14, 1.6)
+    corners = ((32, 32, 1, 1), (w-32, 32, -1, 1), (32, h-32, 1, -1), (w-32, h-32, -1, -1))
+    for cx, cy, sx, sy in corners:
+        def p(u, v, cx=cx, cy=cy, sx=sx, sy=sy):
+            return (cx + sx*u, cy + sy*v)
+        if layout == "sacrament":
+            for radius, width in ((62, 2.2), (76, 1)):
+                pen.line([p(radius*math.cos(t), radius*math.sin(t)) for t in _steps(0, math.pi/2, 28)], width)
+            for flip in (False, True):
+                for i in range(14):
+                    u = 96 + i*22
+                    pts = [p(u + 10*math.cos(t), 12 + 10*math.sin(t)) if not flip else p(12 + 10*math.sin(t), u + 10*math.cos(t))
+                           for t in _steps(0, math.pi, 10)]
+                    pen.line(pts, 1.3 - i*.04)
+            pen.line([p(110 + 16*(1 - t/14)*math.cos(t), 40 + 16*(1 - t/14)*math.sin(t)) for t in _steps(0, 14, 80)], 1.3)
+            pen.line([p(40 + 16*(1 - t/14)*math.sin(t), 110 + 16*(1 - t/14)*math.cos(t)) for t in _steps(0, 14, 80)], 1.3)
+        elif layout == "garrison":
+            pen.line([p(0, 0), p(232, 0), p(214, 18), p(18, 18), p(18, 214), p(0, 232), p(0, 0)], 2.4)
+            for i in range(5):
+                pen.disc(*p(40 + i*42, 9), 3.6)
+                pen.disc(*p(9, 40 + i*42), 3.6)
+        else:
+            # Barbed thorns along both edges, pointing away from the corner.
+            for flip in (False, True):
+                def q(u, v, flip=flip, p=p):
+                    return p(v, u) if flip else p(u, v)
+                pen.line([q(78, 10), q(330, 10)], 1.6)
+                for k in range(5):
+                    u, size = 92 + k*48, 26 - k*4
+                    pen.poly([q(u, 10), q(u + size*1.3, 10), q(u + size*1.6, 10 + size*.9)])
+            pen.line([p(62*math.cos(t), 62*math.sin(t)) for t in _steps(0, math.pi/2, 28)], 2.2)
+        jewel = p(44, 44)
+        pen.diamond(*jewel, 17, 1.6)
+        gems.append((*jewel, 11))
+    if layout == "garrison":
+        for y in (24, h-24):
+            for x in range(260, w-250, 64):
+                pen.disc(x, y, 2.6)
+        for x in (24, w-24):
+            for y in range(260, h-250, 64):
+                pen.disc(x, y, 2.6)
+    elif layout == "dominion":
+        for y, sign in ((48, 1), (h-48, -1)):
+            for offset in (0, 8):
+                pen.line([(260, y + sign*offset), (w-260, y + sign*offset)], 1.2)
+            for x in range(320, w-300, 150):
+                pen.line([(x, y - 8*(sign < 0)), (x, y + 16 - 8*(sign < 0))], 5)
+    for x in (32, w-32):
+        pen.diamond(x, 850, 22, 1.6)
+        pen.diamond(x, 850, 30, 1)
+        gems.append((x, 850, 10))
+    for y in (32, h-32):
+        pen.diamond(w/2, y, 18, 1.6, stretch=1.6)
+        gems.append((w/2, y, 9))
+        for sign in (-1, 1):
+            pen.line([(w/2 + sign*34, y), (w/2 + sign*190, y)], 3)
+            pen.disc(w/2 + sign*200, y, 3.2)
+
+
+def _fable_etching(draw, layout, rng, w, h):
+    """Faint light-etched patterns in the lower field, painted with the edition glow."""
+    cx, cy = _MEDALLION
+    if layout == "sacrament":
+        # Rings spreading over the lake from beneath the portrait, and water-magic spirals.
+        for k, r in enumerate(range(240, 2600, 110)):
+            draw.ellipse((cx-r, 1090 - r*.2, cx+r, 1090 + r*.2), outline=max(10, 70 - k*3), width=1)
+        for turn in range(3):
+            points = []
+            for t in _steps(0, 4.2*math.pi, 300):
+                r = 210 + 46*t
+                points.append((cx + r*math.cos(t + turn*math.tau/3), cy + r*.42*math.sin(t + turn*math.tau/3)))
+            draw.line(points, fill=46, width=2)
+            for x, y in points[::14]:
+                draw.ellipse((x-2.2, y-2.2, x+2.2, y+2.2), fill=150)
+    elif layout == "garrison":
+        # Brushed steel: long faint strokes across the parade ground.
+        for _ in range(900):
+            x, y = rng.uniform(-200, w), rng.uniform(820, h)
+            draw.line((x, y, x + rng.uniform(80, 520), y), fill=rng.randint(8, 30), width=1)
+        for r in range(300, 1800, 140):
+            draw.arc((cx-r, cy-r, cx+r, cy+r), 280, 360, fill=22, width=1)
+    else:
+        # The laboratory floor plates and an outer alchemical circle.
+        for x in range(0, w, 120):
+            draw.line((x, 820, x, h), fill=16, width=1)
+        for y in range(820, h, 120):
+            draw.line((0, y, w, y), fill=16, width=1)
+            for x in range(0, w, 120):
+                draw.ellipse((x-2, y-2, x+2, y+2), fill=60)
+        for r in (330, 344, 470):
+            draw.ellipse((cx-r, cy-r, cx+r, cy+r), outline=40, width=1)
+        for i in range(48):
+            a = i * math.tau / 48
+            draw.line((cx + math.cos(a)*330, cy + math.sin(a)*330, cx + math.cos(a)*(344 if i % 4 else 360),
+                       cy + math.sin(a)*(344 if i % 4 else 360)), fill=70, width=1)
+
+
+@lru_cache(maxsize=3)
+def _fable_base(key):
+    """Everything that depends only on the edition, never on a player. Callers copy it."""
+    theme = THEMES[key]
+    ed = _fable(theme)
+    w, h = FABLE_SIZE
+    cx, cy = _MEDALLION
+    bg = _rgb(theme.background)
+    glow, ink = ed["glow"], ed["ink"]
+    rng = random.Random(key)
+    canvas = Image.new("RGB", (w, h), bg)
+    try:
+        art = _fable_art(key)
+    except (OSError, ValueError):
+        art = None
+
+    if art is not None:
+        top, field = _fable_lower(art, ed, w, h, bg)
+        canvas.paste(field, (0, top))
+        # Bloom: the painting's highlights glow softly into their surroundings.
+        lit = art.convert("L").point(lambda v: max(0, v - 165) * 3).filter(ImageFilter.GaussianBlur(20))
+        art = ImageChops.screen(art, Image.composite(art.filter(ImageFilter.GaussianBlur(22)), Image.new("RGB", art.size), lit))
+        canvas.paste(art, (0, 0))
+    _light(canvas, (cx-700, cy-520, cx+700, cy+520), glow, .35)
+
+    # Mist where the painting meets its continuation.
+    band = Image.new("L", (1, h))
+    band.putdata([round(255 * max(0.0, 1 - abs(y - 805) / 120) ** 1.5) for y in range(h)])
+    mist = ImageChops.multiply(band.resize((w, h)), _noise((w, h), (40, 14), rng, 6))
+    canvas = _screen(canvas, mist, ed["haze"], .55)
+    if ed["lower"] == "pool":
+        vapour = ImageChops.multiply(Image.linear_gradient("L").resize((w, h)).point(lambda v: round(v*.8)),
+                                     _noise((w, h), (26, 9), rng, 10))
+        canvas = _screen(canvas, vapour, ed["haze"], .35)
+
+    etch = Image.new("L", (w, h))
+    _fable_etching(ImageDraw.Draw(etch), theme.layout, rng, w, h)
+    lower = Image.new("L", (1, h))
+    lower.putdata([0 if y < 780 else 255 for y in range(h)])
+    canvas = _screen(canvas, ImageChops.multiply(etch, lower.resize((w, h))), glow, .9)
+
+    if ed["sun"]:
+        rays = _rays((w, h), ed["sun"], rng)
+        canvas = _screen(canvas, rays, ed["rays"], .7)
+
+    # Shade: a dark top edge, a scrim for the title, the lower field darkening toward the stats.
+    # Each is its own mask and the darkest wins, so no layer can cut a hard edge into another.
+    column = Image.new("L", (1, h))
+    column.putdata([round(170 * max(0.0, 1 - y/150) ** 1.6) for y in range(h)])
+    shade = column.resize((w, h))
+    row = Image.new("L", (w, 1))
+    row.putdata([round(150 * max(0.0, 1 - x/1250) ** 1.3) for x in range(w)])
+    fall = Image.new("L", (1, h))
+    fall.putdata([round(255 * min(1.0, max(0.0, (920 - y) / 220))) for y in range(h)])
+    shade = ImageChops.lighter(shade, ImageChops.multiply(row.resize((w, h)), fall.resize((w, h))))
+    for size, place, peak, gain in (((1900, 900), (-450, -120), 200, 1.4), ((1100, 760), (-250, 560), 150, 1.2)):
+        blot = Image.new("L", (w, h))
+        blot.paste(_radial().resize(size, Image.Resampling.BICUBIC).point(lambda v, peak=peak, gain=gain: min(peak, round(v*gain))), place)
+        shade = ImageChops.lighter(shade, blot)
+    vignette = Image.new("L", (120, 85))
+    vignette.putdata([round(170 * min(1.0, max(0.0, (math.hypot(x/59.5 - 1, y/42 - 1) - .8) / .55)) ** 1.6)
+                      for y in range(85) for x in range(120)])
+    shade = ImageChops.lighter(shade, vignette.resize((w, h), Image.Resampling.BICUBIC))
+    canvas = Image.composite(Image.new("RGB", (w, h), (3, 4, 8)), canvas, shade)
+
+    # Atmosphere: depth-of-field bokeh, then fine motes or sparks in the light.
+    near, spark = ed["motes"]
+    bokeh = _motes((w, h), rng, 46, (60, 120, w-60, h-80), (10, 30), (30, 90)).filter(ImageFilter.GaussianBlur(7))
+    canvas = _screen(canvas, bokeh, near, .8)
+    if ed["lower"] == "steel":
+        dust = _motes((w, h), rng, 260, (40, 60, w-40, h-40), (.8, 2.2), (60, 190))
+        embers = _motes((w, h), rng, 70, (500, 300, w-60, h-80), (1.4, 3.4), (170, 255), trail=46)
+        canvas = _screen(canvas, dust.filter(ImageFilter.GaussianBlur(.8)), near, .9)
+        canvas = _screen(canvas, embers.filter(ImageFilter.GaussianBlur(5)), spark, .9)
+        canvas = _screen(canvas, embers.filter(ImageFilter.GaussianBlur(.7)), (255, 210, 150), 1)
+    elif ed["lower"] == "pool":
+        spores = _motes((w, h), rng, 170, (40, 380, w-40, h-40), (1, 3), (120, 255), trail=30)
+        bubbles = _motes((w, h), rng, 40, (60, 900, w-60, h-60), (4, 11), (110, 220), rings=True)
+        canvas = _screen(canvas, spores.filter(ImageFilter.GaussianBlur(4)), spark, .8)
+        canvas = _screen(canvas, ImageChops.lighter(spores, bubbles).filter(ImageFilter.GaussianBlur(.7)), near, .9)
+    else:
+        spray = _motes((w, h), rng, 240, (40, 640, w-40, h-40), (.8, 2.6), (90, 255))
+        canvas = _screen(canvas, spray.filter(ImageFilter.GaussianBlur(3)), spark, .7)
+        canvas = _screen(canvas, spray.filter(ImageFilter.GaussianBlur(.7)), near, 1)
+        streaks = Image.new("L", (w, h))
+        sd = ImageDraw.Draw(streaks)
+        lum = canvas.convert("L")
+        for _ in range(1300):
+            x, y = rng.uniform(0, w), rng.uniform(820, h-40)
+            v = lum.getpixel((min(w-1, int(x)), int(y)))
+            sd.line((x, y, x + rng.uniform(14, 90), y), fill=min(255, v * 2), width=1)
+        canvas = _screen(canvas, streaks.filter(ImageFilter.GaussianBlur(.6)), (220, 240, 255), .5)
+
+    deep = _rgb(_mix(theme.background, "#000000", .35))
+    for box in (*_FABLE_PLAQUES, _FABLE_LEDGER, _FABLE_BOND, _FABLE_QUEST):
+        _frost(canvas, box, 16 if box != _FABLE_QUEST else 10, deep, .62)
+    _light(canvas, (cx-300, cy-300, cx+300, cy+300), glow, .7)
+
+    # Gilded linework: one supersampled mask, bloomed, then filled with the edition's foil.
+    metal = Image.new("L", (w*_SS, h*_SS))
+    pen = _Pen(ImageDraw.Draw(metal))
+    beyond = Image.new("L", (w*_SS, h*_SS))
+    extra = _Pen(ImageDraw.Draw(beyond))
+    gems = []
+    _fable_frame(pen, theme.layout, w, h, gems)
+    _fable_medallion(pen, theme.layout, gems, extra)
+    extra.disc(cx, cy, 204, 0)
+    metal = ImageChops.lighter(metal, beyond)
+    for box in (*_FABLE_PLAQUES, _FABLE_LEDGER, _FABLE_BOND, _FABLE_QUEST):
+        cut = 16 if box != _FABLE_QUEST else 10
+        pen.line(_chamfer(box, cut), 1.5, 235)
+        x1, y1, x2, y2 = box
+        pen.line(_chamfer((x1+7, y1+7, x2-7, y2-7), cut-5), .8, 110)
+        for x, y in ((x1+cut, y1), (x2-cut, y1), (x1+cut, y2), (x2-cut, y2)):
+            pen.diamond(x, y, 4, 1.2)
+        if box in _FABLE_PLAQUES:
+            pen.diamond((x1+x2)/2, y1, 7, 1.4)
+            gems.append(((x1+x2)/2, y1, 4))
+    for x in (575, 1065):
+        pen.line([(x, 1300), (x, 1570)], 1, 120)
+    pen.line([(1965, 1330), (1965, 1570)], 1, 120)
+    pen.line([(1985, 850), (1985, 1010)], 1, 150)
+    header_font = theme_font(18, "heading")
+    for x, y, value, end in _FABLE_HEADERS:
+        start = x + header_font.getlength(value) + 18
+        pen.line([(start, y+11), (end - 12, y+11)], 1, 130)
+        pen.diamond(end - 6, y+11, 4, 1, 200)
+    pen.line([(580, 1072), (1420, 1072)], 1.2, 200)
+    pen.line([(1480, 1072), (2320, 1072)], 1.2, 200)
+    pen.diamond(1450, 1072, 16, 1.6, stretch=1.5)
+    gems.append((1450, 1072, 8))
+    metal = metal.reduce(_SS)
+
+    band = Image.new("L", (w, h))
+    _draw_ring_text(band, ed["legend"], f"FABLE {_roman(ed['chapter'])} OF III", "heading", _MEDALLION, 153)
+    metal = ImageChops.lighter(metal, band)
+
+    canvas = _screen(canvas, metal.filter(ImageFilter.GaussianBlur(8)), glow, 1.4)
+    canvas = _screen(canvas, metal.filter(ImageFilter.GaussianBlur(2)), glow, .6)
+    canvas.paste(_foil_sheet(ed["foil"], (w, h)), (0, 0), metal)
+    _paint_gems(canvas, gems, ed["jewel"], ed["foil"])
+
+    # Iridescent sheen on the folio, never over the painting itself.
+    sheen = Image.new("L", (1, h))
+    sheen.putdata([round(40 * min(1.0, max(0.0, (y-820) / 260))) for y in range(h)])
+    canvas.paste(ImageChops.overlay(canvas, _holo_sheet((w, h))), (0, 0), sheen.resize((w, h)))
+
+    if art is not None and ed["lower"] == "lake":
+        grid = _fable_art(key).convert("L").resize((80, 26), Image.Resampling.BOX)
+        cells = sorted(((grid.getpixel((x, y)), x, y) for y in range(8, 24) for x in range(30, 78)), reverse=True)
+        chosen = []
+        for value, x, y in cells:
+            if value < 150 or len(chosen) == 6:
+                break
+            if all(abs(x-a) + abs(y-b) > 8 for a, b in chosen):
+                chosen.append((x, y))
+        for i, (x, y) in enumerate(chosen):
+            _glint(canvas, x*30 + 15, y*30.77 + 15, 40 - i*3, glow)
+    for x, y, size in ((cx, cy-178, 38), (cx+178, cy, 22), (76, 76, 30), (w-76, h-76, 30),
+                       (w-76, 76, 22), (76, h-76, 22), (1450, 1072, 30), (w/2, 32, 30)):
+        _glint(canvas, x, y, size, (255, 250, 236))
+
+    # The edition's own lettering.
+    _foil_text(canvas, 112, 74, "F A B L E   /   R E B O R N", theme_font(22, "heading"), ink, glow, .5)
+    label = "F A B L E   E D I T I O N"
+    font = theme_font(22, "heading")
+    _foil_text(canvas, w - 120 - font.getlength(label), 74, label, font, ink, glow, .7)
+    draw = ImageDraw.Draw(canvas)
+    base, light, deep_jewel = ed["jewel"]
+    for i in range(3):
+        x, y, r = w - 128 - (2-i)*34, 128, 9
+        if i + 1 == ed["chapter"]:
+            _light(canvas, (x-40, y-40, x+40, y+40), base, 1)
+            draw.polygon([(x, y-r), (x+r, y), (x, y+r), (x-r, y)], fill=base, outline=ed["foil"][3])
+            draw.polygon([(x, y-r), (x, y), (x-r, y)], fill=_lerp((base, light), .55))
+        else:
+            draw.polygon([(x, y-r+2), (x+r-2, y), (x, y+r-2), (x-r+2, y)], outline=ed["foil"][1])
+
+    kicker_font = theme_font(19, "heading")
+    draw.polygon([(112, 158), (120, 166), (112, 174), (104, 166)], fill=ed["jewel"][0])
+    _foil_text(canvas, 136, 154, ed["kicker"], kicker_font, ink, glow, .45)
+    title_font_size = 112
+    lines = [line.upper() for line in theme.title_lines] or [theme.name.upper()]
+    while max(theme_font(title_font_size, "title").getlength(line) for line in lines) > 1000 and title_font_size > 60:
+        title_font_size -= 2
+    title_font = theme_font(title_font_size, "title")
+    y = 196
+    for line in lines:
+        _foil_text(canvas, 104, y, line, title_font, ink, glow, 1.15)
+        y += round(title_font_size * 1.06)
+    epithet_font = theme_font(25, "heading")
+    _foil_text(canvas, 112, y + 22, theme.epithet, epithet_font, ink, glow, .5)
+    rule = y + 78
+    draw.line((112, rule, 112 + epithet_font.getlength(theme.epithet), rule), fill=ed["foil"][2], width=2)
+    draw.line((112, rule + 7, 112 + epithet_font.getlength(theme.epithet)*.6, rule + 7), fill=ed["foil"][1], width=1)
+    chip = f"F A B L E   {' '.join(_roman(ed['chapter']))}   O F   I I I"
+    _foil_text(canvas, 112, rule + 26, chip, theme_font(17, "heading"), ink, glow, .55)
+
+    for x, y, value, _ in _FABLE_HEADERS:
+        _foil_text(canvas, x, y, value, header_font, ink, glow, .35)
+    _foil_text(canvas, 450, 1621, "CURRENT QUEST", header_font, ink, glow, .35)
+    for (x1, y1, x2, _), name in zip(_FABLE_PLAQUES, _FABLE_STATS):
+        _foil_text(canvas, (x1+x2)/2, y1+18, name, header_font, ink, glow, .3, center=True)
+    for x, value in ((1800, "LEVEL"), (2150, "COMBAT POWER")):
+        _foil_text(canvas, x, 852, value, header_font, ink, glow, .3, center=True)
+    return canvas
+
+
+def render_fable(theme, data):
+    """Draw a widescreen Fable folio from resolved data, never cropped standard panels."""
+    ed = _fable(theme)
+    ink, glow = ed["ink"], ed["glow"]
+    canvas = _fable_base(theme.key).copy()
+    draw = ImageDraw.Draw(canvas)
+
+    def fit(value, size, role, width):
+        value = str(value or "")
+        font = theme_font(size, role)
+        if width:
+            while font.getlength(value) > width and size > 17:
+                size -= 1
+                font = theme_font(size, role)
+            if font.getlength(value) > width:
+                while value and font.getlength(value+"…") > width:
+                    value = value[:-1]
+                value += "…"
+        return value, font
+
+    def text(x, y, value, size=24, color=None, width=None, role="body", center=False, right=False):
+        value, font = fit(value, size, role, width)
+        if center:
+            x -= font.getlength(value)/2
+        elif right:
+            x -= font.getlength(value)
+        draw.text((round(x), y), value, font=font, fill=color or theme.text)
+
+    def foil(x, y, value, size, width=None, role="title", center=False, strength=.8):
+        value, font = fit(value, size, role, width)
+        _foil_text(canvas, x, y, value, font, ink, glow, strength, center)
+
+    def label(x, y, value):
+        text(x, y, value, 17, theme.accent, role="heading")
+
+    def bar(x, y, width, ratio, thick=8):
+        ratio = max(0, min(1, ratio))
+        x, y, width = round(x), round(y), round(width)
+        top = y - thick//2
+        draw.rounded_rectangle((x, top, x+width, top+thick), radius=thick//2,
+                               fill=_mix(theme.background, "#000000", .4), outline=theme.panel)
+        filled = round(width * ratio)
+        if filled >= thick:
+            strip = Image.new("RGB", (width, 1))
+            strip.putdata([_lerp((ed["foil"][5], ed["foil"][1], ed["foil"][2], ed["foil"][3]), i/max(1, width-1)) for i in range(width)])
+            strip = strip.resize((width, thick), Image.Resampling.NEAREST).crop((0, 0, filled, thick))
+            mask = Image.new("L", (filled, thick))
+            ImageDraw.Draw(mask).rounded_rectangle((0, 0, filled-1, thick-1), radius=thick//2, fill=255)
+            canvas.paste(strip, (x, top), mask)
+            draw.line((x + thick//2, top+1, x + filled - thick//2, top+1), fill=ed["foil"][3], width=1)
+            _light(canvas, (x+filled-24, y-24, x+filled+24, y+24), glow, .9)
+            _light(canvas, (x+filled-7, y-7, x+filled+7, y+7), (255, 255, 255), .8)
+        for i in range(1, 10):
+            tx = x + width*i/10
+            draw.line((tx, top+1, tx, top+thick-2), fill=_mix(theme.background, "#000000", .3), width=1)
+
+    cx, cy = _MEDALLION
+    avatar = ImageOps.fit(data["avatar"].convert("RGB"), (250, 250), method=Image.Resampling.LANCZOS)
+    canvas.paste(avatar, (cx-125, cy-125), _disc_mask(250))
+
+    sprite = data.get("sprite")
+    name_width = 900 if sprite is None else 860
+    foil(580, 846, data["name"], 76, name_width, strength=.95)
+    text(584, 946, f'{data["race"]}  /  {data["classes"]}', 26, theme.muted, name_width)
+    bar(584, 1000, 820 if sprite is None else 780, data["xp_progress"], 8)
+    text(584, 1030, f'{data["xp_progress"]:.0%} TO LEVEL {data["level"]+1}   /   XP #{data["rank_xp"] or "-"}   /   WEALTH #{data["rank_money"] or "-"}',
+         17, theme.muted, 820, role="heading")
+    if sprite is not None:
+        sprite = sprite.convert("RGBA")
+        _light(canvas, (1490-70, 860-20, 1490+200, 860+190), glow, .5)
+        canvas.paste(sprite, (1420 + (132 - sprite.width)//2, 852), sprite)
+        text(1486, 1010, data["sprite_name"], 15, theme.muted, 200, center=True)
+
+    foil(1800, 874, data["level"], 96, 300, center=True, strength=1)
+    text(1800, 1000, f'{str(data["rarity"]).upper()} HERO', 17, theme.muted, 300, role="heading", center=True)
+    foil(2150, 890, f'{data["power"]:,}', 72, 320, center=True, strength=1)
+    text(2150, 1000, f'LUCK BLESSING  {data["luck"]:.2f}%', 17, theme.muted, 320, center=True)
+
+    for (x1, y1, x2, y2), value, cap in zip(_FABLE_PLAQUES, (data["health"], data["attack"], data["defense"]),
+                                            (20000, 5000, 5000)):
+        mid = (x1 + x2) / 2
+        foil(mid, y1 + 40, f"{value:,}", 58, 480, center=True, strength=.7)
+        bar(x1 + 40, y2 - 22, x2 - x1 - 80, value/cap, 8)
+
+    text(110, 1338, data["stance"], 28, theme.text, 440, "title")
+    for i, item in enumerate(data["equipment"]):
+        y = 1388 + i*102
+        label(110, y, item["label"])
+        text(110, y+24, item["name"], 26, theme.text, 440, "heading")
+        text(110, y+60, item["detail"], 19, theme.muted, 440)
+    ledger = dict(data["ledger"])
+    for index, key in enumerate(("Money", "Guild", "God", "Amulet", "PvP Wins", "Marriage")):
+        x, y = 600 + (index % 2)*235, 1340 + (index // 2)*80
+        label(x, y, key.upper())
+        text(x, y+26, ledger[key], 22, theme.text, 215)
+    text(1090, 1340, "ASCENSION", 17, theme.muted, role="heading")
+    text(1090, 1364, data["ascension"], 24, theme.text, 440)
+    for i, badge in enumerate(data["badges"][:6]):
+        text(1090 + (i % 2)*230, 1414 + (i//2)*30, badge, 19, theme.muted, 215)
+    if data["jury_title"]:
+        text(1090, 1520, data["jury_title"], 19, theme.accent, 440)
+
+    pet = data["companion"]
+    if pet:
+        px, py = 1702, 1400
+        _light(canvas, (px-120, py-120, px+120, py+120), glow, .7)
+        pet_image = pet.get("image")
+        if pet_image:
+            portrait = ImageOps.fit(pet_image.convert("RGBA"), (120, 120), method=Image.Resampling.LANCZOS)
+            canvas.paste(portrait, (px-60, py-60), ImageChops.multiply(_disc_mask(120), portrait.getchannel("A")))
+        else:
+            draw_ornament(draw, px, py, 36, theme)
+        for r, width, colour in ((64, 3, ed["foil"][2]), (69, 1, ed["foil"][1]), (76, 1, ed["foil"][5])):
+            draw.ellipse((px-r, py-r, px+r, py+r), outline=colour, width=width)
+        for a in range(4):
+            x, y = px + math.cos(a*math.pi/2)*69, py + math.sin(a*math.pi/2)*69
+            draw.polygon([(x, y-6), (x+6, y), (x, y+6), (x-6, y)], fill=ed["jewel"][0], outline=ed["foil"][3])
+        foil(1792, 1340, pet["name"], 30, 160, strength=.6)
+        text(1792, 1386, f'Lv {pet["level"]} / {pet["element"]}', 19, theme.muted, 160)
+        text(1792, 1414, pet["stage"], 19, theme.muted, 160)
+        text(1630, 1494, f'BOND  {pet["bond"]}', 18, theme.accent, 320, role="heading")
+        text(1630, 1526, f'IV  {pet["iv"]}%', 18, theme.muted, 320, role="heading")
+        rows = (("HAPPINESS", pet["happiness"], 100, "%"), ("HUNGER", pet["hunger"], 100, "%"), ("TRUST", pet["trust"], 100, "%"),
+                ("HEALTH", pet["hp"], 30000, ""), ("ATTACK", pet["attack"], 6000, ""), ("DEFENSE", pet["defense"], 6000, ""))
+        for i, (name, value, cap, unit) in enumerate(rows):
+            y = 1336 + i*40
+            text(1990, y, name, 15, theme.muted, role="heading")
+            text(2290, y-3, f"{value:,}{unit}", 19, theme.text, 150, right=True)
+            bar(1990, y+27, 300, value/cap, 6)
+    else:
+        # An empty jewelled setting, waiting for a companion.
+        px, py = 1960, 1410
+        _light(canvas, (px-170, py-170, px+170, py+170), glow, .7)
+        for r, width, colour in ((52, 3, ed["foil"][2]), (58, 1, ed["foil"][1]), (66, 1, ed["foil"][5])):
+            draw.ellipse((px-r, py-r, px+r, py+r), outline=colour, width=width)
+        base, light, deep = ed["jewel"]
+        draw.polygon([(px, py-30), (px+26, py), (px, py+30), (px-26, py)], fill=base, outline=ed["foil"][3])
+        draw.polygon([(px, py-30), (px, py), (px-26, py)], fill=_lerp((base, light), .55))
+        draw.polygon([(px, py), (px+26, py), (px, py+30)], fill=_lerp((base, deep), .5))
+        _glint(canvas, px-9, py-14, 26, (255, 255, 255))
+        foil(px, 1494, "A BOND YET TO BE", 26, 600, center=True, strength=.5)
+        text(px, 1540, "No pet equipped / Use $pets equip", 20, theme.muted, 600, center=True)
+
+    text(640, 1620, data["mission"], 22, theme.text, 1040)
+    text(1950, 1624, f'ID {data["user_id"]}', 15, theme.muted, 260, right=True)
     return canvas
 
 
