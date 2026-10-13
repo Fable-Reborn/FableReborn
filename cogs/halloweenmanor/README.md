@@ -51,18 +51,18 @@ Numbers live in `rewards.py`.
 
 Watchers, and investigators who never search:
 
-- 150 bones, or 250 if the house is cleared
+- 38 bones, or 63 if the house is cleared
 - about an 8% chance at a trick-or-treat bag (4% if the raid is under half progress)
 
 Investigators, per room they actually search:
 
-- 150 bones plus 200 per room, plus 100 if the house is cleared
+- 38 bones plus 50 per room, plus 25 if the house is cleared
 - bag chance 40% plus 15% per room
-- a full three-room search can roll a second bag (25%) and an uncommon crate (20%)
+- a full three-room search can roll a second bag (25%) and a crate (20%). The crate type uses the same even split as an automatic Ragnarok spawn: Divine, Fortune, Legendary, or Materials, 25% each
 - two rooms: 3% chance at The Last Lantern, doubled if the house is cleared, capped at 20%
 - three rooms: 8%, same clear bonus and cap
 - under half progress, theme and crate chances are off and bag chances are halved
-- if they already own the theme, a full search pays 100 extra bones instead of another theme
+- if they already own the theme, a full search pays 25 extra bones instead of another theme
 
 The house clears when searches reach about 70% of (investigators × 3). A solo investigator still has to search all three rooms.
 

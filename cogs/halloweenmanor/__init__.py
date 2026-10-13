@@ -14,6 +14,7 @@ from utils.i18n import _, locale_doc
 
 from .card import render_manor_card
 from .rewards import (
+    CRATE_TYPES,
     community_cleared,
     community_struggling,
     reward_for,
@@ -457,6 +458,12 @@ class HalloweenManor(commands.Cog):
         if not has_character:
             return await interaction.response.send_message("You need a character to enter the manor.", ephemeral=True)
         async with raid["lock"]:
+            if raid["roster"].get(interaction.user.id) == role:
+                if role == "active":
+                    text = _("You are already investigating. Press **Search** when the house opens.")
+                else:
+                    text = _("You are already keeping watch at the gate.")
+                return await interaction.response.send_message(text, ephemeral=True)
             raid["roster"][interaction.user.id] = role
         await self._save(raid)
         self._request_refresh(interaction.guild.id)
@@ -535,13 +542,22 @@ class HalloweenManor(commands.Cog):
         lines = [receipt["summary"], f"💀 Bones: **{receipt['bones']}**"]
         if receipt["bags"]:
             lines.append(f"🛍️ Trick-or-treat bags: **{receipt['bags']}**")
-        if receipt["uncommon"]:
-            lines.append("Uncommon crate: **1**")
+        crate = self._receipt_crate(receipt)
+        if crate:
+            lines.append(f"📦 {crate.capitalize()} crate: **1**")
         if receipt["theme"]:
             lines.append(f"🎃 Profile theme: **The Last Lantern**. Equip it with `$prpg theme {THEME_KEY}`.")
         elif receipt.get("theme_owned"):
             lines.append("You already own The Last Lantern, so the house paid extra bones instead.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _receipt_crate(receipt: dict):
+        crate = receipt.get("crate")
+        if crate in CRATE_TYPES:
+            return crate
+        # Receipts saved before crate types existed only recorded an uncommon crate.
+        return "uncommon" if receipt.get("uncommon") else None
 
     async def _conclude(self, guild_id: int):
         raid = self.raids.get(guild_id)
@@ -590,13 +606,13 @@ class HalloweenManor(commands.Cog):
             bags = 1 if random.random() < spec.bag_chance else 0
             if bags and random.random() < spec.extra_bag_chance:
                 bags += 1
-            uncommon = 1 if random.random() < spec.uncommon_chance else 0
+            crate = random.choice(CRATE_TYPES) if random.random() < spec.crate_chance else None
             theme = (not (user_id in owned)) and random.random() < spec.theme_chance
             receipt = {
                 "summary": spec.summary,
                 "bones": spec.bones,
                 "bags": bags,
-                "uncommon": uncommon,
+                "crate": crate,
                 "theme": bool(theme),
                 "theme_owned": user_id in owned and rooms == 3 and spec.role == "active" and not struggling,
                 "role": spec.role,
@@ -626,19 +642,25 @@ class HalloweenManor(commands.Cog):
 
     async def _pay(self, user_id: int, receipt: dict):
         async with self.bot.pool.acquire() as conn:
-            await conn.execute(
-                '''
-                UPDATE profile
-                SET bones = COALESCE(bones, 0) + $1,
-                    trickortreat = COALESCE(trickortreat, 0) + $2,
-                    crates_uncommon = COALESCE(crates_uncommon, 0) + $3
-                WHERE "user" = $4;
-                ''',
-                receipt["bones"],
-                receipt["bags"],
-                receipt["uncommon"],
-                user_id,
-            )
+            async with conn.transaction():
+                await conn.execute(
+                    '''
+                    UPDATE profile
+                    SET bones = COALESCE(bones, 0) + $1,
+                        trickortreat = COALESCE(trickortreat, 0) + $2
+                    WHERE "user" = $3;
+                    ''',
+                    receipt["bones"],
+                    receipt["bags"],
+                    user_id,
+                )
+                crate = self._receipt_crate(receipt)
+                if crate:
+                    column = f"crates_{crate}"
+                    await conn.execute(
+                        f'UPDATE profile SET "{column}" = COALESCE("{column}", 0) + 1 WHERE "user" = $1;',
+                        user_id,
+                    )
         if receipt["theme"]:
             from cogs.profile.theme_unlocks import grant_event_theme
 
@@ -680,10 +702,10 @@ class HalloweenManor(commands.Cog):
         if self._raid_for(ctx.guild.id):
             return await ctx.send("A manor is already open in this server.")
         names = {channel.name for channel in ctx.guild.text_channels}
-        channel_name = "hollow-manor"
+        channel_name = "「👻」hallow-manor"
         suffix = 2
         while channel_name in names:
-            channel_name = f"hollow-manor-{suffix}"
+            channel_name = f"「👻」hallow-manor-{suffix}"
             suffix += 1
         overwrites = {
             ctx.guild.default_role: discord.PermissionOverwrite(
@@ -724,6 +746,13 @@ class HalloweenManor(commands.Cog):
             }
         )
         card = render_manor_card("gate", 0, 1)
+        role = discord.utils.find(lambda item: item.name.lower() == "fablers", ctx.guild.roles)
+        if role is not None:
+            minutes = JOIN_SECONDS // 60
+            await channel.send(
+                f"{role.mention} The Hollow Manor is open. The gate closes in {minutes} minutes.",
+                allowed_mentions=discord.AllowedMentions(roles=[role]),
+            )
         message = await channel.send(
             embed=self._embed(raid),
             file=discord.File(card, filename="manor-card.png"),
@@ -734,7 +763,10 @@ class HalloweenManor(commands.Cog):
         self.raids[ctx.guild.id] = raid
         await self._save(raid)
         raid["task"] = asyncio.create_task(self._director(ctx.guild.id))
-        await ctx.send(_("The manor is open: {channel}").format(channel=channel.mention))
+        text = _("The manor is open: {channel}").format(channel=channel.mention)
+        if role is None:
+            text += " I could not find a role named fablers, so nobody was pinged."
+        await ctx.send(text)
 
     @manor.command(name="status")
     async def manor_status(self, ctx):

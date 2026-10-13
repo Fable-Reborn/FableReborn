@@ -1825,7 +1825,7 @@ class Adventure(commands.Cog):
                     )
 
                 if self._is_event_enabled("halloween"):
-                    bones = int(num ** 1.2 * random.randint(1, 8))
+                    bones = max(1, int(num ** 1.2 * random.randint(1, 8) * 0.75))
                     if bones > 0:
                         await conn.execute(
                             'UPDATE profile SET bones = COALESCE(bones, 0) + $1 WHERE "user"=$2;',
