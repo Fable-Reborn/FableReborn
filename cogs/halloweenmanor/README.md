@@ -20,7 +20,7 @@ This folder is development only. It is not loaded. Do not edit live cogs while b
 
 | Command | What it does |
 |---|---|
-| `$manor open` | Creates `#「👻」hallow-manor`, pings `@fablers`, and posts the gate. Refuses if Halloween is off, a manor is already open, or the server has already opened 5 manors today (resets at midnight UTC). |
+| `$manor open` | Creates `#「👻」hallow-manor` under category `1403273394853511240` (`MANOR_CATEGORY_ID`), pings `@fablers`, and posts the gate. Refuses if Halloween is off, a manor is already open, or the server has already opened 5 manors today (resets at midnight UTC). |
 | `$manor status` | Phase, headcount, and bar progress. Anyone can use this. |
 | `$manor skip` | Closes the current room and moves to the next. |
 | `$manor end` | Settles rewards from the current progress. |

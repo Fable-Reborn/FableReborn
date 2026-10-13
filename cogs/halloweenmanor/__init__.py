@@ -30,6 +30,7 @@ SEARCH_SECONDS = 90
 ACTIVE_KEY = "halloween:manor:active"
 DAILY_OPEN_LIMIT = 5
 LOG_LIST_SIZE = 10
+MANOR_CATEGORY_ID = 1403273394853511240
 # Must match the event theme key in cogs/profile/themes.py (EVENT_THEMES).
 THEME_KEY = "hallowmanor"
 
@@ -871,10 +872,15 @@ class HalloweenManor(commands.Cog):
                 read_message_history=True,
             ),
         }
+        category = ctx.guild.get_channel(MANOR_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return await ctx.send(
+                f"I could not find the manor category ({MANOR_CATEGORY_ID}) in this server, so the manor did not open."
+            )
         try:
             channel = await ctx.guild.create_text_channel(
                 name=channel_name,
-                category=ctx.channel.category,
+                category=category,
                 overwrites=overwrites,
                 topic="The Hollow Manor. Use the buttons. Chat is closed.",
                 reason=f"Hollow Manor opened by {ctx.author}",
