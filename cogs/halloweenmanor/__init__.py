@@ -617,6 +617,10 @@ class HalloweenManor(commands.Cog):
         if raid is None or interaction.channel_id != raid["channel_id"]:
             return await interaction.response.send_message("The manor is not open here.", ephemeral=True)
         phase = raid["phase"]
+        if phase == "gate":
+            return await interaction.response.send_message(
+                "The house has not opened yet. Press **Search** when the hall opens.", ephemeral=True
+            )
         if phase not in SEARCH_PHASES:
             return await interaction.response.send_message("That room has already closed.", ephemeral=True)
         role = raid["roster"].get(interaction.user.id)
