@@ -20,11 +20,15 @@ This folder is development only. It is not loaded. Do not edit live cogs while b
 
 | Command | What it does |
 |---|---|
-| `$manor open` | Creates `#hollow-manor` and posts the gate. Refuses if Halloween is off, or a manor is already open. |
+| `$manor open` | Creates `#「👻」hallow-manor`, pings `@fablers`, and posts the gate. Refuses if Halloween is off, a manor is already open, or the server has already opened 5 manors today (resets at midnight UTC). |
 | `$manor status` | Phase, headcount, and bar progress. Anyone can use this. |
 | `$manor skip` | Closes the current room and moves to the next. |
 | `$manor end` | Settles rewards from the current progress. |
 | `$manor close` | Settles if needed, then deletes the channel. |
+| `$manor log` | GM only. The last 10 manors: who opened and closed each one, when, headcount, and result. Also shows today's opens out of 5. |
+| `$manor log <id>` | GM only. One manor's players, their role and rooms searched, the rewards each received, and when they joined. |
+
+Every manor is logged in the `hollow_manor_runs` and `hollow_manor_participants` tables. The cog creates them on load.
 
 The bot needs **Manage Channels**, **Send Messages**, **Embed Links**, and **Attach Files**.
 
