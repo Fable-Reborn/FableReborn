@@ -480,7 +480,9 @@ class HalloweenManor(commands.Cog):
         message = raid.get("message") if raid else None
         if raid is None or message is None:
             return
-        card = render_manor_card(self._art_phase(raid), self._progress(raid), self._goal(raid))
+        card = await asyncio.to_thread(
+            render_manor_card, self._art_phase(raid), self._progress(raid), self._goal(raid)
+        )
         attachment = discord.File(card, filename="manor-card.png")
         try:
             await message.edit(embed=self._embed(raid), attachments=[attachment], view=self._view_for(raid["phase"]))
@@ -630,12 +632,10 @@ class HalloweenManor(commands.Cog):
             description=_("Choose once. The buttons die when the room closes."),
             color=0xE4572E,
         )
-        embed.set_image(url="attachment://manor-card.png")
-        card = render_manor_card(phase, self._progress(raid), self._goal(raid))
         remaining = raid["deadline"] - time.time()
+        # Keep this reply image-free: Discord fails the click if the bot has not answered within 3 seconds.
         await interaction.response.send_message(
             embed=embed,
-            file=discord.File(card, filename="manor-card.png"),
             view=ChoiceView(phase, remaining),
             ephemeral=True,
         )
@@ -906,7 +906,7 @@ class HalloweenManor(commands.Cog):
                 "receipts": {},
             }
         )
-        card = render_manor_card("gate", 0, 1)
+        card = await asyncio.to_thread(render_manor_card, "gate", 0, 1)
         role = discord.utils.find(lambda item: item.name.lower() == "fablers", ctx.guild.roles)
         if role is not None:
             minutes = JOIN_SECONDS // 60
