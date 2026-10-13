@@ -26,6 +26,11 @@ from .rewards import (
 log = logging.getLogger(__name__)
 
 JOIN_SECONDS = 900
+# Seconds before the gate closes -> the @Fablers reminder posted in the manor channel.
+GATE_WARNINGS = {
+    60: "The gate closes in 1 minute and the Hollow Manor begins. Press **Investigate** or **Keep watch** now.",
+    5: "5 seconds! The gate is closing. Investigators, get ready to press **Search** in the hall.",
+}
 SEARCH_SECONDS = 90
 ACTIVE_KEY = "halloween:manor:active"
 DAILY_OPEN_LIMIT = 5
@@ -382,6 +387,7 @@ class HalloweenManor(commands.Cog):
             "searches": {str(user_id): sorted(rooms) for user_id, rooms in raid["searches"].items()},
             "paid": raid["paid"],
             "cleared": raid.get("cleared", False),
+            "warned": sorted(raid.get("warned", ())),
             "receipts": {str(user_id): receipt for user_id, receipt in raid["receipts"].items()},
         }
 
@@ -399,6 +405,7 @@ class HalloweenManor(commands.Cog):
             },
             "paid": bool(payload.get("paid")),
             "cleared": bool(payload.get("cleared")),
+            "warned": set(payload["warned"]) if isinstance(payload.get("warned"), list) else set(),
             "receipts": {int(user_id): receipt for user_id, receipt in payload.get("receipts", {}).items()},
             "lock": asyncio.Lock(),
             "wake": asyncio.Event(),
@@ -524,13 +531,53 @@ class HalloweenManor(commands.Cog):
         raid["wake_reason"] = reason
         raid["wake"].set()
 
+    @staticmethod
+    def _fablers_role(guild):
+        return discord.utils.find(lambda item: item.name.lower() == "fablers", guild.roles)
+
+    @staticmethod
+    def _next_warning(raid, now: float):
+        if raid["phase"] != "gate":
+            return None
+        sent = raid.setdefault("warned", set())
+        for seconds in sorted(GATE_WARNINGS, reverse=True):
+            if seconds not in sent and raid["deadline"] - seconds > now:
+                return seconds
+        return None
+
+    async def _warn_gate(self, raid, seconds):
+        raid.setdefault("warned", set()).add(seconds)
+        await self._save(raid)
+        message = raid.get("message")
+        if message is None:
+            return
+        role = self._fablers_role(message.channel.guild)
+        text = GATE_WARNINGS[seconds]
+        try:
+            if role is None:
+                await message.channel.send(text)
+            else:
+                await message.channel.send(
+                    f"{role.mention} {text}", allowed_mentions=discord.AllowedMentions(roles=[role])
+                )
+        except discord.HTTPException:
+            log.exception("Failed to send the Hollow Manor gate warning")
+
     async def _director(self, guild_id: int):
         try:
             while True:
                 raid = self.raids.get(guild_id)
                 if raid is None or raid["phase"] == "results":
                     return
-                reason = await self._sleep_or_wake(raid, raid["deadline"] - time.time())
+                now = time.time()
+                warning = self._next_warning(raid, now)
+                if warning is not None:
+                    reason = await self._sleep_or_wake(raid, raid["deadline"] - warning - now)
+                    if reason == "timeout":
+                        await self._warn_gate(raid, warning)
+                        continue
+                else:
+                    reason = await self._sleep_or_wake(raid, raid["deadline"] - now)
                 if reason == "close":
                     return
                 if reason == "end" or raid["phase"] == "heart":
@@ -917,7 +964,7 @@ class HalloweenManor(commands.Cog):
             }
         )
         card = await asyncio.to_thread(render_manor_card, "gate", 0, 1)
-        role = discord.utils.find(lambda item: item.name.lower() == "fablers", ctx.guild.roles)
+        role = self._fablers_role(ctx.guild)
         if role is not None:
             minutes = JOIN_SECONDS // 60
             await channel.send(
