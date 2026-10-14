@@ -121,3 +121,11 @@ assets/profile_themes/previews/fable-sacrament.jpg
 assets/profile_themes/previews/fable-gyle.jpg
 assets/profile_themes/previews/fable-ryjin.jpg
 cogs/fables/bug_reports.py
+assets/companions/tiamat/preview-unlocked.jpg
+assets/companions/tiamat/sources.json
+tests/test_profile_themes.py
+tests/test_companions.py
+assets/profile_themes/tiamat.prompt.md
+backups/GoddessEdition-20261014/preview-before.png
+tests/test_profile_themes.py
+tests/test_companions.py

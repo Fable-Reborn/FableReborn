@@ -52,7 +52,7 @@ def profile_renderer():
         # Deterministic level curve and badge fixture; neither is modified by themes.
         rpgtools=SimpleNamespace(xptolevel=lambda xp: max(1, int(xp // 1000)), xp_for_level=lambda level: level * 1000),
         get_ascension_mantle=lambda key: None, ADVENTURE_NAMES={1: "The Ashen Citadel"},
-        **{name: getattr(themes, name) for name in ("THEMES", "resolve_theme", "theme_font", "theme_background", "add_theme_banner", "draw_ornament", "render_transcendent")},
+        **{name: getattr(themes, name) for name in ("THEMES", "resolve_theme", "theme_font", "theme_background", "add_theme_banner", "draw_ornament", "render_transcendent", "render_fable")},
     )
     exec(compile(ast.Module(body=[profile], type_ignores=[]), str(source), "exec"), namespace)
     instance = namespace["Profile"]()
@@ -104,6 +104,9 @@ def test_unknown_saved_theme_falls_back_and_input_is_strict():
     assert themes.resolve_theme("  PuRpLe ").key == "chaos"
     assert themes.resolve_theme("The Hollow Crown").key == "evil"
     assert themes.resolve_theme("reset").key == "classic"
+    assert themes.resolve_theme("tiamat").key == "tiamat"
+    assert themes.resolve_theme("Tiamat's Grace").key == "tiamat"
+    assert themes.resolve_theme("The Tiamat Sacrament").key == "sacrament"
 
 
 def test_banner_cache_never_contains_player_pixels():

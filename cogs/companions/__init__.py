@@ -180,7 +180,7 @@ class Companions(commands.Cog):
     @commands.command(hidden=True, brief="Unlock a companion for a player")
     async def companionunlock(self, ctx, member: discord.User, *, companion: str):
         """`<member>` - who receives it
-        `<companion>` - azuar, ryjin, gyle or xandra
+        `<companion>` - azuar, ryjin, gyle, xandra or tiamat
 
         Only Game Masters can use this command."""
         target = find(companion)

@@ -88,6 +88,22 @@ COMPANIONS = (
         focus=(0.5, 0.2),
         secret=True,
     ),
+    Companion(
+        key="tiamat",
+        name="Tiamat",
+        title="Goddess of Creation",
+        alignment=GOOD,
+        description=(
+            "Radiant and resolute, Tiamat shaped earth, heavens and humankind from life clay. "
+            "When none remained, she turned her own body to stone and poured her divine "
+            "strength into a sacred pool. From those waters rose the first dragons: "
+            "guardians born of a goddess who gave herself to protect her creation."
+        ),
+        hint="",
+        accent=(190, 157, 242),
+        focus=(0.52, 0.19),
+        secret=True,
+    ),
 )
 
 BY_KEY = {companion.key: companion for companion in COMPANIONS}

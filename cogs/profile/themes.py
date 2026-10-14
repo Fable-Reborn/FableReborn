@@ -425,6 +425,10 @@ THEMES = {
                      "The Tyrant of Ildria and Az'golath in the breath laboratories.",
                      "#c6f06a", "#5c7a30", "#070b07", "#151d12", "#f1f8e4", "#adbd98", "🧪", "Fables", "Fable", "rift",
                      title_lines=("Ry'jin's", "Dominion"), finish="prismatic", layout="dominion"),
+        ProfileTheme("tiamat", "Tiamat's Grace", "FROM HER SOUL, THE FIRST WINGS.",
+                     "The goddess of creation and a guardian dragon above her sacred pool.",
+                     "#d5b5f5", "#82709e", "#110f20", "#262139", "#faf3ff", "#c5b9d9", "💜", "Fables", "Fable", "wave",
+                     title_lines=("Tiamat's", "Grace"), finish="prismatic", layout="creation"),
     )
 }
 
@@ -597,7 +601,8 @@ ALIASES = {
     "avatar tynfdarius": "tynfdarius", "mech-a-knight": "mechaknight",
     "umbracrown basilisk": "umbracrown", "void dragon": "voiddragon",
     "nullstar behemoth": "nullstar",
-    "tiamat": "sacrament", "tiamat sacrament": "sacrament", "azuar": "sacrament", "az'uar": "sacrament",
+    "tiamat sacrament": "sacrament", "azuar": "sacrament", "az'uar": "sacrament",
+    "goddess of creation": "tiamat", "tiamats grace": "tiamat",
     "kelburn": "sacrament", "xandra": "sacrament", "heroes": "sacrament",
     "penitent": "gyle", "penance": "gyle", "nether garrison": "gyle",
     "ry'jin": "ryjin", "ryjins dominion": "ryjin", "dominion": "ryjin", "tyrant": "ryjin",
@@ -1591,7 +1596,8 @@ def render_transcendent(theme, data):
 FABLE_SIZE = (2400, 1700)
 _FABLE_ART = {"sacrament": "tiamat-sacrament-banner-v1.png",
               "gyle": "gyle-nether-garrison-v2.png",
-              "ryjin": "ryjin-dominion-banner-v2.png"}
+              "ryjin": "ryjin-dominion-banner-v2.png",
+              "tiamat": "tiamat.png"}
 _FABLE_ART_H = 800
 _MEDALLION = (300, 930)
 _FABLE_PLAQUES = ((600, 1098, 1146, 1258), (1187, 1098, 1733, 1258), (1774, 1098, 2320, 1258))
@@ -1601,9 +1607,27 @@ _FABLE_QUEST = (420, 1610, 1980, 1652)
 _FABLE_HEADERS = ((110, 1298, "I   /   ARMAMENT", 548), (600, 1298, "II   /   ALLEGIANCE", 1038),
                   (1090, 1298, "III   /   LEGACY", 1530), (1630, 1298, "IV   /   SOUL COMPANION", 2290))
 _FABLE_STATS = ("VITALITY  /  HEALTH", "OFFENSE  /  ATTACK", "WARD  /  DEFENSE")
+# The goddess's edition is earned with all seven Soul Gems: the Seven crown her medallion in the
+# order their statues stand in the Library's Tiamat Hall (Ilisrei, Knoas, Unoquil, Saphira at the
+# summit, Xetoa, Tamanir, Kadelej), each in the colour of its gem on the Library's dragon door.
+_SEVEN = ((255, 150, 60), (190, 120, 255), (90, 225, 255), (255, 205, 80), (80, 150, 255), (255, 80, 80), (90, 230, 120))
+_ORB = (1518, 392)   # the light cupped in the goddess's hands, in folio coordinates
+
+
+def _seven_points():
+    cx, cy = _MEDALLION
+    return [(cx + math.cos(a)*250, cy + math.sin(a)*250) for a in (-math.pi/2 + (i-3)*.33 for i in range(7))]
+
 
 # `foil` runs over the engraved metal, `ink` top-to-bottom through chrome lettering.
 _FABLES = {
+    "creation": dict(
+        chapter=4, kicker="TIAMAT   ·   GODDESS OF CREATION", legend="TIAMAT  ·  GODDESS OF CREATION",
+        foil=((66, 48, 80), (164, 132, 184), (238, 215, 242), (255, 246, 228), (194, 162, 226), (184, 148, 102), (242, 218, 180)),
+        ink=((255, 249, 255), (239, 222, 250), (202, 174, 232), (114, 86, 150), (220, 194, 242), (252, 241, 255)),
+        glow=(190, 152, 230), jewel=((160, 104, 224), (242, 219, 255), (57, 30, 92)),
+        lower="lake", tint=(172, 151, 202), haze=(202, 182, 224), sun=None, rays=None,
+        motes=((230, 211, 245), (194, 172, 230))),
     "sacrament": dict(
         chapter=1, kicker="AZ'UAR   ·   KELBURN   ·   XANDRA", legend="THE TIAMAT SACRAMENT",
         foil=((84, 70, 46), (196, 162, 98), (255, 240, 204), (255, 255, 252), (168, 208, 255), (212, 176, 108), (250, 234, 186)),
@@ -1632,7 +1656,7 @@ def _fable(theme):
     return _FABLES.get(theme.layout, _FABLES["sacrament"])
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=4)
 def _fable_art(key):
     with Image.open(ASSET_ROOT / _FABLE_ART.get(key, f"{key}.png")) as source:
         return ImageOps.fit(source.convert("RGB"), (FABLE_SIZE[0], _FABLE_ART_H), method=Image.Resampling.LANCZOS)
@@ -1718,6 +1742,49 @@ def _motes(size, rng, count, area, radius, value=(120, 255), trail=0, rings=Fals
     return mask
 
 
+def _petals(size, rng, count, area):
+    """Wisteria petals adrift: small tilted ovals, the nearer ones larger and dimmer."""
+    mask = Image.new("L", size)
+    d = ImageDraw.Draw(mask)
+    x1, y1, x2, y2 = area
+    for _ in range(count):
+        x, y = rng.uniform(x1, x2), rng.uniform(y1, y2)
+        near = rng.random() ** 2
+        length, breadth = 5 + near*13, 2.2 + near*4.5
+        a = rng.uniform(0, math.pi)
+        ux, uy = math.cos(a), math.sin(a)
+        points = [(x + ux*length*math.cos(t) - uy*breadth*math.sin(t), y + uy*length*math.cos(t) + ux*breadth*math.sin(t))
+                  for t in _steps(0, math.tau, 18)]
+        d.polygon(points, fill=round(230 - near*110))
+    return mask
+
+
+def _paint_seven(canvas, foil):
+    """The seven Soul Gems, each in its own colour and light."""
+    draw = ImageDraw.Draw(canvas)
+    for (x, y), base in zip(_seven_points(), _SEVEN):
+        _light(canvas, (x-70, y-70, x+70, y+70), base, .9)
+        # The setting's ring in fixed pale gold: the foil sweep runs dark in places.
+        draw.ellipse((x-24, y-24, x+24, y+24), outline=foil[2], width=2)
+        light, deep = _lerp((base, (255, 255, 255)), .62), _lerp((base, (0, 0, 0)), .58)
+        _paint_gems(canvas, [(x, y, 13)], (base, light, deep), foil)
+        _glint(canvas, x - 4, y - 6, 15, (255, 255, 255))
+
+
+def _spectrum_ring(canvas, centre, radius, width):
+    """A halo of the Seven's colours, Saphira's gold at the summit."""
+    cx, cy = centre
+    step = 360 / 7
+    box = (cx-radius, cy-radius, cx+radius, cy+radius)
+    for i, colour in enumerate(_SEVEN):
+        mid = -90 + (i - 3)*step
+        mask = Image.new("L", canvas.size)
+        ImageDraw.Draw(mask).arc(box, mid - step/2 + 2, mid + step/2 - 2, fill=255, width=width + 6)
+        canvas = _screen(canvas, mask.filter(ImageFilter.GaussianBlur(9)), colour, 1.5)
+        ImageDraw.Draw(canvas).arc(box, mid - step/2 + 2, mid + step/2 - 2, fill=_lerp((colour, (255, 255, 255)), .4), width=width)
+    return canvas
+
+
 def _frost(canvas, box, cut, deep, alpha):
     """Frosted glass: the scene behind is blurred and darkened, with a lit upper edge."""
     x1, y1, x2, y2 = box
@@ -1767,7 +1834,29 @@ def _fable_medallion(pen, layout, gems, extra):
     cx, cy = _MEDALLION
     for r, width in ((128, 3), (134, 1), (172, 1), (178, 2.4)):
         pen.ring(cx, cy, r, width)
-    if layout == "sacrament":
+    if layout == "creation":
+        # The sacred pool's ripples and a pearl halo, a sunburst of creation behind them, and
+        # the seven Soul Gems set in a crown above (coloured later by _paint_seven).
+        for r, width in ((190, 2), (204, 1), (216, 1.4)):
+            pen.ring(cx, cy, r, width)
+        for i in range(16):
+            a = i * math.tau / 16
+            x, y = cx + math.cos(a)*204, cy + math.sin(a)*204
+            pen.disc(x, y, 3)
+        for i in range(96):
+            a = i * math.tau / 96
+            reach = 78 if i % 8 == 0 else 48 if i % 4 == 0 else 26 if i % 2 == 0 else 13
+            extra.line([(cx + math.cos(a)*226, cy + math.sin(a)*226),
+                        (cx + math.cos(a)*(226 + reach), cy + math.sin(a)*(226 + reach))], 1.7 if i % 8 == 0 else .9)
+        extra.ring(cx, cy, 250, 1)
+        for x, y in _seven_points():
+            extra.disc(x, y, 22, 0)
+            extra.diamond(x, y, 19, 1.8)
+        for a in (0, math.pi/2, math.pi):
+            x, y = cx + math.cos(a)*216, cy + math.sin(a)*216
+            pen.diamond(x, y, 14, 1.5)
+            gems.append((x, y, 8))
+    elif layout == "sacrament":
         # Az'uar's swept crown of horns, and a collar of overlapping scales.
         for side in (-1, 1):
             for k in range(5):
@@ -1821,7 +1910,7 @@ def _fable_frame(pen, layout, w, h, gems):
     for cx, cy, sx, sy in corners:
         def p(u, v, cx=cx, cy=cy, sx=sx, sy=sy):
             return (cx + sx*u, cy + sy*v)
-        if layout == "sacrament":
+        if layout in ("sacrament", "creation"):
             for radius, width in ((62, 2.2), (76, 1)):
                 pen.line([p(radius*math.cos(t), radius*math.sin(t)) for t in _steps(0, math.pi/2, 28)], width)
             for flip in (False, True):
@@ -1850,6 +1939,22 @@ def _fable_frame(pen, layout, w, h, gems):
         jewel = p(44, 44)
         pen.diamond(*jewel, 17, 1.6)
         gems.append((*jewel, 11))
+        if layout == "creation":
+            # A lotus opening from each corner jewel toward the heart of the folio.
+            inward = math.atan2(sy, sx)
+            # Small enough to stay clear of the corner lettering ("FABLE / REBORN" starts at x 112).
+            for turn, length, breadth in ((0, 30, 11), (-.7, 23, 9), (.7, 23, 9), (-1.22, 15, 6), (1.22, 15, 6)):
+                pen.leaf(*p(54, 54), inward + turn, length, breadth)
+    if layout == "creation":
+        # Strings of pearls along every edge, a larger pearl at each fourth bead.
+        for y in (24, h-24):
+            for i, x in enumerate(range(420, w-410, 19)):
+                if abs(x - w/2) > 236:
+                    pen.disc(x, y, 3.7 if i % 4 == 0 else 2.3)
+        for x in (24, w-24):
+            for i, y in enumerate(range(420, h-410, 19)):
+                if abs(y - 850) > 52:
+                    pen.disc(x, y, 3.7 if i % 4 == 0 else 2.3)
     if layout == "garrison":
         for y in (24, h-24):
             for x in range(260, w-250, 64):
@@ -1878,7 +1983,22 @@ def _fable_frame(pen, layout, w, h, gems):
 def _fable_etching(draw, layout, rng, w, h):
     """Faint light-etched patterns in the lower field, painted with the edition glow."""
     cx, cy = _MEDALLION
-    if layout == "sacrament":
+    if layout == "creation":
+        # Rings spreading over the pool, and the Flower of Life, the first shape of creation,
+        # blooming from beneath the goddess and around the portrait.
+        for k, r in enumerate(range(240, 2600, 110)):
+            draw.ellipse((cx-r, 1090 - r*.2, cx+r, 1090 + r*.2), outline=max(10, 70 - k*3), width=1)
+        for (fx, fy), r, ink in (((cx, cy), 118, 44), ((1520, 1010), 150, 34)):
+            for i in range(-2, 3):
+                for j in range(-2, 3):
+                    if max(abs(i), abs(j), abs(i + j)) > 2:
+                        continue
+                    x, y = fx + r*(i + j/2), fy + r*j*math.sqrt(3)/2
+                    draw.ellipse((x-r, y-r, x+r, y+r), outline=ink, width=1)
+            for ring in (2, 3):
+                draw.ellipse((fx - r*ring - 6*(ring-2), fy - r*ring - 6*(ring-2), fx + r*ring + 6*(ring-2), fy + r*ring + 6*(ring-2)),
+                             outline=ink + 20, width=2 if ring == 3 else 1)
+    elif layout == "sacrament":
         # Rings spreading over the lake from beneath the portrait, and water-magic spirals.
         for k, r in enumerate(range(240, 2600, 110)):
             draw.ellipse((cx-r, 1090 - r*.2, cx+r, 1090 + r*.2), outline=max(10, 70 - k*3), width=1)
@@ -1913,7 +2033,7 @@ def _fable_etching(draw, layout, rng, w, h):
                        cy + math.sin(a)*(344 if i % 4 else 360)), fill=70, width=1)
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=4)
 def _fable_base(key):
     """Everything that depends only on the edition, never on a player. Callers copy it."""
     theme = THEMES[key]
@@ -1933,7 +2053,9 @@ def _fable_base(key):
         top, field = _fable_lower(art, ed, w, h, bg)
         canvas.paste(field, (0, top))
         # Bloom: the painting's highlights glow softly into their surroundings.
-        lit = art.convert("L").point(lambda v: max(0, v - 165) * 3).filter(ImageFilter.GaussianBlur(20))
+        # The goddess's painting is pale throughout, so only its very brightest light blooms.
+        threshold = 205 if theme.layout == "creation" else 165
+        lit = art.convert("L").point(lambda v: max(0, v - threshold) * 3).filter(ImageFilter.GaussianBlur(20))
         art = ImageChops.screen(art, Image.composite(art.filter(ImageFilter.GaussianBlur(22)), Image.new("RGB", art.size), lit))
         canvas.paste(art, (0, 0))
     _light(canvas, (cx-700, cy-520, cx+700, cy+520), glow, .35)
@@ -1997,6 +2119,14 @@ def _fable_base(key):
         spray = _motes((w, h), rng, 240, (40, 640, w-40, h-40), (.8, 2.6), (90, 255))
         canvas = _screen(canvas, spray.filter(ImageFilter.GaussianBlur(3)), spark, .7)
         canvas = _screen(canvas, spray.filter(ImageFilter.GaussianBlur(.7)), near, 1)
+        if theme.layout == "creation":
+            # Her orb's radiance, and wisteria petals adrift across the whole folio.
+            ox, oy = _ORB
+            # Kept tight and soft: the orb glows, her skin stays as painted.
+            _light(canvas, (ox-120, oy-120, ox+120, oy+120), (226, 196, 255), .45)
+            petals = _petals((w, h), rng, 95, (40, 60, w-40, h-60))
+            canvas = _screen(canvas, petals.filter(ImageFilter.GaussianBlur(7)), (206, 150, 255), .9)
+            canvas = _screen(canvas, petals.filter(ImageFilter.GaussianBlur(.9)), (255, 232, 252), .85)
         streaks = Image.new("L", (w, h))
         sd = ImageDraw.Draw(streaks)
         lum = canvas.convert("L")
@@ -2047,13 +2177,17 @@ def _fable_base(key):
     metal = metal.reduce(_SS)
 
     band = Image.new("L", (w, h))
-    _draw_ring_text(band, ed["legend"], f"FABLE {_roman(ed['chapter'])} OF III", "heading", _MEDALLION, 153)
+    edition = "SECRET FABLE" if theme.layout == "creation" else f"FABLE {_roman(ed['chapter'])} OF III"
+    _draw_ring_text(band, ed["legend"], edition, "heading", _MEDALLION, 153)
     metal = ImageChops.lighter(metal, band)
 
     canvas = _screen(canvas, metal.filter(ImageFilter.GaussianBlur(8)), glow, 1.4)
     canvas = _screen(canvas, metal.filter(ImageFilter.GaussianBlur(2)), glow, .6)
     canvas.paste(_foil_sheet(ed["foil"], (w, h)), (0, 0), metal)
     _paint_gems(canvas, gems, ed["jewel"], ed["foil"])
+    if theme.layout == "creation":
+        canvas = _spectrum_ring(canvas, _MEDALLION, 197, 3)
+        _paint_seven(canvas, ed["foil"])
 
     # Iridescent sheen on the folio, never over the painting itself.
     sheen = Image.new("L", (1, h))
@@ -2077,12 +2211,19 @@ def _fable_base(key):
 
     # The edition's own lettering.
     _foil_text(canvas, 112, 74, "F A B L E   /   R E B O R N", theme_font(22, "heading"), ink, glow, .5)
-    label = "F A B L E   E D I T I O N"
+    label = "S E C R E T   E D I T I O N" if theme.layout == "creation" else "F A B L E   E D I T I O N"
     font = theme_font(22, "heading")
     _foil_text(canvas, w - 120 - font.getlength(label), 74, label, font, ink, glow, .7)
     draw = ImageDraw.Draw(canvas)
     base, light, deep_jewel = ed["jewel"]
-    for i in range(3):
+    if theme.layout == "creation":
+        # All seven Soul Gems, lit: the price of this edition.
+        for i, colour in enumerate(_SEVEN):
+            x, y, r = w - 128 - (6-i)*32, 128, 9
+            _light(canvas, (x-34, y-34, x+34, y+34), colour, .9)
+            draw.polygon([(x, y-r), (x+r, y), (x, y+r), (x-r, y)], fill=colour, outline=ed["foil"][3])
+            draw.polygon([(x, y-r), (x, y), (x-r, y)], fill=_lerp((colour, (255, 255, 255)), .55))
+    for i in range(3 if theme.layout != "creation" else 0):
         x, y, r = w - 128 - (2-i)*34, 128, 9
         if i + 1 == ed["chapter"]:
             _light(canvas, (x-40, y-40, x+40, y+40), base, 1)
@@ -2108,7 +2249,7 @@ def _fable_base(key):
     rule = y + 78
     draw.line((112, rule, 112 + epithet_font.getlength(theme.epithet), rule), fill=ed["foil"][2], width=2)
     draw.line((112, rule + 7, 112 + epithet_font.getlength(theme.epithet)*.6, rule + 7), fill=ed["foil"][1], width=1)
-    chip = f"F A B L E   {' '.join(_roman(ed['chapter']))}   O F   I I I"
+    chip = "S E C R E T   F A B L E" if theme.layout == "creation" else f"F A B L E   {' '.join(_roman(ed['chapter']))}   O F   I I I"
     _foil_text(canvas, 112, rule + 26, chip, theme_font(17, "heading"), ink, glow, .55)
 
     for x, y, value, _ in _FABLE_HEADERS:

@@ -213,6 +213,7 @@ FABLE_RULES = {
     "sacrament": UnlockRule("story", flag="azuar", note="Finish The Tiamat Sacrament"),
     "gyle": UnlockRule("story", flag="gyle", note="Decide Gyle's fate in The Tiamat Sacrament"),
     "ryjin": UnlockRule("story", flag="ryjin", note="Uncover the true ending of The Tiamat Sacrament"),
+    "tiamat": UnlockRule("story", flag="tiamat", note="Unlock Tiamat as a companion"),
 }
 
 
