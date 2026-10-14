@@ -14,7 +14,7 @@ import discord
 
 
 STALE_AFTER = timedelta(seconds=45)
-FABLE_NAMES = {"tiamat": "The Tiamat Sacrament", "crownfall": "Crownfall"}
+FABLE_NAMES = {"tiamat": "The Tiamat Sacrament", "crownfall": "Crownfall", "library": "The Fables Library"}
 ACTIVITY = {
     "exploring": "🧭 exploring",
     "battle": "⚔️ in battle",

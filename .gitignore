@@ -120,3 +120,4 @@ assets/profile_themes/ryjin-dominion-banner-v1.prompt.md
 assets/profile_themes/previews/fable-sacrament.jpg
 assets/profile_themes/previews/fable-gyle.jpg
 assets/profile_themes/previews/fable-ryjin.jpg
+cogs/fables/bug_reports.py

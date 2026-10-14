@@ -20,7 +20,7 @@ FILTER_LABELS = {
     "dismissed": "Dismissed",
     "all": "All reports",
 }
-FABLE_NAMES = {"tiamat": "The Tiamat Sacrament", "crownfall": "Crownfall"}
+FABLE_NAMES = {"tiamat": "The Tiamat Sacrament", "crownfall": "Crownfall", "library": "The Fables Library"}
 
 
 def _when(value, style="f"):
