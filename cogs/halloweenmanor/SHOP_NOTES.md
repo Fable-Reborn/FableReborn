@@ -4,7 +4,7 @@
 
 ### Added
 
-- **`$spookyshop` item 7, The Last Lantern.** This replaces the seasonal background. 2,500 bones, one purchase, using the existing `ssbg` stock. It grants the `hollowmanor` profile theme for `$prpg themes`. A second purchase is refused instead of charging again. The old event-background image is not sold.
+- **`$spookyshop` item 7, The Last Lantern.** This replaces the seasonal background. 2,500 bones, one purchase, using the existing `ssbg` stock. It grants the `hallowmanor` profile theme for `$prpg themes`. Equip it with `$prpg theme hallowmanor`. A second purchase is refused instead of charging again. The old event-background image is not sold.
 
 ### Fixed
 

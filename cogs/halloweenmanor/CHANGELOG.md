@@ -24,7 +24,7 @@ All notable changes to this cog are documented here.
 - Adventure flavor is a separate list in `adventure_flavor.py`. It is used only while the Halloween flag is on, and only after `pending/adventure.snippet.py` is pasted. The normal adventure stories are not rewritten.
 - On ship, `pending/event_boot.snippet.py` makes a restart leave Halloween off in memory. `$gmevent halloween on` is what turns bones, the shop, the manor, and the adventure lines on together.
 
-- Phase art in `assets/halloween/manor/` and the theme banner `assets/profile_themes/hollowmanor.png` are stand-ins. Replace those PNGs to change the paintings without changing the raid. The bar is drawn in the bottom slot every time the picture updates.
+- Phase art lives in `assets/halloween/manor/`. The Last Lantern banner is `assets/profile_themes/hallowmanor.png`. The bar is drawn in the bottom slot every time the picture updates.
 - Bones stay the seasonal currency. The spooky shop stays the place those bones are spent.
 - Load `cogs.halloweenmanor` next to `cogs.halloween` in `config.toml`. That file is gitignored, so the GitHub push will not include the local config change.
 

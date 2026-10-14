@@ -1,0 +1,15 @@
+"""Paste into EVENT_THEMES in cogs/profile/themes.py when this event ships.
+
+Not imported. The live theme list does not include The Last Lantern yet.
+Artwork for the banner is assets/halloween/hollowmanor.png. On ship, copy it to
+assets/profile_themes/hollowmanor.png. The profile cog crops that file to 1660x554.
+"""
+
+# event_theme(
+#     "hollowmanor", "The Last Lantern",
+#     accent="#ffb15a", event="Halloween",
+#     epithet="ONE WINDOW STILL BURNS.",
+#     description="A house on the hill keeps a single orange window lit against the Halloween dark.",
+#     emoji="🎃", motif="lantern",
+#     title_lines=("The Last", "Lantern"),
+# )

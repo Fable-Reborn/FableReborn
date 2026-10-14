@@ -1658,11 +1658,18 @@ class Adventure(commands.Cog):
     def get_adventure_narrative(self, adventure_level, adventure_name, success=True):
         """Gets random narrative events for the adventure."""
         events = []
-        if adventure_name == "Shrek's Swamp":
-            events = self.ADVENTURE_EVENTS["Shrek's Swamp"]
-        else:
-            tier = f"tier_{min(10, max(1, (adventure_level - 1) // 10 + 1))}"
-            events = self.ADVENTURE_EVENTS[tier]
+        if self._is_event_enabled("halloween"):
+            try:
+                from cogs.halloweenmanor.adventure_flavor import HALLOWEEN_ADVENTURE_LINES
+                events = list(HALLOWEEN_ADVENTURE_LINES)
+            except Exception:
+                events = []
+        if not events:
+            if adventure_name == "Shrek's Swamp":
+                events = self.ADVENTURE_EVENTS["Shrek's Swamp"]
+            else:
+                tier = f"tier_{min(10, max(1, (adventure_level - 1) // 10 + 1))}"
+                events = self.ADVENTURE_EVENTS[tier]
 
         num_events = 4 if success else 2
         chosen_events = random.sample(events, num_events)
@@ -1818,7 +1825,7 @@ class Adventure(commands.Cog):
                     )
 
                 if self._is_event_enabled("halloween"):
-                    bones = int(num ** 1.2 * random.randint(1, 8))
+                    bones = max(1, int(num ** 1.2 * random.randint(1, 8) * 0.75))
                     if bones > 0:
                         await conn.execute(
                             'UPDATE profile SET bones = COALESCE(bones, 0) + $1 WHERE "user"=$2;',

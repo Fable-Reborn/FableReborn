@@ -20,11 +20,15 @@ This folder is development only. It is not loaded. Do not edit live cogs while b
 
 | Command | What it does |
 |---|---|
-| `$manor open` | Creates `#hollow-manor` and posts the gate. Refuses if Halloween is off, or a manor is already open. |
+| `$manor open` | Creates `#「👻」hallow-manor` under category `1403273394853511240` (`MANOR_CATEGORY_ID`), pings `@fablers`, and posts the gate. Refuses if Halloween is off, a manor is already open, or the server has already opened 5 manors today (resets at midnight UTC). |
 | `$manor status` | Phase, headcount, and bar progress. Anyone can use this. |
 | `$manor skip` | Closes the current room and moves to the next. |
 | `$manor end` | Settles rewards from the current progress. |
 | `$manor close` | Settles if needed, then deletes the channel. |
+| `$manor log` | GM only. The last 10 manors: who opened and closed each one, when, headcount, and result. Also shows today's opens out of 5. |
+| `$manor log <id>` | GM only. One manor's players, their role and rooms searched, the rewards each received, and when they joined. |
+
+Every manor is logged in the `hollow_manor_runs` and `hollow_manor_participants` tables. The cog creates them on load.
 
 The bot needs **Manage Channels**, **Send Messages**, **Embed Links**, and **Attach Files**.
 
@@ -51,21 +55,21 @@ Numbers live in `rewards.py`.
 
 Watchers, and investigators who never search:
 
-- 150 bones, or 250 if the house is cleared
+- 38 bones, or 63 if the house is cleared
 - about an 8% chance at a trick-or-treat bag (4% if the raid is under half progress)
 
 Investigators, per room they actually search:
 
-- 150 bones plus 200 per room, plus 100 if the house is cleared
+- 38 bones plus 50 per room, plus 25 if the house is cleared
 - bag chance 40% plus 15% per room
-- a full three-room search can roll a second bag (25%) and an uncommon crate (20%)
+- a full three-room search can roll a second bag (25%) and a crate (20%). The crate type uses the same even split as an automatic Ragnarok spawn: Divine, Fortune, Legendary, or Materials, 25% each
 - two rooms: 3% chance at The Last Lantern, doubled if the house is cleared, capped at 20%
 - three rooms: 8%, same clear bonus and cap
 - under half progress, theme and crate chances are off and bag chances are halved
-- if they already own the theme, a full search pays 100 extra bones instead of another theme
+- if they already own the theme, a full search pays 25 extra bones instead of another theme
 
 The house clears when searches reach about 70% of (investigators × 3). A solo investigator still has to search all three rooms.
 
 ## Profile theme
 
-**The Last Lantern** (`hollowmanor`) replaces the seasonal background in `$spookyshop`. It costs 2,500 bones, one purchase, and it is a `$prpg` theme. It can also drop from an active manor search. It is not in the normal profile-theme drop pool. The banner file is `assets/halloween/hollowmanor.png`, and it is a stand-in until finished art replaces it. On ship, copy that file to `assets/profile_themes/hollowmanor.png`.
+**The Last Lantern** (`hallowmanor`) replaces the seasonal background in `$spookyshop`. It costs 2,500 bones, one purchase, and it is a `$prpg` theme. It can also drop from an active manor search. It is not in the normal profile-theme drop pool. The banner file is `assets/profile_themes/hallowmanor.png`. Equip it with `$prpg theme hallowmanor`.

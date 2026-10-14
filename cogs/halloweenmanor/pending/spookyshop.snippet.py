@@ -1,0 +1,27 @@
+"""Shop change for cogs/halloween/__init__.py when this event ships.
+
+Not imported. The live spooky shop still sells the old seasonal background image.
+
+Replace item 7. Do not add an 11th row.
+
+Listing, in the seasonal background slot:
+    ("🎃 The Last Lantern", 2500, ssbg_value)
+
+That row is the $prpg theme. It no longer appends the old event background
+or sets ssbg1.
+
+Buy path for item 7:
+- Cost 2500 bones. Stock stays on profile.ssbg, one purchase. The GM shop
+  reset already sets ssbg back to 1. No new column.
+- If profile_theme_unlocks already has hallowmanor for this user, refuse and
+  do not charge.
+- Otherwise decrement ssbg, subtract 2500 bones, then
+  grant_event_theme(pool, user_id, "hallowmanor", "halloween_shop").
+- If the grant fails, put the bone cost and the stock back.
+- Tell them it is in `$prpg themes` and equips with `$prpg theme hallowmanor`.
+
+Price corrections in the same file when shipping:
+- Rare crate charge is 60 bones, matching the listing. The old charge was 50.
+- Magic crate success text says 250 bones, matching the charge. It used to say 500.
+- Reject item numbers outside 1-10.
+"""

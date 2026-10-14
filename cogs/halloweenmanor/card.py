@@ -89,6 +89,6 @@ def render_manor_card(phase: str, current: int, goal: int) -> BytesIO:
         stroke_fill=(12, 8, 10),
     )
     output = BytesIO()
-    image.save(output, format="PNG", optimize=True)
+    image.save(output, format="PNG", compress_level=6)
     output.seek(0)
     return output

@@ -529,13 +529,14 @@ def event_theme(key, name, *, accent, event, epithet="", description="", emoji="
 EVENT_THEMES = (
     # Add event themes here ↓
     event_theme(
-        "hallowmanor", "Hallow Manor",
+        "hallowmanor", "The Last Lantern",
         accent="#ff7a1a",
         event="Halloween 2026",
         emoji="🎃",
         motif="lantern",
-        epithet="SOMETHING IS KNOCKING.",
-        description="SEASONAL / LEGENDARY / CHRONICLE 53",
+        title_lines=("The Last", "Lantern"),
+        epithet="ONE WINDOW STILL BURNS.",
+        description="A house on the hill keeps a single orange window lit against the Halloween dark.",
     ),
     event_theme(
         "headlesshorseman", "Hollow Rider",

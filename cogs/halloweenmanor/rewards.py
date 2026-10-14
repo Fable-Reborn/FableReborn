@@ -4,12 +4,14 @@ import math
 from dataclasses import dataclass
 
 
-PASSIVE_BONES = 150
-ACTIVE_BASE_BONES = 150
-BONES_PER_ROOM = 200
-CLEAR_BONUS = 100
-OWNED_THEME_BONUS = 100
+PASSIVE_BONES = 38
+ACTIVE_BASE_BONES = 38
+BONES_PER_ROOM = 50
+CLEAR_BONUS = 25
+OWNED_THEME_BONUS = 25
 SEARCH_ROOMS = 3
+# Same pool and even odds as an automatic Ragnarok spawn (cogs/raid).
+CRATE_TYPES = ("divine", "fortune", "legendary", "materials")
 
 
 @dataclass(frozen=True)
@@ -18,7 +20,7 @@ class RewardSpec:
     bones: int
     bag_chance: float
     extra_bag_chance: float
-    uncommon_chance: float
+    crate_chance: float
     theme_chance: float
     summary: str
 
@@ -52,7 +54,7 @@ def reward_for(*, joined_as: str, rooms: int, cleared: bool, struggling: bool, o
             bones=bones,
             bag_chance=bag_chance,
             extra_bag_chance=0.0,
-            uncommon_chance=0.0,
+            crate_chance=0.0,
             theme_chance=0.0,
             summary="You kept watch at the gate.",
         )
@@ -62,7 +64,7 @@ def reward_for(*, joined_as: str, rooms: int, cleared: bool, struggling: bool, o
         bones += CLEAR_BONUS
     bag_chance = 0.40 + (0.15 * rooms)
     extra_bag_chance = 0.25 if rooms == SEARCH_ROOMS else 0.0
-    uncommon_chance = 0.20 if rooms == SEARCH_ROOMS else 0.0
+    crate_chance = 0.20 if rooms == SEARCH_ROOMS else 0.0
     if rooms == 2:
         theme_chance = 0.03
     elif rooms == SEARCH_ROOMS:
@@ -74,7 +76,7 @@ def reward_for(*, joined_as: str, rooms: int, cleared: bool, struggling: bool, o
     if struggling:
         bag_chance *= 0.5
         extra_bag_chance = 0.0
-        uncommon_chance = 0.0
+        crate_chance = 0.0
         theme_chance = 0.0
     if owns_theme:
         if rooms == SEARCH_ROOMS and not struggling:
@@ -86,7 +88,7 @@ def reward_for(*, joined_as: str, rooms: int, cleared: bool, struggling: bool, o
         bones=bones,
         bag_chance=bag_chance,
         extra_bag_chance=extra_bag_chance,
-        uncommon_chance=uncommon_chance,
+        crate_chance=crate_chance,
         theme_chance=theme_chance,
         summary=f"You searched {rooms} {room_word} inside the house.",
     )
