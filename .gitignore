@@ -135,4 +135,3 @@ tests/test_profile_themes.py
 tests/test_profile_themes.py
 tests/test_tiamat_rewards.py
 tests/test_profile_themes.py
-utils/tiamat_unlocks.py
