@@ -1,6 +1,7 @@
 # battles/core/combatant.py
 from decimal import Decimal
 from .numbers import to_decimal
+from classes import penitent
 from classes.warrior import warrior_damage_reduction_pct
 import random
 from typing import List, Dict, Any, Optional, Union
@@ -242,6 +243,7 @@ class Combatant:
     def _apply_hp_damage(self, damage):
         """Apply direct HP damage without shield absorption."""
         self.hp -= damage
+        penitent.gain_penance(self, damage)  # Penitent: pain becomes Penance
         if self.hp <= 0 and getattr(self, 'water_immortality', False):
             self.hp = Decimal('1')
             return

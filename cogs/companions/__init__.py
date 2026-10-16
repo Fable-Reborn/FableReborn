@@ -8,10 +8,13 @@ reveal nothing at all.
 """
 
 import asyncio
+import logging
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 
+from classes.badges import Badge
+from utils import tiamat_unlocks
 from utils.checks import has_char, is_gm
 
 from . import card
@@ -19,6 +22,8 @@ from .roster import COMPANIONS, GOOD, find
 
 VIEW_SECONDS = 180
 CARD_FILENAME = "companions.jpg"
+BADGE_SYNC_MINUTES = 10
+log = logging.getLogger(__name__)
 
 
 class CompanionSelect(discord.ui.Select):
@@ -134,6 +139,47 @@ class Companions(commands.Cog):
                 );
                 """
             )
+            await tiamat_unlocks.ensure_table(conn)
+        self.sync_tiamat_badges.start()
+
+    async def cog_unload(self):
+        self.sync_tiamat_badges.cancel()
+
+    # The Clutch of Ilisrei badge, for everyone who has finished Tiamat and has a
+    # character. Rewards land in the database from the game server at any time, so
+    # this sweeps on a timer rather than waiting for a command.
+    @tasks.loop(minutes=BADGE_SYNC_MINUTES)
+    async def sync_tiamat_badges(self):
+        try:
+            await self.grant_clutch_badges()
+        except Exception:
+            log.exception("Tiamat badge sync failed")
+
+    @sync_tiamat_badges.before_loop
+    async def before_badge_sync(self):
+        await self.bot.wait_until_ready()
+
+    async def grant_clutch_badges(self) -> int:
+        """Gives the badge to every earner who doesn't have it yet. Returns how many."""
+        granted = 0
+        async with self.bot.pool.acquire() as conn:
+            users = await tiamat_unlocks.users_with(conn, tiamat_unlocks.CLUTCH_BADGE)
+            if not users:
+                return 0
+            rows = await conn.fetch('SELECT "user", "badges" FROM profile WHERE "user" = ANY($1::bigint[]);', users)
+            for row in rows:
+                try:
+                    current = Badge(0) if row["badges"] is None else Badge.from_db(row["badges"])
+                except Exception:
+                    current = Badge(0)
+                if current & Badge.CLUTCH_OF_ILISREI:
+                    continue
+                await conn.execute('UPDATE profile SET "badges" = $1 WHERE "user" = $2;',
+                                   (current | Badge.CLUTCH_OF_ILISREI).to_db(), row["user"])
+                granted += 1
+        if granted:
+            log.info("Granted the Clutch of Ilisrei badge to %s player(s)", granted)
+        return granted
 
     async def get_row(self, user_id):
         row = await self.bot.pool.fetchrow(
@@ -191,6 +237,27 @@ class Companions(commands.Cog):
             await ctx.send(f"Unlocked **{target.name}** for {member.mention}.")
         else:
             await ctx.send(f"{member.mention} already has **{target.name}**.")
+
+
+    @is_gm()
+    @commands.command(hidden=True, brief="Grant a Tiamat reward in Fable")
+    async def tiamatunlock(self, ctx, member: discord.User, key: str):
+        """`<member>` - who receives it
+        `<key>` - dragonkin, clutch_badge, penitent or breathcaller
+
+        Normally the Tiamat server grants these. Only Game Masters can use this command."""
+        key = key.lower()
+        if key not in tiamat_unlocks.KEYS:
+            return await ctx.send("Unknown reward. Choose from: " + ", ".join(sorted(tiamat_unlocks.KEYS)))
+        status = await self.bot.pool.execute(
+            """INSERT INTO tiamat_unlocks (user_id, unlock_key, source) VALUES ($1, $2, $3)
+               ON CONFLICT (user_id, unlock_key) DO NOTHING""",
+            member.id, key, f"gm:{ctx.author.id}",
+        )
+        if key == tiamat_unlocks.CLUTCH_BADGE:
+            await self.grant_clutch_badges()
+        await ctx.send(f"Granted **{key}** to {member.mention}." if status.endswith("1")
+                       else f"{member.mention} already has **{key}**.")
 
 
 async def setup(bot):

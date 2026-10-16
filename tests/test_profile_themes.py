@@ -17,6 +17,8 @@ from discord.ext import commands
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
 import pytest
 
+from classes import dragonkin
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -52,6 +54,7 @@ def profile_renderer():
         # Deterministic level curve and badge fixture; neither is modified by themes.
         rpgtools=SimpleNamespace(xptolevel=lambda xp: max(1, int(xp // 1000)), xp_for_level=lambda level: level * 1000),
         get_ascension_mantle=lambda key: None, ADVENTURE_NAMES={1: "The Ashen Citadel"},
+        dragonkin=dragonkin,
         **{name: getattr(themes, name) for name in ("THEMES", "resolve_theme", "theme_font", "theme_background", "add_theme_banner", "draw_ornament", "render_transcendent", "render_fable")},
     )
     exec(compile(ast.Module(body=[profile], type_ignores=[]), str(source), "exec"), namespace)

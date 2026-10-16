@@ -33,7 +33,8 @@ from discord.ui.button import Button
 from discord.interactions import Interaction
 from discord.ui import Button, View
 
-from classes.classes import Raider
+from classes import breathcaller, penitent
+from classes.classes import Breathcaller, Penitent, Raider
 from classes.classes import from_string as class_from_string
 from classes.converters import IntGreaterThan
 from classes.warrior import (
@@ -675,6 +676,8 @@ class Raid(commands.Cog):
         "Joyful Jester": 4, "Yuletide Guardian": 5,
         "Festive Enforcer": 6, "Festive Champion": 7,
     }
+    PENITENT_EVOLUTION_LEVELS = {c.class_name(): c.class_grade() for c in Penitent}
+    BREATHCALLER_EVOLUTION_LEVELS = {c.class_name(): c.class_grade() for c in Breathcaller}
     POOLED_SANTA_LIFESTEAL = {1: 5, 2: 7, 3: 10, 4: 12, 5: 15, 6: 18, 7: 20}
     POOLED_REAPER_DEATH_CHANCE = {1: 10, 2: 15, 3: 20, 4: 25, 5: 30, 6: 35, 7: 40}
 
@@ -693,6 +696,8 @@ class Raid(commands.Cog):
             "reaper_evolution": reaper_level,
             "santa_evolution": santa_level,
             "warrior_evolution": warrior_level,
+            "penitent_evolution": self._pooled_class_grade(classes, self.PENITENT_EVOLUTION_LEVELS),
+            "breathcaller_evolution": self._pooled_class_grade(classes, self.BREATHCALLER_EVOLUTION_LEVELS),
             "warrior_momentum": 0,
             "reaper_souls": 0,
             "reaper_avatar_hits": 0,
@@ -730,6 +735,32 @@ class Raid(commands.Cog):
         return healed, ward
 
     def _pooled_apply_incoming_seasonal(self, data, damage):
+        damage, messages = self._pooled_apply_incoming_classes(data, damage)
+        if damage <= 0:
+            return 0.0, messages
+        damage, seasonal_messages = self._pooled_apply_incoming_class_buffs(data, damage)
+        penitent.gain_penance(data, min(damage, float(data.get("hp", 0) or 0)))
+        return damage, messages + seasonal_messages
+
+    def _pooled_apply_incoming_classes(self, data, damage):
+        """Tiamat classes on a hit aimed at a raider: guards, then a Penitent may take it."""
+        damage = float(damage or 0) * penitent.defense_multiplier(data) * breathcaller.defense_multiplier(data, None)
+        raiders = {id(ally): key for key, ally in self.raid.items() if key[1] == "user"}
+        allies = [ally for key, ally in self.raid.items() if key[1] == "user"]
+        guardian, last_shield = penitent.find_interceptor(allies, data, damage)
+        if guardian is None:
+            return self._round_raid_number(damage), []
+        taken = self._round_raid_number(penitent.take_the_blow(guardian, damage, last_shield))
+        guardian["hp"] = self._round_raid_number(
+            max(1.0 if last_shield else 0.0, float(guardian["hp"]) - taken)
+        )
+        penitent.gain_penance(guardian, taken)
+        target_key = raiders.get(id(data))
+        target_name = self._pooled_name(target_key) if target_key else "an ally"
+        return 0.0, [penitent.intercept_message(
+            self._pooled_name(raiders[id(guardian)]), target_name, taken, last_shield)]
+
+    def _pooled_apply_incoming_class_buffs(self, data, damage):
         messages = []
         damage = self._round_raid_number(max(0.0, float(damage or 0)))
         shroud_hits = int(data.get("reaper_death_shroud_hits", 0) or 0)
@@ -835,6 +866,16 @@ class Raid(commands.Cog):
             name = self._pooled_name(raid_key)
             base_damage = self._round_raid_number(data.get("damage", 0))
             effects = data.get("spec_effects") or {}
+            zeal_mult = penitent.offense_multiplier(data)
+            if zeal_mult > 1:
+                bonus_damage = self._round_raid_number(bonus_damage + base_damage * (zeal_mult - 1))
+            if breathcaller.ready(data):
+                _element, exhale_mult, spent = breathcaller.exhale(data, None)
+                exhale_damage = self._round_raid_number(base_damage * (exhale_mult - 1))
+                bonus_damage = self._round_raid_number(bonus_damage + exhale_damage)
+                messages.append(breathcaller.exhale_message(name, "Breath", spent, (exhale_mult - 1) * 100))
+            else:
+                breathcaller.inhale(data)
             warrior_level = int(data.get("warrior_evolution", 0) or 0)
             if warrior_level:
                 roll = randomm.random() if "warrior_relentless_pct" in effects else None

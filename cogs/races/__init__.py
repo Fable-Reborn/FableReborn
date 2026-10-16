@@ -20,9 +20,13 @@ import discord
 
 from discord.ext import commands
 
+from classes import dragonkin
 from cogs.shard_communication import user_on_cooldown as user_cooldown
+from utils import tiamat_unlocks
 from utils.checks import has_char, is_nothing
 from utils.i18n import _, locale_doc
+
+DRAGONKIN_ART = "assets/races/Dragonkin.webp"
 
 
 class Races(commands.Cog):
@@ -45,7 +49,8 @@ class Races(commands.Cog):
               - Jikill: +0 defense, +4 damage
               - Shadeborn: +5 defense, -1 damage
               - Djinn: -1 defense, +5 damage
-              
+              - Dragonkin: +2 defense, +2 damage, plus a chosen breath and the Blood of the Seven
+                (earned by finishing the story of The Tiamat Sacrament)
 
             By default, you are a human.
 
@@ -132,6 +137,27 @@ class Races(commands.Cog):
             ),
         ]
         races = ["Human", "Dwarf", "Elf", "Orc", "Jikill", "Djinn", "Shadeborn"]
+        async with self.bot.pool.acquire() as conn:
+            earned_dragonkin = await tiamat_unlocks.has_unlock(conn, ctx.author.id, tiamat_unlocks.DRAGONKIN)
+        if earned_dragonkin:
+            embeds.append(
+                discord.Embed(
+                    title=_("Dragonkin"),
+                    description=_(
+                        "Dragonkin are what the lost clutch of Ilisrei became among mortals:"
+                        " people with a dragon's blood, horned and scaled, proud and rare."
+                        " This race is earned, never given."
+                        " +2 DEF +2 ATK\n\n"
+                        "**Breath Attunement:** your breath (fire, water, wind or earth) fills"
+                        " in when your weapon or armor has no element, and attacks of that"
+                        " element hurt you 20% less.\n"
+                        "**Blood of the Seven:** against dragons you deal 10% more damage and"
+                        " take 10% less."
+                    ),
+                    color=self.bot.config.game.primary_colour,
+                )
+            )
+            races.append(dragonkin.RACE)
         questions = {
             "Human": {
                 "question": _("One of my biggest regrets is..."),
@@ -194,6 +220,10 @@ class Races(commands.Cog):
                     _("...Suffering"),
                 ],
             },
+            dragonkin.RACE: {
+                "question": _(dragonkin.QUESTION),
+                "answers": [_(answer) for answer in dragonkin.ANSWERS],
+            },
         }
         race_ = await self.bot.paginator.ChoosePaginator(
             extras=embeds, choices=races, placeholder=_("Choose a race")
@@ -221,6 +251,19 @@ class Races(commands.Cog):
                 answer,
                 ctx.author.id,
             )
+        if race_ == dragonkin.RACE:
+            breath = dragonkin.breath_for(answer)
+            embed = discord.Embed(
+                title=_("You are now Dragonkin."),
+                description=_("The {breath} breath stirs in your blood.").format(breath=breath.lower()),
+                color=self.bot.config.game.primary_colour,
+            )
+            try:
+                file = discord.File(DRAGONKIN_ART, filename="Dragonkin.webp")
+            except OSError:
+                return await ctx.send(embed=embed)
+            embed.set_image(url="attachment://Dragonkin.webp")
+            return await ctx.send(embed=embed, file=file)
         await ctx.send(_("You are now a {race}.").format(race=race_))
 
 

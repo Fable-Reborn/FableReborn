@@ -761,6 +761,8 @@ class DragonBattle(Battle):
                     damage,
                     self.get_team_for_combatant(target),
                 )
+            damage, tiamat_messages = self.resolve_tiamat_incoming(dragon, target, damage, self.dragon_element)
+            spec_defense_messages = [*spec_defense_messages, *tiamat_messages]
             dodge_message = self.element_procs.consume_dodge(target)
             if dodge_message:
                 damage = Decimal("0")
@@ -1005,7 +1007,9 @@ class DragonBattle(Battle):
                     damage,
                     self.get_team_for_combatant(target),
                 )
-            
+            damage, tiamat_messages = self.resolve_tiamat_incoming(dragon, target, damage, self.dragon_element)
+            spec_defense_messages = [*spec_defense_messages, *tiamat_messages]
+
             dodge_message = self.element_procs.consume_dodge(target) if damage > 0 else None
             if dodge_message:
                 damage = Decimal("0")
@@ -1755,6 +1759,8 @@ class DragonBattle(Battle):
             player.ranger_evolution = player_data.get("ranger_evolution", None)
             player.reaper_evolution = player_data.get("reaper_evolution", None)
             player.santa_evolution = player_data.get("santa_evolution", None)
+            player.penitent_evolution = player_data.get("penitent_evolution", None)
+            player.breathcaller_evolution = player_data.get("breathcaller_evolution", None)
             player.has_shield = player_data.get("has_shield", False)
             
             # Apply tank health buff if applicable

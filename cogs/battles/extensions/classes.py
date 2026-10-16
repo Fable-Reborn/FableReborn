@@ -2,6 +2,7 @@
 from decimal import Decimal
 
 from ..core.numbers import to_decimal
+from classes.classes import Breathcaller, Penitent
 from classes.warrior import WARRIOR_EVOLUTION_LEVELS
 
 class ClassBuffExtension:
@@ -38,6 +39,10 @@ class ClassBuffExtension:
         "Deathbringer": 6,
         "Grim Reaper": 7,
     }
+
+    # Tiamat-earned lines: grade 1-7 by evolution name.
+    penitent_evolution_levels = {c.class_name(): c.class_grade() for c in Penitent}
+    breathcaller_evolution_levels = {c.class_name(): c.class_grade() for c in Breathcaller}
 
     santa_evolution_levels = {
         "Little Helper": 1,
@@ -377,6 +382,8 @@ class ClassBuffExtension:
             "beastmaster_evolution": None,
             "reaper_evolution": None,
             "santa_evolution": None,
+            "penitent_evolution": None,
+            "breathcaller_evolution": None,
         }
         
         if not classes:
@@ -400,6 +407,13 @@ class ClassBuffExtension:
                 level = self.reaper_evolution_levels[class_name]
                 if buffs["reaper_evolution"] is None or level > buffs["reaper_evolution"]:
                     buffs["reaper_evolution"] = level
+
+            for key, levels in (
+                ("penitent_evolution", self.penitent_evolution_levels),
+                ("breathcaller_evolution", self.breathcaller_evolution_levels),
+            ):
+                if class_name in levels and (buffs[key] is None or levels[class_name] > buffs[key]):
+                    buffs[key] = levels[class_name]
 
             if class_name in self.santa_evolution_levels:
                 level = self.santa_evolution_levels[class_name]

@@ -130,6 +130,8 @@ class Gauntlet(commands.Cog):
             "beastmaster_evolution",
             "reaper_evolution",
             "santa_evolution",
+            "penitent_evolution",
+            "breathcaller_evolution",
             "damage_reflection",
             "has_shield",
             "spec_effects",

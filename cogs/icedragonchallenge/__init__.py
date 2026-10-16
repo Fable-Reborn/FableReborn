@@ -11,6 +11,9 @@ from cogs.shard_communication import user_on_cooldown
 from utils.checks import has_char, is_gm, is_patreon
 from utils.i18n import _
 from utils import misc as rpgtools
+from classes import breathcaller, dragonkin, penitent
+from classes.classes import Breathcaller, Penitent
+from classes.classes import from_string as class_from_string
 from classes.warrior import (
     WARRIOR_EVOLUTION_LEVELS,
     WARRIOR_MOMENTUM_CAP,
@@ -354,6 +357,9 @@ class IceDragonChallenge(commands.Cog):
             if "christmas_miracle_pct" in self.get_spec_fx(entity):
                 state = "Spent" if entity.get("winterlight_miracle_used") else "Ready"
                 lines.append(f"🕊️ Christmas Miracle: {state}")
+        for line in (penitent.status_line(entity), breathcaller.status_line(entity)):
+            if line:
+                lines.append(line)
         if entity.get("warrior_evolution"):
             momentum = int(entity.get("warrior_momentum", 0) or 0)
             state = "Crushing Blow ready" if momentum >= WARRIOR_MOMENTUM_CAP else f"{momentum}/{WARRIOR_MOMENTUM_CAP}"
@@ -578,6 +584,16 @@ class IceDragonChallenge(commands.Cog):
         """
         fx = self.get_spec_fx(entity)
         messages = []
+        if not entity.get("is_pet"):
+            damage = float(damage) * penitent.offense_multiplier(entity)
+            if breathcaller.ready(entity):
+                # The Ice Dragon has no element to counter: Exhale is pure force.
+                _element, multiplier, spent = breathcaller.exhale(entity, None)
+                damage *= multiplier
+                messages.append(breathcaller.exhale_message(
+                    entity["user"].display_name, "Breath", spent, (multiplier - 1) * 100))
+            else:
+                breathcaller.inhale(entity)
         if not fx:
             return damage, messages
         name = entity["user"].display_name
@@ -686,6 +702,14 @@ class IceDragonChallenge(commands.Cog):
         return damage, messages
 
     def apply_defensive_specs(self, target, damage, battle_participants, dragon=None):
+        """Defender-side mitigation on dragon damage, then the Penitent's Penance
+        from what still gets through. Returns (damage, messages)."""
+        damage, messages = self._apply_defensive_specs(target, damage, battle_participants, dragon)
+        if not target.get("is_pet"):
+            penitent.gain_penance(target, min(float(damage), float(target.get("hp", 0) or 0)))
+        return damage, messages
+
+    def _apply_defensive_specs(self, target, damage, battle_participants, dragon=None):
         """Defender-side spec mitigation on dragon damage. Returns (damage, messages).
 
         Retaliation reflects onto the dragon only when the dragon dict is passed
@@ -693,6 +717,18 @@ class IceDragonChallenge(commands.Cog):
         """
         messages = []
         damage = float(damage)
+        if target.get("dragonkin"):  # Blood of the Seven
+            damage *= float(1 - dragonkin.DRAGON_BONUS)
+        if not target.get("is_pet"):
+            damage *= penitent.defense_multiplier(target) * breathcaller.defense_multiplier(target, None)
+            guardian, last_shield = penitent.find_interceptor(battle_participants, target, damage)
+            if guardian is not None:
+                taken = penitent.take_the_blow(guardian, damage, last_shield)
+                guardian["hp"] = max(1.0 if last_shield else 0.0, float(guardian["hp"]) - taken)
+                penitent.gain_penance(guardian, taken)
+                messages.append(penitent.intercept_message(
+                    guardian["user"].display_name, target["user"].display_name, taken, last_shield))
+                return 0.0, messages
         fx = self.get_spec_fx(target)
         name = target["user"].display_name if not target.get("is_pet") else target.get("pet_name", "Pet")
 
@@ -2043,8 +2079,12 @@ class IceDragonChallenge(commands.Cog):
                     reaper_evolution = None
                     santa_evolution = None
                     warrior_evolution = None
+                    penitent_evolution = None
+                    breathcaller_evolution = None
+                    is_dragonkin = False
                     async with self.bot.pool.acquire() as conn:
-                        result = await conn.fetchrow('SELECT class FROM profile WHERE "user" = $1', player_id)
+                        result = await conn.fetchrow('SELECT class, race FROM profile WHERE "user" = $1', player_id)
+                        is_dragonkin = bool(result) and result["race"] == dragonkin.RACE
                         if result and result['class']:
                             classes = result['class'] if isinstance(result['class'], list) else [result['class']]
 
@@ -2084,6 +2124,11 @@ class IceDragonChallenge(commands.Cog):
                                     level = WARRIOR_EVOLUTION_LEVELS[class_name]
                                     if warrior_evolution is None or level > warrior_evolution:
                                         warrior_evolution = level
+                                class_ = class_from_string(class_name)
+                                if class_ and class_.in_class_line(Penitent):
+                                    penitent_evolution = max(penitent_evolution or 0, class_.class_grade())
+                                if class_ and class_.in_class_line(Breathcaller):
+                                    breathcaller_evolution = max(breathcaller_evolution or 0, class_.class_grade())
 
                             # Apply tank HP bonus if tank class found
                             if tank_evolution:
@@ -2104,6 +2149,9 @@ class IceDragonChallenge(commands.Cog):
                         player_stats["damage"] = float(player_stats["damage"]) * dual_mult
                         player_stats["armor"] = float(player_stats["armor"]) * dual_mult
                     player_stats["damage"] = float(player_stats["damage"]) * bard_damage_mult
+                    if is_dragonkin:
+                        # Blood of the Seven: every Ice Dragon fight is against a dragon.
+                        player_stats["damage"] *= float(1 + dragonkin.DRAGON_BONUS)
 
                     player_dict = {
                         "user": player["user"],
@@ -2119,6 +2167,9 @@ class IceDragonChallenge(commands.Cog):
                         "reaper_evolution": reaper_evolution if reaper_evolution else None,
                         "santa_evolution": santa_evolution if santa_evolution else None,
                         "warrior_evolution": warrior_evolution if warrior_evolution else None,
+                        "penitent_evolution": penitent_evolution,
+                        "breathcaller_evolution": breathcaller_evolution,
+                        "dragonkin": is_dragonkin,
                         "warrior_momentum": 0,
                         "fireball_charge": 0.0,
                         "spec_effects": spec_effects,

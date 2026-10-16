@@ -42,10 +42,12 @@ from classes.badges import Badge
 from classes.bucket_cooldown import Cooldown, CooldownMapping
 from classes.classes import (
     Bard,
+    Breathcaller,
     Beastmaster,
     Mage,
     Paladin,
     Paragon,
+    Penitent,
     Raider,
     Ranger,
     Reaper,
@@ -1484,8 +1486,10 @@ class Bot(commands.AutoShardedBot):
         is_bard = any(c.in_class_line(Bard) for c in classes)
         is_beastmaster = any(c.in_class_line(Beastmaster) for c in classes)
         is_santas_helper = any(c.in_class_line(SantasHelper) for c in classes)
+        is_penitent = any(c.in_class_line(Penitent) for c in classes)
         is_caster = any(
-            c.in_class_line(Mage) or c.in_class_line(Ritualist) for c in classes
+            c.in_class_line(Mage) or c.in_class_line(Ritualist) or c.in_class_line(Breathcaller)
+            for c in classes
         )
 
         for item in items:
@@ -1507,7 +1511,7 @@ class Bot(commands.AutoShardedBot):
                 is_thief or is_bard
             ):
                 damage += 5
-            elif type_ == ItemType.Sword and is_warrior:
+            elif type_ == ItemType.Sword and (is_warrior or is_penitent):
                 damage += 5
             elif type_ == ItemType.Bow and is_ranger:
                 damage += 10
@@ -1532,7 +1536,7 @@ class Bot(commands.AutoShardedBot):
             if line == Paragon:
                 damage += grade
                 armor += grade
-        if race == "Human":
+        if race in ("Human", "Dragonkin"):
             damage += 2
             armor += 2
         elif race == "Dwarf":

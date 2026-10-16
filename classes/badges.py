@@ -29,6 +29,7 @@ BADGE_DISPLAY_NAMES = {
     "FAVORED_BY_THE_SEVEN": "Favored by the Seven",
     "GREGAPOCALYPSE_SURVIVOR": "Gregapocalypse Survivor",
     "RELIC_SOVEREIGN": "Relic Sovereign",
+    "CLUTCH_OF_ILISREI": "Clutch of Ilisrei",
 }
 
 
@@ -48,6 +49,9 @@ class Badge(IntFlag):
     GREGAPOCALYPSE_SURVIVOR = 4096
     LIVING_LEGEND = 8192
     RELIC_SOVEREIGN = 16384
+    # Earned by finishing The Tiamat Sacrament (utils/tiamat_unlocks.py). This is the
+    # last of the 16 bits badges are stored in; another badge needs a wider column.
+    CLUTCH_OF_ILISREI = 32768
 
     @classmethod
     def from_string(cls, string: str) -> Badge | None:

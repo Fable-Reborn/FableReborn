@@ -4,6 +4,7 @@ import random
 from decimal import Decimal
 import asyncio
 
+from classes import dragonkin
 from classes.ascension import ASCENSION_TABLE_NAME
 from .core.battle import Battle
 from .core.combatant import Combatant
@@ -949,7 +950,7 @@ class BattleFactory:
             
         async with ctx.bot.pool.acquire() as conn:
             # Get basic stats
-            query = 'SELECT "luck", "health", "stathp", "xp", "class" FROM profile WHERE "user" = $1;'
+            query = 'SELECT "luck", "health", "stathp", "xp", "class", "race", "cv" FROM profile WHERE "user" = $1;'
             result = await conn.fetchrow(query, player.id)
             
             if not result:
@@ -1003,6 +1004,10 @@ class BattleFactory:
             attack_element = element_data.get("attack_element", "Unknown")
             defense_element = element_data.get("defense_element", attack_element)
             dual_attack_elements = element_data.get("dual_attack_elements")
+            # Dragonkin: their chosen breath fills in where gear has no element.
+            attack_element, defense_element, dragonkin_breath = dragonkin.attuned_elements(
+                result["race"], result["cv"], attack_element, defense_element
+            )
             element_procs_enabled, element_proc_stars = await self._load_element_proc_state(
                 conn, player.id, equipped_items
             )
@@ -1077,6 +1082,8 @@ class BattleFactory:
                 beastmaster_evolution=buffs.get("beastmaster_evolution"),
                 reaper_evolution=buffs.get("reaper_evolution"),
                 santa_evolution=buffs.get("santa_evolution"),
+                penitent_evolution=buffs.get("penitent_evolution"),
+                breathcaller_evolution=buffs.get("breathcaller_evolution"),
                 damage_reflection=damage_reflection,
                 bloodpact_cap_percent=bloodpact_cap_percent,
                 bloodpact_bank_percent=bloodpact_bank_percent,
@@ -1092,6 +1099,8 @@ class BattleFactory:
                 display_classes=classes,
                 element_procs_enabled=element_procs_enabled,
                 element_proc_stars=element_proc_stars,
+                dragonkin=result["race"] == dragonkin.RACE,
+                dragonkin_breath=dragonkin_breath,
             )
 
     async def _load_element_proc_state(self, conn, user_id, equipped_items):

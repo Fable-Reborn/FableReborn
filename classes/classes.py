@@ -174,6 +174,27 @@ class Beastmaster(GameClass):
     Beastlord = 6
 
 
+# Earned in The Tiamat Sacrament (utils/tiamat_unlocks.py), never bought.
+class Penitent(GameClass):
+    Supplicant = 0
+    Mourner = 1
+    Flagellant = 2
+    Penitent = 3
+    Oathbound = 4
+    Martyr = 5
+    Absolved = 6
+
+
+class Breathcaller(GameClass):
+    Ashlung = 0
+    RuneDrinker = 1
+    Wyrmspeaker = 2
+    Breathcaller = 3
+    Stormlung = 4
+    Elderbreath = 5
+    Dragonvoice = 6
+
+
 def get_class_evolves(class_: type[GameClass]) -> list[GameClass]:
     return list(class_.__members__.values())
 
@@ -193,6 +214,8 @@ ALL_CLASSES = {
                   + list(Beastmaster.__members__.values())
                   + list(SantasHelper.__members__.values())
                   + list(Tank.__members__.values())
+                  + list(Penitent.__members__.values())
+                  + list(Breathcaller.__members__.values())
 }
 
 ALL_CLASSES_TYPES = {
@@ -209,6 +232,8 @@ ALL_CLASSES_TYPES = {
     "Beastmaster": Beastmaster,
     "SantasHelper": SantasHelper,
     "Tank": Tank,
+    "Penitent": Penitent,
+    "Breathcaller": Breathcaller,
 }
 
 

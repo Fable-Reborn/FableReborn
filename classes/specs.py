@@ -1,7 +1,7 @@
 """
 Class specialization catalog.
 
-Each of the 13 class lines forks into two specs after the line reaches the
+Each of the 15 class lines forks into two specs after the line reaches the
 level, evolution, and Class Mastery gates: one passive (always on) and one
 signature effect resolved by the battle engines. This module is import-safe
 for both cogs and the battle engine and has no Discord dependency.
@@ -295,6 +295,45 @@ SPECS: dict[str, dict] = {
         "passive": "Den's Bulwark",
         "description": "In party content, allies take {value}% less damage.",
         "effect": {"type": "party_damage_reduction_pct", "base": 2, "per_grade": 0.7},
+        "engines": ["modern", "simple"],
+    },
+    # --- Penitent (earned by sparing Gyle in The Tiamat Sacrament) -----------
+    "bloodlust": {
+        "name": "Bloodlust", "line": "Penitent", "kind": "aggressive", "emoji": "🩸",
+        "passive": "Wounds Remembered",
+        "description": (
+            "Deal up to **+{value}% damage** as your HP falls, in full at 25% HP or lower. "
+            "Stacks with the Zeal of your Penance."
+        ),
+        "effect": {"type": "bloodlust_pct", "base": 6, "per_grade": 2},
+        "engines": ["modern", "simple"],
+    },
+    "last_shield": {
+        "name": "Last Shield", "line": "Penitent", "kind": "defensive", "emoji": "🛡️",
+        "passive": "Unbroken Vow",
+        "description": (
+            "Take **{value}% less damage** while you hold 50+ Penance. Once per battle, "
+            "throw yourself before an ally's killing blow for no Penance and survive it at 1 HP."
+        ),
+        "effect": {"type": "last_shield_pct", "base": 4, "per_grade": 1.2},
+        "engines": ["modern", "simple"],
+    },
+    # --- Breathcaller (secret: all seven Soul Gems in The Tiamat Sacrament) --
+    "tempest_maw": {
+        "name": "Tempest Maw", "line": "Breathcaller", "kind": "aggressive", "emoji": "🌪️",
+        "passive": "Braided Storm",
+        "description": (
+            "Your Exhale deals **+{value}% more damage** and splashes half of it onto "
+            "every other enemy."
+        ),
+        "effect": {"type": "tempest_maw_pct", "base": 10, "per_grade": 2.5},
+        "engines": ["modern", "simple"],
+    },
+    "scaleward": {
+        "name": "Scaleward", "line": "Breathcaller", "kind": "defensive", "emoji": "🐲",
+        "passive": "Scales of Breath",
+        "description": "Take **{value}% less damage** for each Breath you hold (up to 3).",
+        "effect": {"type": "scaleward_pct", "base": 2, "per_grade": 0.6},
         "engines": ["modern", "simple"],
     },
 }

@@ -21,9 +21,11 @@ from discord.ext import commands, tasks
 from classes.classes import (
     Bard,
     Beastmaster,
+    Breathcaller,
     Mage,
     Paladin,
     Paragon,
+    Penitent,
     Raider,
     Ranger,
     Reaper,
@@ -240,6 +242,8 @@ ALL_KNOWN_CLASSES = {
     "paragon": Paragon,
     "reaper": Reaper,
     "santashelper": SantasHelper,
+    "penitent": Penitent,
+    "breathcaller": Breathcaller,
 }
 CLASS_EVOLUTION_LEVELS = (0, 5, 10, 15, 20, 25, 30)
 
@@ -1072,6 +1076,8 @@ class AIPlayer(commands.Cog):
             "beastmaster_evolution",
             "reaper_evolution",
             "santa_evolution",
+            "penitent_evolution",
+            "breathcaller_evolution",
         )
         class_effects = {
             name: self._json_safe_raid_value(getattr(combatant, name, None))

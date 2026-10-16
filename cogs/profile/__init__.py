@@ -33,6 +33,7 @@ from discord.ext import commands
 
 from classes.ascension import ASCENSION_TABLE_NAME, get_ascension_mantle
 from utils.ascension import consume_ascension_potion, ensure_ascension_potions
+from classes import dragonkin
 from classes.badges import Badge
 from classes.bot import Bot
 from classes.classes import from_string as class_from_string
@@ -2157,7 +2158,8 @@ class Profile(commands.Cog):
         rarity = "Mythic" if level >= 90 else "Legendary" if level >= 70 else "Epic" if level >= 50 else "Rare" if level >= 30 else "Adventurer"
 
         card_name = str(profile.get("name") or user.display_name)
-        race_name = str(profile.get("race") or "Unknown")
+        race_name = dragonkin.race_label(profile.get("race") or "Unknown", profile.get("cv"))
+        is_dragonkin = profile.get("race") == dragonkin.RACE
         class_list = profile.get("class") or []
         if not isinstance(class_list, list):
             class_list = [str(class_list)]
@@ -2190,7 +2192,11 @@ class Profile(commands.Cog):
                 draw_ornament(draw, ox, oy, 8, theme)
 
         draw.text((80, 404), clip(f"Level {level}  {rarity}", value_font, 286), font=value_font, fill=colors["border"])
-        draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
+        if is_dragonkin:
+            dragonkin.draw_crest(draw, 91, 449, 22, profile.get("cv"))
+            draw.text((108, 436), clip(race_name, tiny_font, 258), font=tiny_font, fill=colors["border"])
+        else:
+            draw.text((80, 436), clip(race_name, tiny_font, 286), font=tiny_font, fill=colors["muted"])
         if not theme.classic:
             draw.rounded_rectangle((80, 474, 366, 481), radius=3, fill=theme.background)
             if xp_progress > 0:
@@ -3519,6 +3525,8 @@ class Profile(commands.Cog):
                     "warrior": {"Sword": 5},
                     "ranger": {"Bow": 10},
                     "reaper": {"Scythe": 10},
+                    "penitent": {"Sword": 5},
+                    "breathcaller": {"Wand": 5},
                     "paladin": {"Hammer": 5},
                     "thief": {"Knife": 5, "Dagger": 5},
                     "paragon": {"Spear": 5},
@@ -3560,7 +3568,7 @@ class Profile(commands.Cog):
                 # Apply the class bonus to the damage total
                 damage_total += class_bonus
 
-                if race == "human":
+                if race in ("human", "dragonkin"):
                     armor_total += 2
                     damage_total += 2
                 elif race == "orc":
@@ -3676,7 +3684,7 @@ class Profile(commands.Cog):
             import traceback
             error_message = f"Error occurred: {e}\n"
             error_message += traceback.format_exc()
-            await ctx.send(f"An error occurred during the game. {e}")
+            await ctx.send(f"An error occurred during the render. {e}")
             print(error_message)  # Log for debugging
 
     @user_cooldown(300)

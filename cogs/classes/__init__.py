@@ -47,6 +47,8 @@ from classes.classes import (
     Reaper,
     SantasHelper,
     Tank,
+    Penitent,
+    Breathcaller,
 )
 from classes.classes import from_string as class_from_string
 from classes.classes import get_class_evolves, get_first_evolution, get_name
@@ -55,6 +57,7 @@ from cogs.shard_communication import next_day_cooldown
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import misc as rpgtools
 from utils import random
+from utils import tiamat_unlocks
 from utils.checks import has_char, has_money, is_class, update_pet, user_is_patron, is_gm
 from utils.image_choice import ImageChoice, ImageChoiceView, find_image_path
 from utils.i18n import _, locale_doc
@@ -540,6 +543,52 @@ class Classes(commands.Cog):
                     )
                 )
                 choices.append(SantasHelper)
+
+            # Earned in The Tiamat Sacrament (utils/tiamat_unlocks.py).
+            async with self.bot.pool.acquire() as conn:
+                tiamat_earned = await tiamat_unlocks.unlocks_for(conn, ctx.author.id)
+            if tiamat_unlocks.PENITENT in tiamat_earned:
+                embeds.append(
+                    discord.Embed(
+                        title=_("Penitent"),
+                        description=_(
+                            "An order sworn in the memory of Gyle, who took wounds meant for others. "
+                            "Every wound you take builds **Penance** (max 100), and every 10 Penance "
+                            "you hold sharpens your **Zeal** for more damage.\n\n"
+                            "**Take the Blow:** when an ally would be struck below 35% HP, you step in "
+                            "front of it with 50 Penance, taking the hit yourself for 10% less, plus "
+                            "3% less per evolution.\n\n"
+                            "After final evolution and mastering this class line, choose **Bloodlust** "
+                            "to fight harder the more you bleed, or **Last Shield** to take an ally's "
+                            "killing blow once per battle and live.\n\n"
+                            "**Favored Weapon:** Sword (+5 damage).\n"
+                            "*Earned by showing mercy to Gyle in The Tiamat Sacrament.*"
+                        ),
+                        color=self.bot.config.game.primary_colour,
+                    )
+                )
+                choices.append(Penitent)
+            if tiamat_unlocks.BREATHCALLER in tiamat_earned:
+                embeds.append(
+                    discord.Embed(
+                        title=_("Breathcaller"),
+                        description=_(
+                            "The breath of Az'uar, who drank the elements and breathed them back. "
+                            "Elemental hits that strike you are partly drawn in as **Breath**, and "
+                            "each of your attacks draws one more from the air (max 3).\n\n"
+                            "**Exhale:** at 3 Breath your next attack spends it all as the element that "
+                            "beats your target, gaining 8% damage, plus 2% per evolution, for every "
+                            "Breath.\n\n"
+                            "After final evolution and mastering this class line, choose **Tempest Maw** "
+                            "for a storm that splashes every foe, or **Scaleward** to turn held Breath "
+                            "into scales.\n\n"
+                            "**Favored Weapon:** Wand (+5 damage).\n"
+                            "*A secret of The Tiamat Sacrament.*"
+                        ),
+                        color=self.bot.config.game.primary_colour,
+                    )
+                )
+                choices.append(Breathcaller)
 
             #if profile_data['easter2025']: # or profile_data['tier'] == 4:
                 #embeds.append(

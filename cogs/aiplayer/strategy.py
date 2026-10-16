@@ -10,9 +10,11 @@ from typing import Any, Iterable
 from classes.classes import (
     Bard,
     Beastmaster,
+    Breathcaller,
     Mage,
     Paladin,
     Paragon,
+    Penitent,
     Raider,
     Ranger,
     Reaper,
@@ -246,15 +248,44 @@ CLASS_KNOWLEDGE = {
         "synergy": "Complements either damage or tank classes with mixed party support.",
         "availability": "Christmas unlock or qualifying premium tier",
     },
+    "penitent": {
+        "role": "party protector that turns wounds into damage",
+        "favored_weapons": ["Sword"],
+        "favored_weapon_bonus": "+5 damage for each equipped Sword",
+        "combat_mechanics": (
+            "Losing HP builds Penance (max 100); every 10 Penance adds damage. With 50 "
+            "Penance it takes a hit that would drop an ally below 35% HP, for reduced damage."
+        ),
+        "evolution_scaling": "Higher grades add more damage per Penance and reduce intercepted hits more.",
+        "best_for": "party content where allies need protecting",
+        "limitations": "Earned only in The Tiamat Sacrament; not offered unless unlocked.",
+        "synergy": "Pairs with fragile damage dealers it can shield.",
+        "availability": "Tiamat Sacrament unlock",
+    },
+    "breathcaller": {
+        "role": "elemental counter-caster",
+        "favored_weapons": ["Wand"],
+        "favored_weapon_bonus": "+5 damage for each equipped Wand",
+        "combat_mechanics": (
+            "Elemental hits taken are partly absorbed as Breath, and each attack draws one "
+            "more (max 3). At 3 Breath the next attack exhales as the element that beats the "
+            "target for bonus damage per Breath."
+        ),
+        "evolution_scaling": "Higher grades absorb more of each elemental hit and add more damage per Breath.",
+        "best_for": "fights against elemental enemies",
+        "limitations": "Secret Tiamat Sacrament unlock; not offered unless unlocked.",
+        "synergy": "Any party; it adapts its element to each target.",
+        "availability": "secret Tiamat Sacrament unlock",
+    },
 }
 
 
 FAVORED_WEAPON_BONUSES = (
     ((Paragon, Beastmaster), {"Spear": (5, 0)}),
     ((Bard, Thief), {"Dagger": (5, 0), "Knife": (5, 0)}),
-    ((Warrior,), {"Sword": (5, 0)}),
+    ((Warrior, Penitent), {"Sword": (5, 0)}),
     ((Ranger,), {"Bow": (10, 0)}),
-    ((Mage, Ritualist), {"Wand": (5, 0)}),
+    ((Mage, Ritualist, Breathcaller), {"Wand": (5, 0)}),
     ((Raider,), {"Axe": (5, 0)}),
     ((Paladin,), {"Hammer": (5, 0)}),
     ((Reaper,), {"Scythe": (10, 0)}),

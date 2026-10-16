@@ -32,6 +32,7 @@ import discord
 from discord.ext import commands
 
 from .ascension import AscensionCombat
+from classes import breathcaller, dragonkin, penitent
 from ..extensions.element_procs import ElementProcExtension
 from classes.warrior import (
     WARRIOR_MOMENTUM_CAP,
@@ -682,7 +683,12 @@ class Battle(AscensionCombat, ABC):
         """Resolve outgoing element for an attack action."""
         if not attacker:
             return "Unknown"
-        if hasattr(attacker, "get_attack_element_for_turn"):
+        exhaled = getattr(attacker, "breathcaller_exhale_element", None)
+        if exhaled:
+            # Breathcaller Exhale replaces this turn's element.
+            element = exhaled
+            attacker.breathcaller_exhale_element = None
+        elif hasattr(attacker, "get_attack_element_for_turn"):
             element = attacker.get_attack_element_for_turn() or "Unknown"
         else:
             element = getattr(attacker, "attack_element", getattr(attacker, "element", "Unknown")) or "Unknown"
@@ -971,6 +977,10 @@ class Battle(AscensionCombat, ABC):
             if "christmas_miracle_pct" in self._class_spec_effects(combatant):
                 state = "Spent" if getattr(combatant, "winterlight_miracle_used", False) else "Ready"
                 lines.append(f"🕊️ Christmas Miracle: {state}")
+
+        for line in (penitent.status_line(combatant), breathcaller.status_line(combatant)):
+            if line:
+                lines.append(line)
 
         if int(getattr(combatant, "warrior_evolution", 0) or 0) > 0:
             momentum = int(getattr(combatant, "warrior_momentum", 0) or 0)
@@ -2084,6 +2094,7 @@ class Battle(AscensionCombat, ABC):
 
         messages.extend(self._resolve_reaper_attack(combatant, target))
         messages.extend(self._resolve_santa_attack(combatant, target))
+        messages.extend(self._resolve_tempest_splash(combatant, target))
         messages.extend(self.resolve_warrior_post_hit(combatant, target))
         weakness_message = self._tick_krampus_weakness(combatant)
         if weakness_message:
@@ -2092,6 +2103,25 @@ class Battle(AscensionCombat, ABC):
         messages.extend(self._drain_ascension_messages(target, combatant))
 
         return messages
+
+    def _resolve_tempest_splash(self, attacker, target):
+        """Tempest Maw: half of an Exhale splashes onto the target's allies (after their armor)."""
+        splash = Decimal(str(getattr(attacker, "breathcaller_splash", 0) or 0))
+        if splash <= 0:
+            return []
+        attacker.breathcaller_splash = Decimal("0")
+        _index, team = self._combatant_team(target)
+        hit = []
+        for enemy in getattr(team, "combatants", []) if team else []:
+            if enemy is target or not enemy.is_alive():
+                continue
+            damage = max(Decimal("0"), splash - Decimal(str(getattr(enemy, "armor", 0) or 0)))
+            if damage > 0:
+                self.apply_damage(attacker, enemy, damage)
+                hit.append(f"{enemy.name} ({self.format_number(damage)})")
+        if not hit:
+            return []
+        return [f"🌪️ The storm splashes onto {', '.join(hit)}!"]
 
     def calculate_mage_fireball_damage(
         self,
@@ -2225,6 +2255,13 @@ class Battle(AscensionCombat, ABC):
                 },
             )
 
+        # 0b) Breathcaller: a full Breath exhales as the element that beats the target.
+        class_buffs = self.config.get("class_buffs", True)
+        exhale = None
+        if class_buffs and breathcaller.ready(attacker):
+            exhale = breathcaller.exhale(attacker, self.resolve_defense_element(defender))
+            attacker.breathcaller_exhale_element = exhale[0]
+
         # 1) Element modifier on base damage (mode-configurable).
         if apply_element_mod and self.config.get("element_effects", True) and element_ext:
             self.resolve_attack_element(attacker)
@@ -2238,6 +2275,38 @@ class Battle(AscensionCombat, ABC):
                 element_mod = pet_ext.apply_void_affinity_protection(defender, element_mod)
             if element_mod != 0:
                 raw_damage = raw_damage * (Decimal("1") + Decimal(str(element_mod)))
+            hit_element = getattr(attacker, "element_proc_last_attack", None)
+        else:
+            hit_element = getattr(attacker, "attack_element", None)
+            if exhale:
+                hit_element = exhale[0]
+                attacker.breathcaller_exhale_element = None
+
+        # 1b) Dragonkin: Blood of the Seven (vs dragons) and their breath's resistance.
+        dragonkin_mod = dragonkin.damage_multiplier(attacker, defender, hit_element)
+        if dragonkin_mod != 1:
+            raw_damage = raw_damage * dragonkin_mod
+
+        # 1c) Tiamat classes: Penance's Zeal and Bloodlust, Exhale, then the
+        # defender's Last Shield guard, Scaleward and Inhale.
+        if class_buffs:
+            class_mod = Decimal(str(penitent.offense_multiplier(attacker)))
+            if exhale:
+                class_mod *= Decimal(str(exhale[1]))
+                skill_messages.append(breathcaller.exhale_message(
+                    attacker.name, exhale[0], exhale[2], (exhale[1] - 1) * 100))
+            class_mod *= Decimal(str(penitent.defense_multiplier(defender)))
+            class_mod *= Decimal(str(breathcaller.defense_multiplier(defender, hit_element)))
+            if class_mod != 1:
+                raw_damage = raw_damage * class_mod
+            if exhale and breathcaller.splash_share(attacker) > 0:
+                attacker.breathcaller_splash = raw_damage * Decimal(str(breathcaller.splash_share(attacker)))
+            if not exhale:
+                breathcaller.inhale(attacker)  # each attack draws a Breath from the air
+            if breathcaller.inhale_hit(defender, hit_element):
+                defender_messages.append(
+                    f"🐉 **{defender.name}** inhales the {breathcaller.breath(defender)[-1]} blow."
+                )
 
         # 2) Add per-hit variance.
         raw_damage += damage_variance
@@ -2440,12 +2509,49 @@ class Battle(AscensionCombat, ABC):
 
         return None
 
+    def resolve_tiamat_incoming(self, attacker, target, damage, attack_element=None):
+        """Dragonkin, Penitent and Breathcaller defenses for attack paths that skip
+        resolve_pet_attack_outcome (the dragon's own attacks). Returns (damage, messages)."""
+        damage = Decimal(str(damage))
+        if damage <= 0 or target is None:
+            return damage, []
+        messages = []
+        multiplier = dragonkin.damage_multiplier(attacker, target, attack_element)
+        if self.config.get("class_buffs", True):
+            multiplier *= Decimal(str(penitent.defense_multiplier(target)))
+            multiplier *= Decimal(str(breathcaller.defense_multiplier(target, attack_element)))
+            if breathcaller.inhale_hit(target, attack_element):
+                messages.append(f"🐉 **{target.name}** inhales the {breathcaller.breath(target)[-1]} blow.")
+        damage *= multiplier
+        if not getattr(target, "is_pet", False):
+            damage, intercept_messages, _guardian = self.apply_penitent_intercept(
+                attacker, target, damage, self.get_team_for_combatant(target)
+            )
+            messages.extend(intercept_messages)
+        return damage, messages
+
+    def apply_penitent_intercept(self, attacker, target, damage, team):
+        """Penitent's Take the Blow / Last Shield. Returns (damage left, messages, penitent)."""
+        if team is None or not self.config.get("class_buffs", True):
+            return damage, [], None
+        guardian, last_shield = penitent.find_interceptor(getattr(team, "combatants", []), target, damage)
+        if guardian is None:
+            return damage, [], None
+        taken = Decimal(str(penitent.take_the_blow(guardian, damage, last_shield)))
+        self.apply_damage(attacker, guardian, taken)
+        if last_shield and not guardian.is_alive():
+            guardian.hp = Decimal("1")
+        return Decimal("0"), [penitent.intercept_message(guardian.name, target.name, taken, last_shield)], guardian
+
     def apply_pet_owner_guard(self, attacker, target, damage):
         damage = Decimal(str(damage))
         if damage <= 0 or target is None or getattr(target, "is_pet", False):
             return damage, [], None
 
         team = self.get_team_for_combatant(target)
+        damage, intercept_messages, guardian = self.apply_penitent_intercept(attacker, target, damage, team)
+        if guardian is not None:
+            return damage, intercept_messages, guardian
         pet_ext = self._get_pet_extension()
         if team is None or pet_ext is None:
             return damage, [], None
