@@ -27,7 +27,6 @@ import boto3
 import discord
 import requests
 
-from aiohttp.client_exceptions import ContentTypeError
 from asyncpg.exceptions import StringDataRightTruncationError
 from discord.ext import commands
 
@@ -44,6 +43,7 @@ from utils.checks import (
     is_gm,
 )
 from utils.i18n import _, locale_doc
+from utils.okapi import RenderError, render_overlay
 
 
 async def is_valid_image(url):
@@ -634,30 +634,14 @@ class Patreon(commands.Cog):
         if style not in ("dark", "light"):
             return await ctx.send(_("Overlay type must be `dark` or `light`."))
 
-        async with self.bot.trusted_session.post(
-                f"{self.bot.config.external.okapi_url}/api/genoverlay",
-                json={"url": url, "style": style},
-                headers={"Authorization": self.bot.config.external.okapi_token},
-        ) as req:
-            if req.status == 200:
-                background = await req.text()
-            else:
-                # Error, means try reading the response JSON error
-                try:
-                    error_json = await req.json()
-                    return await ctx.send(
-                        _(
-                            "There was an error processing your image. Reason: {reason} ({detail})"
-                        ).format(
-                            reason=error_json["reason"], detail=error_json["detail"]
-                        )
-                    )
-                except ContentTypeError:
-                    return await ctx.send(
-                        _("Unexpected internal error when generating image.")
-                    )
-                except Exception:
-                    return await ctx.send(_("Unexpected error when generating image."))
+        try:
+            background = await render_overlay(self.bot.trusted_session, url, style)
+        except RenderError as e:
+            return await ctx.send(
+                _(
+                    "There was an error processing your image. Reason: {reason} ({detail})"
+                ).format(reason=e.reason, detail=e.detail)
+            )
 
         try:
             link = await self.bot.cogs["Miscellaneous"].get_imgur_url(background)

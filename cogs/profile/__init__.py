@@ -28,7 +28,6 @@ import discord
 import io
 from io import BytesIO
 
-from aiohttp import ContentTypeError
 from discord import Embed
 from discord.ext import commands
 
@@ -51,6 +50,7 @@ from utils.april_fools import get_pet_display_name, mask_pet_record_for_display
 from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
+from utils.okapi import RenderError, render_profile_classic, render_profile_v2
 from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent, render_fable
 from .theme_contract import is_contract_alias, start_trade_in
 from .theme_picker import ProfileThemePicker
@@ -59,9 +59,8 @@ from .themes import ASSET_ROOT as THEME_ASSET_ROOT
 
 JURY_COSMETIC_TITLE = "Favored by the Seven"
 
-# Class icons okapi has compiled in. It indexes CLASSES[icon] directly and is
-# built with panic = "abort", so an unknown icon kills the whole service for
-# everyone. Bard and Beastmaster have no cast asset upstream -> send "none".
+# Class icons the classic profile card has cast art for (utils/okapi.py).
+# Bard and Beastmaster have no cast asset -> send "none".
 OKAPI_CLASS_ICONS = frozenset(
     {
         "mage",
@@ -2787,9 +2786,9 @@ class Profile(commands.Cog):
             ))
         elif not theme.classic:
             canvas = add_theme_banner(canvas, theme)
-        # The folio is large and richly lit; exhaustive PNG optimisation costs ~1s for ~4%.
-        png_options = dict(compress_level=6) if theme.rarity in ("Transcendent", "Fable") else dict(optimize=True)
-        canvas.convert("RGB").save(output, format="PNG", **png_options)
+        # JPEG encodes in ~10ms where PNG took hundreds; subsampling=0 keeps full
+        # colour so thin foil lines and small lettering stay crisp.
+        canvas.convert("RGB").save(output, format="JPEG", quality=92, subsampling=0)
         output.seek(0)
         return output
 
@@ -3412,44 +3411,21 @@ class Profile(commands.Cog):
                 
 
 
-                async with self.bot.trusted_session.post(
-                        f"{self.bot.config.external.okapi_url}/api/genprofile",
-                        json=payload_for_okapi,
-                        headers={"Authorization": self.bot.config.external.okapi_token},
-                ) as req:
-                    if req.status == 200:
+                try:
+                    bytebuffer = await render_profile_classic(
+                        self.bot.trusted_session, payload_for_okapi
+                    )
+                except RenderError as e:
+                    async with self.bot.pool.acquire() as conn:
+                        # Update the background column in the profile table for the target user
+                        update_query = 'UPDATE profile SET background = 0 WHERE "user" = $1'
+                        await conn.execute(update_query, targetid)
 
-                        img = await req.text()
-
-
-
-                    else:
-                        # Error, means try reading the response JSON error
-                        try:
-                            error_json = await req.json()
-                            async with self.bot.pool.acquire() as conn:
-                                # Update the background column in the profile table for the target user
-                                update_query = 'UPDATE profile SET background = 0 WHERE "user" = $1'
-                                await conn.execute(update_query, targetid)
-
-                            return await ctx.send(
-                                _(
-                                    "There was an error processing your image. Reason: {reason} ({detail}). (Due to this, the profile image has been reset)"
-                                ).format(
-                                    reason=error_json["reason"], detail=error_json["detail"]
-                                )
-                            )
-                        except ContentTypeError:
-                            return await ctx.send(
-                                _("Unexpected internal error when generating image.")
-                            )
-                        except Exception:
-                            return await ctx.send(_("Unexpected error when generating image."))
-
-                    async with self.bot.trusted_session.get(img) as resp:
-                        bytebuffer = await resp.read()
-                        if resp.status != 200:
-                            return await ctx.send("Error failed to fetch image")
+                    return await ctx.send(
+                        _(
+                            "There was an error processing your image. Reason: {reason} ({detail}). (Due to this, the profile image has been reset)"
+                        ).format(reason=e.reason, detail=e.detail)
+                    )
 
                 await ctx.send(
                     _("Your Profile:"),
@@ -3669,37 +3645,33 @@ class Profile(commands.Cog):
 
 
 
-                async with self.bot.trusted_session.post(
-                        f"http://127.0.0.1:3010/api/genprofile",
-                        json={
-                            "name": profile['name'],
-                            "color": color,
-                            "image": profile["background"],
-                            "race": profile['race'],
-                            "classes": classes_str_list,
-                            "profession": "None",
-                            "damage": self._format_stat_value(damage_total),
-                            "defense": self._format_stat_value(armor_total),
-                            "swordName": f"{item1_name}",
-                            "shieldName": f"{item2_name}",
-                            "level": f"{rpgtools.xptolevel(profile['xp'])}",
-                            "guild_rank": guild_rank,
-                            "guild": guild_name,
-                            "money": profile['money'],
-                            "pvpWins": f"{profile['pvpwins']}",
-                            "marriage": marriage if marriage else _("None"),
-                            "god": profile["god"] or _("No God"),
-                            "adventure": adventure_name or _("No Mission"),
-                            "adventure_time": adventure_time,
-                            "icons": class_icons_list,
-                            "BT": f"{level}"
-
-                        },
-                        headers={"Authorization": self.bot.config.external.okapi_token},
-                ) as req:
-                    img = BytesIO(await req.read())
-                    # await ctx.send(f"{profile['class']}")
-                    await ctx.send(file=discord.File(fp=img, filename="Profile.png"))
+                image_bytes = await render_profile_v2(
+                    self.bot.trusted_session,
+                    {
+                        "name": profile['name'],
+                        "color": color,
+                        "image": profile["background"],
+                        "race": profile['race'],
+                        "classes": classes_str_list,
+                        "profession": "None",
+                        "damage": self._format_stat_value(damage_total),
+                        "defense": self._format_stat_value(armor_total),
+                        "swordName": f"{item1_name}",
+                        "shieldName": f"{item2_name}",
+                        "level": f"{rpgtools.xptolevel(profile['xp'])}",
+                        "guild_rank": guild_rank,
+                        "guild": guild_name,
+                        "money": profile['money'],
+                        "pvpWins": f"{profile['pvpwins']}",
+                        "marriage": marriage if marriage else _("None"),
+                        "god": profile["god"] or _("No God"),
+                        "adventure": adventure_name or _("No Mission"),
+                        "adventure_time": adventure_time,
+                        "icons": class_icons_list,
+                        "BT": f"{level}"
+                    },
+                )
+                await ctx.send(file=discord.File(fp=BytesIO(image_bytes), filename="Profile.png"))
         except Exception as e:
             import traceback
             error_message = f"Error occurred: {e}\n"
@@ -4515,7 +4487,7 @@ class Profile(commands.Cog):
             caption,
             file=discord.File(
                 fp=image_buffer,
-                filename=f"profile_rpg_{user.id}.png",
+                filename=f"profile_rpg_{user.id}.jpg",
             ),
         )
 

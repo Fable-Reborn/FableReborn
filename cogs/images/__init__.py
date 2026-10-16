@@ -23,6 +23,7 @@ from discord.ext import commands
 from discord.ext.commands import BucketType
 
 from utils.i18n import _, locale_doc
+from utils.okapi import RenderError, image_op
 
 
 class Images(commands.Cog):
@@ -45,16 +46,12 @@ class Images(commands.Cog):
             return await ctx.send(_("Use 1, 2, 3, 4 or 5 as intensity value."))
         url = user.display_avatar.replace(format="png", size=size).url
         # change size to lower for less pixels
-        async with self.bot.trusted_session.post(
-            f"{self.bot.config.external.okapi_url}/api/imageops/pixel",
-            json={"image": url},
-            headers={"Authorization": self.bot.config.external.okapi_token},
-        ) as r:
-            image = await r.text()
-            async with self.bot.trusted_session.get(image) as resp:
-                bytebuffer = await resp.read()
-                if resp.status != 200:
-                    return await ctx.send("Error failed to fetch image")
+        try:
+            bytebuffer = await image_op(self.bot.trusted_session, "pixel", url)
+        except RenderError as e:
+            return await ctx.send(
+                _("Error failed to process image: {reason}").format(reason=e.reason)
+            )
         await ctx.send(
             file=discord.File(fp=io.BytesIO(bytebuffer), filename="image.png"),
         )
@@ -68,16 +65,16 @@ class Images(commands.Cog):
             Finds and exaggerates edges in a user's avatar, creating a cool image effect."""
         )
         user = user or ctx.author
-        async with self.bot.trusted_session.post(
-            f"{self.bot.config.external.okapi_url}/api/imageops/edges",
-            json={"image": user.display_avatar.replace(format="png").url},
-            headers={"Authorization": self.bot.config.external.okapi_token},
-        ) as r:
-            image = await r.text()
-            async with self.bot.trusted_session.get(image) as resp:
-                bytebuffer = await resp.read()
-                if resp.status != 200:
-                    return await ctx.send("Error failed to fetch image")
+        try:
+            bytebuffer = await image_op(
+                self.bot.trusted_session,
+                "edges",
+                user.display_avatar.replace(format="png").url,
+            )
+        except RenderError as e:
+            return await ctx.send(
+                _("Error failed to process image: {reason}").format(reason=e.reason)
+            )
         await ctx.send(
             file=discord.File(fp=io.BytesIO(bytebuffer), filename="image.png"),
         )
@@ -94,16 +91,16 @@ class Images(commands.Cog):
             (This command has a channel cooldown of 15 seconds.)"""
         )
         user = user or ctx.author
-        async with self.bot.trusted_session.post(
-            f"{self.bot.config.external.okapi_url}/api/imageops/invert",
-            json={"image": user.display_avatar.replace(format="png").url},
-            headers={"Authorization": self.bot.config.external.okapi_token},
-        ) as r:
-            image = await r.text()
-            async with self.bot.trusted_session.get(image) as resp:
-                bytebuffer = await resp.read()
-                if resp.status != 200:
-                    return await ctx.send("Error failed to fetch image")
+        try:
+            bytebuffer = await image_op(
+                self.bot.trusted_session,
+                "invert",
+                user.display_avatar.replace(format="png").url,
+            )
+        except RenderError as e:
+            return await ctx.send(
+                _("Error failed to process image: {reason}").format(reason=e.reason)
+            )
         await ctx.send(
             file=discord.File(fp=io.BytesIO(bytebuffer), filename="image.png"),
         )
@@ -120,16 +117,16 @@ class Images(commands.Cog):
             (This command has a channel cooldown of 15 seconds.)"""
         )
         user = user or ctx.author
-        async with self.bot.trusted_session.post(
-            f"{self.bot.config.external.okapi_url}/api/imageops/oil",
-            json={"image": user.display_avatar.replace(format="png").url},
-            headers={"Authorization": self.bot.config.external.okapi_token},
-        ) as r:
-            image = await r.text()
-            async with self.bot.trusted_session.get(image) as resp:
-                bytebuffer = await resp.read()
-                if resp.status != 200:
-                    return await ctx.send("Error failed to fetch image")
+        try:
+            bytebuffer = await image_op(
+                self.bot.trusted_session,
+                "oil",
+                user.display_avatar.replace(format="png").url,
+            )
+        except RenderError as e:
+            return await ctx.send(
+                _("Error failed to process image: {reason}").format(reason=e.reason)
+            )
         await ctx.send(
             file=discord.File(fp=io.BytesIO(bytebuffer), filename="image.png"),
         )

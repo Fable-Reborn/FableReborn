@@ -26,13 +26,13 @@ import re
 import chess
 import chess.engine
 import chess.pgn
-import chess.svg
 import discord
 
 from classes.context import Context
 from classes.errors import NoChoice
 from utils import random
 from utils.i18n import _
+from utils.okapi import render_chess
 
 
 async def update_player_elos(bot, player1, player2, outcome):
@@ -203,20 +203,9 @@ class ChessGame:
             return False
         return move
 
-    async def get_board(self) -> str:
-        svg = chess.svg.board(
-            board=self.board,
-            flipped=self.board.turn == chess.BLACK,
-            lastmove=self.board.peek() if self.board.move_stack else None,
-            check=self.board.king(self.board.turn) if self.board.is_check() else None,
-        )
-        async with self.ctx.bot.trusted_session.post(
-            f"{self.ctx.bot.config.external.okapi_url}/api/genchess",
-            json={"xml": svg},
-            headers={"Authorization": self.ctx.bot.config.external.okapi_token},
-        ) as r:
-            image = await r.text()
-        return image
+    async def get_board(self) -> discord.File:
+        # Embeds show it via attachment://board.png; a File can only be sent once.
+        return discord.File(fp=io.BytesIO(await render_chess(self.board)), filename="board.png")
 
     async def get_move_from(self, player):
         if player is None:
@@ -224,6 +213,7 @@ class ChessGame:
         image = await self.get_board()
 
         self.msg = await self.ctx.send(
+            file=image,
             embed=discord.Embed(
                 title=_("Chess"),
                 description=_(
@@ -234,7 +224,7 @@ class ChessGame:
                     " lowercase: `a`, `b` or `h`. Castling is `0-0` or `0-0-0`."
                 ).format(move_no=self.move_no, player=player.mention),
                 colour=discord.Colour.blurple(),
-            ).set_image(url=image),
+            ).set_image(url="attachment://board.png"),
         )
 
         def check(msg):
@@ -396,40 +386,45 @@ class ChessGame:
 
         if self.board.is_checkmate():
             await self.ctx.send(
+                file=image,
                 embed=discord.Embed(
                     title=_("**Checkmate! {result}**").format(result=result),
                     colour=discord.Colour.blurple(),
-                ).set_image(url=image)
+                ).set_image(url="attachment://board.png")
             )
         elif self.board.is_stalemate():
             await self.ctx.send(
+                file=image,
                 embed=discord.Embed(
                     title=_("**Stalemate! {result}**").format(result=result),
                     colour=discord.Colour.blurple(),
-                ).set_image(url=image)
+                ).set_image(url="attachment://board.png")
             )
         elif self.board.is_insufficient_material():
             await self.ctx.send(
+                file=image,
                 embed=discord.Embed(
                     title=_("**Insufficient material! {result}**").format(
                         result=result
                     ),
                     colour=discord.Colour.blurple(),
-                ).set_image(url=image)
+                ).set_image(url="attachment://board.png")
             )
         elif self.status.endswith("resigned"):
             await self.ctx.send(
+                file=image,
                 embed=discord.Embed(
                     title=f"**{self.status.title()}! {result}**",
                     colour=discord.Colour.blurple(),
-                ).set_image(url=image)
+                ).set_image(url="attachment://board.png")
             )
         elif self.status == "draw":
             await self.ctx.send(
+                file=image,
                 embed=discord.Embed(
                     title=_("**Draw accepted! {result}**").format(result=result),
                     colour=discord.Colour.blurple(),
-                ).set_image(url=image)
+                ).set_image(url="attachment://board.png")
             )
 
         await self.ctx.send(

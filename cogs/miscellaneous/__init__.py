@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import base64
 import copy
 import datetime
 import json
@@ -269,13 +270,18 @@ class Miscellaneous(commands.Cog):
         self.setstreak_allowed_user_id = misc_ids.get("setstreak_allowed_user_id")
         self.whitelist = load_whitelist()
 
-    async def get_imgur_url(self, url: str):
+    async def get_imgur_url(self, url: str | bytes):
+        # Raw image bytes (e.g. a locally rendered background) go up as base64.
+        if isinstance(url, (bytes, bytearray)):
+            payload = {"image": base64.b64encode(url).decode(), "type": "base64"}
+        else:
+            payload = {"image": url, "type": "url"}
         async with self.bot.session.post(
                 "https://api.imgur.com/3/image",
                 headers={
                     "Authorization": f"Client-ID {self.bot.config.external.imgur_token}"
                 },
-                json={"image": url, "type": "url"},
+                json=payload,
         ) as r:
             json = await r.json()
             try:

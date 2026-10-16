@@ -93,7 +93,7 @@ def test_all_themes_render_real_card(key):
     output = render(key, pet=True, long_names=True)
     with Image.open(output) as image:
         assert image.size == load_themes().THEMES[key].card_size
-        assert image.format == "PNG"
+        assert image.format == "JPEG"
     assert output.getbuffer().nbytes < 8_000_000
 
 
