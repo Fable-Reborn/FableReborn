@@ -42,7 +42,7 @@ except ImportError:
 
 from redis import asyncio as aioredis
 
-from utils import random
+from utils import random, singleton_lock
 from utils.config import ConfigLoader
 
 config = ConfigLoader("config.toml")
@@ -263,9 +263,20 @@ class Main:
                     ),
                 )
 
+    def kill_clusters(self) -> None:
+        for instance in self.instances:
+            if instance.is_active and instance._process is not None:
+                instance._process.kill()
+
     async def launch(self) -> None:
         with open("assets/data/names.txt") as f:
             names = f.read().splitlines()
+
+        if singleton_lock.enabled():
+            self.lock_conn = await singleton_lock.acquire(config.database)
+            self.lock_task = asyncio.create_task(
+                singleton_lock.hold(self.lock_conn, self.kill_clusters)
+            )
 
         asyncio.create_task(self.event_handler())
 
