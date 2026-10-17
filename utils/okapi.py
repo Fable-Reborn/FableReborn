@@ -62,7 +62,7 @@ class RenderError(Exception):
 # Assets
 # --------------------------------------------------------------------------
 
-RACES = ("human", "elf", "dwarf", "orc", "jikill", "djinn", "shadeborn")
+RACES = ("human", "elf", "dwarf", "orc", "jikill", "djinn", "shadeborn", "dragonkin")
 CLASSES = {
     "thief": "thief",
     "Novice Planter": "novice_planter",
@@ -76,12 +76,13 @@ CLASSES = {
     "reaper": "reaper",
     "santashelper": "santashelper",
     "tank": "tank",
+    "bard": "bard",
+    "beastmaster": "beastmaster",
+    "penitent": "penitent",
+    "breathcaller": "breathcaller",
 }
-# The Node style shipped a smaller icon set and drew nothing for the rest.
-V2_CLASSES = (
-    "thief", "paragon", "ranger", "warrior", "mage", "raider",
-    "ritualist", "paladin", "reaper", "santashelper",
-)
+# Both profile styles use the same cast assets, including new class lines.
+V2_CLASSES = frozenset(CLASSES)
 GUILD_RANKS = ("leader", "officer", "member")
 ITEM_TYPES = {
     "sword": "sword",
@@ -567,7 +568,7 @@ def _render_profile_v2(background: Image.Image, body: dict) -> bytes:
     if isinstance(icons, list):
         for icon, y in zip(icons, (232, 254)):
             if icon in V2_CLASSES:
-                _overlay(img, _cast(icon).resize((22, 22), Image.LANCZOS), 205, y)
+                _overlay(img, _cast(CLASSES[icon]).resize((22, 22), Image.LANCZOS), 205, y)
 
     return _png(img)
 

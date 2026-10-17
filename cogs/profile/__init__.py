@@ -52,6 +52,7 @@ from utils import misc as rpgtools
 from utils.checks import is_gm
 from utils.i18n import _, locale_doc
 from utils.okapi import RenderError, render_profile_classic, render_profile_v2
+from utils.okapi import CLASSES as OKAPI_CLASS_ASSETS
 from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent, render_fable
 from .theme_contract import is_contract_alias, start_trade_in
 from .theme_picker import ProfileThemePicker
@@ -60,24 +61,8 @@ from .themes import ASSET_ROOT as THEME_ASSET_ROOT
 
 JURY_COSMETIC_TITLE = "Favored by the Seven"
 
-# Class icons the classic profile card has cast art for (utils/okapi.py).
-# Bard and Beastmaster have no cast asset -> send "none".
-OKAPI_CLASS_ICONS = frozenset(
-    {
-        "mage",
-        "paladin",
-        "paragon",
-        "raider",
-        "ranger",
-        "reaper",
-        "ritualist",
-        "santashelper",
-        "support",
-        "tank",
-        "thief",
-        "warrior",
-    }
-)
+# Keep the payload allowlist in sync with the renderer's actual cast assets.
+OKAPI_CLASS_ICONS = frozenset(OKAPI_CLASS_ASSETS)
 
 
 def okapi_class_icons(classes) -> list[str]:
