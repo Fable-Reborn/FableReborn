@@ -136,3 +136,4 @@ tests/test_profile_themes.py
 tests/test_tiamat_rewards.py
 tests/test_profile_themes.py
 scripts/build_profile_cast_icons.py
+tests/test_draslin_rebuild.py

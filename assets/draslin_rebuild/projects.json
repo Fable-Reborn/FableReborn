@@ -1,0 +1,478 @@
+{
+ "map": 186,
+ "tile": 24,
+ "size": [
+  1680,
+  1440
+ ],
+ "first": "crater",
+ "ballot": [
+  "inn",
+  "armory",
+  "apothecary"
+ ],
+ "queue": [
+  "library",
+  "art",
+  "kitchen",
+  "tel",
+  "milo",
+  "corner",
+  "dreamers",
+  "school",
+  "walls",
+  "streets"
+ ],
+ "order": [
+  "crater",
+  "inn",
+  "armory",
+  "apothecary",
+  "library",
+  "art",
+  "kitchen",
+  "tel",
+  "milo",
+  "corner",
+  "dreamers",
+  "school",
+  "walls",
+  "streets"
+ ],
+ "projects": [
+  {
+   "id": "crater",
+   "name": "The Crater",
+   "called": "the crater",
+   "variable": 410,
+   "box": [
+    24,
+    22,
+    56,
+    44
+   ],
+   "pixels": [
+    576,
+    528,
+    1344,
+    1056
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {
+    "0": "clear the rubble",
+    "25": "fill the crater and lay the paving",
+    "50": "build the fountain and the stalls",
+    "75": "start the fountain and open the market"
+   },
+   "lines": {
+    "25": "That's the last of the rubble out! Now we can see what we're working with. Next we fill it. That's going to take a lot of earth.",
+    "50": "Filled and level! You can walk where the fire was. The paving's going down now. Then the fountain.",
+    "75": "The fountain's in and the stalls are standing! Nearly there. It's starting to look like Draslin again."
+   },
+   "finish": "Listen... the fountain's running. The plaza is finished. Draslin has a heart again.",
+   "resident": null
+  },
+  {
+   "id": "school",
+   "name": "The School",
+   "called": "the School",
+   "variable": 411,
+   "box": [
+    19,
+    1,
+    36,
+    12
+   ],
+   "pixels": [
+    456,
+    24,
+    864,
+    288
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The School is open. The children who lost their families have somewhere to be together now. Aldine's running it.",
+   "resident": {
+    "name": "Aldine",
+    "line": "Come in, come in! Wipe your claws. The children have only just finished scrubbing."
+   }
+  },
+  {
+   "id": "apothecary",
+   "name": "The Apothecary",
+   "called": "the Apothecary",
+   "variable": 412,
+   "box": [
+    21,
+    13,
+    28,
+    25
+   ],
+   "pixels": [
+    504,
+    312,
+    672,
+    600
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Apothecary's open again. Mirren had the shelves full before we'd hung the door.",
+   "resident": {
+    "name": "Mirren",
+    "line": "The herbs along the south wall came through the fire. Stubborn things. Like me. Remedies are back on the shelf."
+   }
+  },
+  {
+   "id": "armory",
+   "name": "The Armory",
+   "called": "the Armory",
+   "variable": 413,
+   "box": [
+    31,
+    13,
+    38,
+    25
+   ],
+   "pixels": [
+    744,
+    312,
+    912,
+    600
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Armory is finished! Hesk is already sharpening things.",
+   "resident": {
+    "name": "Hesk",
+    "line": "Swords, spears, a new hammer for Oswin. I still don't usually stock armour. Some things the fire couldn't change."
+   }
+  },
+  {
+   "id": "library",
+   "name": "The Library",
+   "called": "the Library",
+   "variable": 414,
+   "box": [
+    37,
+    7,
+    66,
+    25
+   ],
+   "pixels": [
+    888,
+    168,
+    1584,
+    600
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Library is finished! Xandra's going to cry when she sees it. Don't tell her I said that.",
+   "resident": {
+    "name": "Corvin",
+    "line": "Half the books burned. The other half were down in the cellar. So, half. Half is a beginning."
+   }
+  },
+  {
+   "id": "art",
+   "name": "The Art House",
+   "called": "the Art House",
+   "variable": 415,
+   "box": [
+    46,
+    24,
+    54,
+    33
+   ],
+   "pixels": [
+    1104,
+    576,
+    1296,
+    792
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Art House is done! Odette wants to paint me. I said no. She's painting me anyway.",
+   "resident": {
+    "name": "Odette",
+    "line": "I painted the fire. I painted the crater. I painted the plaza. Next I'm painting something boring. Please let something be boring."
+   }
+  },
+  {
+   "id": "kitchen",
+   "name": "The Cure-All Kitchen",
+   "called": "the Cure-All Kitchen",
+   "variable": 416,
+   "box": [
+    55,
+    26,
+    62,
+    36
+   ],
+   "pixels": [
+    1320,
+    624,
+    1488,
+    864
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Cure-All Kitchen is finished! Smell that? That's Rosalind. That's lunch.",
+   "resident": {
+    "name": "Rosalind",
+    "line": "I love to cook! And I've got a kitchen again! Come back hungry. Dragons always look hungry."
+   }
+  },
+  {
+   "id": "corner",
+   "name": "The Corner House",
+   "called": "the Corner House",
+   "variable": 417,
+   "box": [
+    46,
+    35,
+    53,
+    46
+   ],
+   "pixels": [
+    1104,
+    840,
+    1272,
+    1104
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Corner House is finished. Dorran made me keep the squeaky step. I kept the squeaky step.",
+   "resident": {
+    "name": "Dorran",
+    "line": "Rolan built the corner house back exactly as it was. Even the squeaky step. I asked him to keep the squeaky step."
+   }
+  },
+  {
+   "id": "milo",
+   "name": "Milo's House",
+   "called": "Milo's house",
+   "variable": 418,
+   "box": [
+    54,
+    38,
+    62,
+    49
+   ],
+   "pixels": [
+    1296,
+    912,
+    1488,
+    1176
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "Milo's house is finished. He didn't say much. He didn't have to.",
+   "resident": {
+    "name": "Milo",
+    "line": "Th- this is my room again. They put the window in the same place. I asked them to."
+   }
+  },
+  {
+   "id": "inn",
+   "name": "The Inn",
+   "called": "the Inn",
+   "variable": 419,
+   "box": [
+    19,
+    31,
+    29,
+    40
+   ],
+   "pixels": [
+    456,
+    744,
+    696,
+    960
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Inn is open! Beds, a fire, and Garrick pouring drinks. Half the town will sleep there tonight.",
+   "resident": {
+    "name": "Garrick",
+    "line": "First barrel's tapped! Rooms upstairs, same price as before the fire. Well. Nearly the same price."
+   }
+  },
+  {
+   "id": "tel",
+   "name": "Tel's House",
+   "called": "Tel's house",
+   "variable": 420,
+   "box": [
+    19,
+    40,
+    27,
+    51
+   ],
+   "pixels": [
+    456,
+    960,
+    648,
+    1224
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "Tel's house is done. He worked on it every day. Didn't stop once.",
+   "resident": {
+    "name": "Tel",
+    "line": "A door that shuts. A roof that doesn't leak. My boy fell asleep before sundown. First time in months."
+   }
+  },
+  {
+   "id": "dreamers",
+   "name": "The Dreamer Houses",
+   "called": "the Dreamer Houses",
+   "variable": 421,
+   "box": [
+    12,
+    34,
+    19,
+    51
+   ],
+   "pixels": [
+    288,
+    816,
+    456,
+    1224
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The Dreamer Houses are finished! Two families, two roofs, a lot of children.",
+   "resident": {
+    "name": "Fen",
+    "line": "I'm gonna be a dragon when I grow up. Mum says I have to be a person first. That's so long."
+   }
+  },
+  {
+   "id": "walls",
+   "name": "The Walls and Gate",
+   "called": "the walls and gate",
+   "variable": 422,
+   "box": [
+    7,
+    27,
+    67,
+    60
+   ],
+   "pixels": [
+    168,
+    648,
+    1608,
+    1440
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "The walls and gate are done! Draslin can lock its door again. Not that we'll need to. I hope.",
+   "resident": null
+  },
+  {
+   "id": "streets",
+   "name": "The Streets and Gardens",
+   "called": "the streets and gardens",
+   "variable": 423,
+   "box": [
+    0,
+    0,
+    70,
+    60
+   ],
+   "pixels": [
+    0,
+    0,
+    1680,
+    1440
+   ],
+   "stages": [
+    25,
+    50,
+    75,
+    100
+   ],
+   "steps": {},
+   "lines": {},
+   "finish": "That's the streets and gardens. Every road, every tree. Draslin is whole again.",
+   "resident": null
+  }
+ ]
+}
