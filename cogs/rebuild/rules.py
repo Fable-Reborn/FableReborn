@@ -75,7 +75,7 @@ OWNER_ID = 295173706496475136  # opens, pauses, resets and sets up the rebuild
 # Restored Draslin only exists after the story's ending, so the rebuild is for players who have finished it.
 # They get this role automatically (it opens the rebuild channel); everyone else sees nothing of it.
 CREW_ROLE_ID = 1560988133691228181   # Rolan's Crew
-CHANNEL_NAME = "rolans-crew"          # says nothing about the ending to anyone browsing the channel list
+CHANNEL_NAME = "「🔨」rolans-crew"          # says nothing about the ending to anyone browsing the channel list
 
 # The missing in The Tiamat Sacrament (the server's src/rebuild/rescues.js MISSING, in the order they're found):
 # each comes home once for the whole town, credited to whoever found them first.

@@ -584,7 +584,8 @@ class Rebuild(commands.Cog):
             if channel is None:
                 channel = await guild.create_text_channel(
                     name, overwrites=overwrites, category=ctx.channel.category, reason=reason,
-                    topic="Rolan's camp. Rebuild Draslin together: $gather · $rebuild vote · $rebuild donate · $rebuild me")
+                    topic="Rolan's camp 🔨 Rebuild Draslin together, one cart at a time. "
+                          "$gather · $rebuild vote · $rebuild donate · $rebuild me · $rebuild perks")
                 made = "Made"
             else:
                 for target, overwrite in overwrites.items():
