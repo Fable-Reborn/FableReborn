@@ -145,7 +145,6 @@ CREATE TABLE IF NOT EXISTS rebuild_rescues (
     PRIMARY KEY (discord_id, person)
 );
 
-.
 CREATE TABLE IF NOT EXISTS rebuild_raid_sites (
     site text PRIMARY KEY,
     cleared_at timestamptz NOT NULL,
