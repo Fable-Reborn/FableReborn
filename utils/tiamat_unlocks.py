@@ -44,6 +44,31 @@ HINTS = {
 }
 
 
+# The three gods' names as players' profiles may spell them ($follow), by the name the Fables use.
+GOD_NAMES = {"elysia": "Elysia", "asterea": "Elysia", "astraea": "Elysia",
+             "sepulchure": "Sepulchure", "drakath": "Drakath"}
+
+
+def carries_tiamat(character) -> bool:
+    """Whether this character carries Tiamat's power, which the three gods have spent every year
+    since her realm fell trying to destroy: Dragonkin (finished the story) and the Breathcaller line
+    (all seven Soul Gems). `character` is a profile row with "race" and "class"."""
+    from classes.classes import Breathcaller, from_string
+    from classes.dragonkin import RACE
+
+    if not character:
+        return False
+    if character.get("race") == RACE:
+        return True
+    return any((line := from_string(name)) is not None and line.in_class_line(Breathcaller)
+               for name in (character.get("class") or []))
+
+
+def god_name(god) -> str | None:
+    """One of the three by its Fables name, or None for anything else."""
+    return GOD_NAMES.get(str(god or "").strip().lower())
+
+
 def unlocks_from(rows, companions) -> set[str]:
     """The unlocks shown by `tiamat_unlocks` rows plus companion proof."""
     unlocked = {str(row) for row in rows or [] if str(row) in KEYS}

@@ -33,9 +33,77 @@ from classes.classes import Ritualist, from_string
 from classes.converters import IntGreaterThan
 from cogs.shard_communication import next_day_cooldown
 from cogs.shard_communication import user_on_cooldown as user_cooldown
-from utils import random
+from utils import random, tiamat_unlocks
 from utils.checks import has_char, has_god, has_no_god, is_gm
 from utils.i18n import _, locale_doc
+
+
+# What a god lets slip when a Dragonkin or Breathcaller prays: they carry Tiamat's power, the one
+# thing the three have tried to destroy since her realm fell (the Fables lore). One is picked at
+# random after the prayer's result; translated when sent.
+TIAMAT_PRAYER_REMARKS = {
+    "Elysia": (
+        "Elysia's answer comes slowly, as if she has to look away first.",
+        "The light that answers you is warm, but it doesn't quite reach you.",
+        "Elysia thanks you for your prayer. She doesn't say your name.",
+        "For a moment the dawn in Elysia's voice falters, like a candle near an open door.",
+        "Elysia blesses you, then asks, very gently, where you have been.",
+        "Her light settles on your shoulders and lifts again almost at once, as if it touched something hot.",
+        "Elysia's voice is kind. The silence after it is longer than it needs to be.",
+        "\"Such old blood,\" Elysia murmurs, and then she is all smiles again.",
+        "Elysia's light lingers on your hands, as if looking for something you might be hiding.",
+        "You hear Elysia sigh before she answers. Goddesses don't usually sigh.",
+        "Elysia's blessing arrives politely and carefully, the way you'd hand something to a stranger.",
+        "The morning light dims for a heartbeat while Elysia listens.",
+        "Elysia accepts your prayer. She does not ask you to pray again tomorrow.",
+        "\"You were somewhere I couldn't see,\" Elysia says softly. It isn't a question.",
+        "Elysia's voice wavers on the last word, as if an old memory got in the way.",
+    ),
+    "Sepulchure": (
+        "Sepulchure takes a long time to answer. He doesn't like what you're carrying.",
+        "Sepulchure's silence is heavy, and it is pointed straight at you.",
+        "A cold draught runs through the room. Sepulchure is weighing something, and it isn't your prayer.",
+        "\"Strong blood,\" Sepulchure says. It doesn't sound like praise.",
+        "Sepulchure answers, then keeps listening long after you've finished.",
+        "Sepulchure's attention settles on you like a gauntlet closing on a sword hilt.",
+        "Sepulchure accepts your prayer the way a jailer accepts a key.",
+        "Somewhere far off, bones rattle. Sepulchure is restless tonight, and you are the reason.",
+        "\"Keep praying,\" Sepulchure says. \"I like to know where you are.\"",
+        "Sepulchure's answer is short. His watching is not.",
+        "The candle in front of you gutters out. Sepulchure has never liked a light that isn't his.",
+        "Sepulchure grants you favor and something like a warning in the same breath.",
+        "For a moment you are cold all the way to the bone. Then Sepulchure lets you go.",
+        "Sepulchure says your name slowly, as if he is writing it somewhere he won't lose it.",
+        "\"I have buried things like you before,\" Sepulchure murmurs. Then he blesses you anyway.",
+    ),
+    # Drakath as the Battle Tower writes him: a showman who laughs in three directions at once,
+    # argues both sides in one breath, and is as jealous as he is curious.
+    "Drakath": (
+        "\"Now that is interesting!\" Drakath's attention lands on you and stays there.",
+        "\"Hide it! No, show them! No, hide it!\" Drakath argues every side of you at once, and enjoys each one.",
+        "Drakath laughs in three directions at once. One of them is pointed at you, and it isn't joking.",
+        "\"The others would burn that out of you,\" Drakath says. \"I'd rather see what it does first.\"",
+        "\"Old blood! Old rules! None of it ours!\" Drakath sounds delighted. He also sounds hungry.",
+        "Drakath grants your favor, then circles you like a storm deciding where to land.",
+        "\"You carry something we swore was gone,\" Drakath says. \"I never believed it. I never believe anything.\"",
+        "\"Rules are walls,\" Drakath reminds you. \"And you, little climber, are a door we didn't build.\"",
+        "Drakath's laughter breaks off. For one moment the god of chaos is perfectly, dangerously still.",
+        "\"Pray louder! Let them hear!\" Drakath says, then changes his mind. \"No. Quieter. Much quieter.\"",
+        "\"Every pattern breaks,\" Drakath says, studying you. \"I'd love to know what you'll break.\"",
+        "The air around you splits into a dozen possible futures. In most of them, Drakath is watching.",
+        "\"Jealous? Of you?\" Drakath laughs. You hadn't said a word.",
+        "\"There are more doors than we admit,\" Drakath says. \"You've seen one. Haven't you?\"",
+        "Drakath blesses you and curses you in the same breath, and seems pleased with both.",
+    ),
+}
+# For a god by any other name (the god list lives in the bot's config).
+TIAMAT_PRAYER_REMARKS_OTHER = (
+    "Your god is quiet for a long moment. Something you carry makes them uneasy.",
+    "Your god answers, but carefully, the way you'd step around something sleeping.",
+    "Your god's blessing arrives late, as if it had to find a way around you.",
+    "For a breath your god says nothing at all. Then the answer comes, a little colder.",
+    "Your god listens longer than usual, as if listening to something else in you.",
+)
 
 
 SPIN_GODLESS_KEY = "Godless"
@@ -1788,11 +1856,17 @@ class Gods(commands.Cog):
                 val,
                 ctx.author.id,
             )
-        await ctx.send(
-            _("Your prayer resulted in **{val}** favor. {message}").format(
-                val=val, message=message
-            )
+        text = _("Your prayer resulted in **{val}** favor. {message}").format(
+            val=val, message=message
         )
+        # Dragonkin and Breathcallers carry Tiamat's power, the one thing the three tried to
+        # destroy. Their god notices (the Fables lore; see utils/tiamat_unlocks.py).
+        if tiamat_unlocks.carries_tiamat(ctx.character_data):
+            remarks = TIAMAT_PRAYER_REMARKS.get(
+                tiamat_unlocks.god_name(ctx.character_data["god"]), TIAMAT_PRAYER_REMARKS_OTHER
+            )
+            text += f"\n*{_(random.choice(remarks))}*"
+        await ctx.send(text)
 
     @has_god()
     @has_char()
