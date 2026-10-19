@@ -81,15 +81,12 @@ A GM starts a night with `$door start 24h` (or `3d` / `7d`). Doors appear at ran
 
 Players press **Knock** and wait. When the door answers, one visitor is chosen by tickets (pity is hidden). Everyone who knocked gets a crumb. Trick visitors get bones plus the gag (the Stick of Shame on that variant). Treat visitors get more bones and a bag chance. Ethereal (~5%, and only if at least two people knocked) grants a named high-odd-stat weapon, including two-handers.
 
-| Command | What it does |
-|---|---|
-| `$night watch` | Night Watch ping on. Aliases: `$door watch`, `$manor watch`. |
-| `$night unwatch` | Ping off. Channels still appear. |
-| `$door start [window]` | GM. Plan the night. Times are not posted. |
-| `$door now` | GM. Preview only. Spawn one door immediately in the preview channel. |
-| `$door stop` | GM. Cancel leftovers and close a live door. |
-| `$door log` | GM. Recent doors. `$door log <id>` is one door's knockers and rewards. |
-
-Right now `PREVIEW_CHANNEL_ID` is set, so doors only post in that channel. The bot will not create or delete channels. Set that constant to `0` when you are ready to go live.
+| Command | Who | What it does |
+|---|---|---|
+| `$night watch` / `$night unwatch` | Everyone | Night Watch ping on/off. `$manor watch` is the same opt-in. |
+| `$door start [window]` | GM | Plan the night. Times are not posted. |
+| `$door now` | GM | Spawn one door immediately at the top of the Halloween category. |
+| `$door stop` | GM | Cancel leftovers and close a live door. |
+| `$door log` | GM | Recent doors. `$door log <id>` is one door's knockers and rewards. |
 
 Art lives in `assets/halloween/door/`. The queue uses `closed.jpg`. Trick and treat crack `ajar.jpg` first; ethereal cracks `ajar-ethereal.jpg`, then `ethereal.jpg`.

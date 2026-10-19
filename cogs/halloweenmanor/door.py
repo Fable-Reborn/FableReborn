@@ -34,8 +34,8 @@ LIVE_KEY = "halloween:door:live"
 MANOR_CATEGORY_ID = 1403273394853511240
 LOG_LIST_SIZE = 10
 CHANNEL_NAME = "「🚪」night-door"
-# Non-zero: post in this channel only. No channel create/delete. Set to 0 to go live.
-PREVIEW_CHANNEL_ID = 1558205878832730233
+# Non-zero: command gate / extra preview timings. 0 = live (create channels in the Halloween category).
+PREVIEW_CHANNEL_ID = 0
 PREVIEW_KNOCK_SECONDS = 45
 PREVIEW_LINGER_SECONDS = 20
 PREVIEW_FIRST_SPAWN_SECONDS = 8
@@ -421,8 +421,6 @@ class PhantomDoor(commands.Cog):
             return await interaction.response.send_message("The door is gone.", ephemeral=True)
         door = self.doors.get(interaction.guild.id)
         if door is None or interaction.channel_id != door["channel_id"]:
-            return await interaction.response.send_message("The door is gone.", ephemeral=True)
-        if self._previewing() and interaction.channel_id != PREVIEW_CHANNEL_ID:
             return await interaction.response.send_message("The door is gone.", ephemeral=True)
         has_character = await self.bot.pool.fetchval(
             'SELECT 1 FROM profile WHERE "user"=$1;', interaction.user.id
@@ -1000,6 +998,7 @@ class PhantomDoor(commands.Cog):
             return await ctx.send("Opt out from a server channel.")
         await ctx.send(await set_watching(ctx.author, False))
 
+    @is_gm()
     @commands.group(name="door", invoke_without_command=True, brief=_("The phantom door"))
     @locale_doc
     async def door(self, ctx):
@@ -1011,17 +1010,10 @@ class PhantomDoor(commands.Cog):
         )
         await ctx.send(
             "A phantom door may appear in the woods during Halloween. "
-            "Use `{prefix}night watch` to be pinged. A GM starts the night with `{prefix}door start`."
+            "Players use `{prefix}night watch` for the ping. "
+            "GMs use `{prefix}door start`, `{prefix}door now`, `{prefix}door stop`, and `{prefix}door log`."
             .format(prefix=ctx.clean_prefix)
         )
-
-    @door.command(name="watch")
-    async def door_watch(self, ctx):
-        await self.night_watch(ctx)
-
-    @door.command(name="unwatch")
-    async def door_unwatch(self, ctx):
-        await self.night_unwatch(ctx)
 
     @is_gm()
     @door.command(name="start")
@@ -1030,19 +1022,14 @@ class PhantomDoor(commands.Cog):
             return await ctx.send("Start the door from a server channel.")
         if not self._halloween_enabled():
             return await ctx.send("Enable the Halloween event before starting the phantom door.")
-        if self._previewing() and ctx.channel.id != PREVIEW_CHANNEL_ID:
-            return await ctx.send(
-                f"Preview is on. Start the door in <#{PREVIEW_CHANNEL_ID}>."
-            )
         seconds = parse_window(duration)
         if seconds is None:
             return await ctx.send("Use a window like `24h`, `3d`, or `7d`.")
-        if not self._previewing():
-            category = ctx.guild.get_channel(MANOR_CATEGORY_ID)
-            if not isinstance(category, discord.CategoryChannel):
-                return await ctx.send(
-                    f"I could not find the manor category ({MANOR_CATEGORY_ID}) in this server, so the night did not start."
-                )
+        category = ctx.guild.get_channel(MANOR_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return await ctx.send(
+                f"I could not find the manor category ({MANOR_CATEGORY_ID}) in this server, so the night did not start."
+            )
         async with self.start_lock:
             if ctx.guild.id in self.nights:
                 return await ctx.send("A phantom door night is already running in this server.")
@@ -1066,8 +1053,6 @@ class PhantomDoor(commands.Cog):
                 log.exception("Failed to record a phantom door night")
                 return await ctx.send("I could not write the door log, so the night did not start.")
             remaining = [stamp.timestamp() for stamp in spawns]
-            if self._previewing():
-                remaining = [time.time() + PREVIEW_FIRST_SPAWN_SECONDS] + remaining
             night = {
                 "night_id": night_id,
                 "guild_id": ctx.guild.id,
@@ -1081,15 +1066,11 @@ class PhantomDoor(commands.Cog):
             await self._save_night(night)
             night["task"] = asyncio.create_task(self._run_night(ctx.guild.id))
             await ensure_watch_role(ctx.guild)
-            preview_note = (
-                f" Preview is on: doors appear in <#{PREVIEW_CHANNEL_ID}> only, "
-                f"and the first one is in {PREVIEW_FIRST_SPAWN_SECONDS} seconds. `{ctx.clean_prefix}door now` forces one."
-                if self._previewing()
-                else f" Players use `{ctx.clean_prefix}night watch` for the ping."
-            )
             await ctx.send(
                 f"The woods are being watched until <t:{int(ends_at.timestamp())}:f>. "
-                f"**{len(remaining)}** doors are planned.{preview_note}"
+                f"**{len(remaining)}** doors are planned. "
+                f"Players use `{ctx.clean_prefix}night watch` for the ping. "
+                f"A GM can force one with `{ctx.clean_prefix}door now`."
             )
 
     @is_gm()
@@ -1099,34 +1080,33 @@ class PhantomDoor(commands.Cog):
 
     async def _spawn_now(self, ctx):
         if ctx.guild is None:
-            return await ctx.send("Use this in the preview channel.")
-        if not self._previewing():
-            return await ctx.send("`$door now` is only available while the preview channel is set.")
-        if ctx.channel.id != PREVIEW_CHANNEL_ID:
-            return await ctx.send(
-                f"This channel is `{ctx.channel.id}`. Use `$door now` in <#{PREVIEW_CHANNEL_ID}>."
-            )
+            return await ctx.send("Open a door from a server channel.")
+        if not self._halloween_enabled():
+            return await ctx.send("Enable the Halloween event before opening a door.")
         if ctx.guild.id in self.doors:
-            return await ctx.send("A door is already open here. Wait for it to finish or use `$door stop`.")
+            return await ctx.send("A door is already open. Wait for it to finish or use `$door stop`.")
+        category = ctx.guild.get_channel(MANOR_CATEGORY_ID)
+        if not isinstance(category, discord.CategoryChannel):
+            return await ctx.send(
+                f"I could not find the manor category ({MANOR_CATEGORY_ID}) in this server."
+            )
         night = self.nights.get(ctx.guild.id) or {
             "night_id": None,
             "guild_id": ctx.guild.id,
         }
         try:
             async with self.spawn_lock:
-                error = await self._spawn_door(
-                    ctx.guild.id, night, time.time(), preferred_channel=ctx.channel
-                )
+                error = await self._spawn_door(ctx.guild.id, night, time.time())
         except Exception as exc:
-            log.exception("Preview door spawn failed")
+            log.exception("Forced door spawn failed")
             return await ctx.send(f"`$door now` failed: `{type(exc).__name__}: {exc}`")
         if error:
             return await ctx.send(f"`$door now` did not open a door: {error}")
         door = self.doors.get(ctx.guild.id)
-        where = f"<#{door['channel_id']}>" if door else "the category"
+        where = f"<#{door['channel_id']}>" if door else "the Halloween category"
         await ctx.send(
-            f"Preview door is up in {where} (top of the Halloween category). "
-            f"Knock within **{self._knock_seconds()}** seconds. Use `$door stop` when you are done."
+            f"The door is up in {where}. Knock within **{self._knock_seconds()}** seconds. "
+            "Use `$door stop` to cancel the night."
         )
 
     @is_gm()
