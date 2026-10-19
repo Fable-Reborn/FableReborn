@@ -986,6 +986,16 @@ class HalloweenManor(commands.Cog):
             return await ctx.send("Opt out from a server channel.")
         await ctx.send(await set_watching(ctx.author, False))
 
+    @is_gm()
+    @commands.command(name="doornow")
+    async def manor_doornow(self, ctx):
+        door = self.bot.get_cog("PhantomDoor")
+        if door is None:
+            return await ctx.send(
+                "The Phantom Door cog is not loaded. Reload `cogs.halloweenmanor` and check the bot log."
+            )
+        await door._spawn_now(ctx)
+
     @manor.command(name="status")
     async def manor_status(self, ctx):
         if ctx.guild is None or self._raid_for(ctx.guild.id) is None:
@@ -1190,4 +1200,8 @@ async def setup(bot):
     from .door import PhantomDoor
 
     await bot.add_cog(HalloweenManor(bot))
-    await bot.add_cog(PhantomDoor(bot))
+    try:
+        await bot.add_cog(PhantomDoor(bot))
+    except Exception:
+        log.exception("PhantomDoor failed to load")
+        raise

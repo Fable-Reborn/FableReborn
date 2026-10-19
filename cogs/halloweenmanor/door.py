@@ -24,7 +24,7 @@ from .door_logic import (
     plan_night,
     settle_door,
 )
-from .watch import ensure_watch_role, ping_watchers, set_watching
+from .watch import ensure_watch_role, find_watch_role, set_watching
 
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,14 @@ EMBED_COLOR = {
     "treat": 0xC45C26,
     "ethereal": 0xE8D5A3,
     "empty": 0x2B1D24,
+}
+OUTCOME_STYLE = {
+    "queue": ("🚪", "A Phantom Door", 0x3B2A32),
+    "ajar": ("🕯️", "The latch turns", 0xC45C26),
+    "trick": ("🎭", "It's a Trick", 0x8C2F12),
+    "treat": ("🍬", "It's a Treat", 0xE08A3C),
+    "ethereal": ("✨", "A Blessing", 0xE8D5A3),
+    "empty": ("🌫️", "The woods go still", 0x2B1D24),
 }
 
 
@@ -357,11 +365,39 @@ class PhantomDoor(commands.Cog):
                 pity.sitout_left,
             )
 
-    def _embed(self, title: str, description: str, color_key: str, filename: str | None = "door.jpg"):
-        embed = discord.Embed(title=title, description=description, color=EMBED_COLOR.get(color_key, 0x2B1D24))
+    def _style(self, key: str):
+        return OUTCOME_STYLE.get(key, OUTCOME_STYLE["queue"])
+
+    def _board_embed(self, key: str, description: str, *, filename: str | None = "door.jpg", fields=None, footer: str | None = None):
+        emoji, title, color = self._style(key)
+        embed = discord.Embed(
+            title=f"{emoji}  {title}",
+            description=description,
+            color=color,
+        )
+        for name, value, inline in fields or ():
+            embed.add_field(name=name, value=value, inline=inline)
+        if footer:
+            embed.set_footer(text=footer)
         if filename:
             embed.set_image(url=f"attachment://{filename}")
         return embed
+
+    def _queue_embed(self, door, filename: str | None = "door.jpg"):
+        waiting = len(door["knockers"])
+        return self._board_embed(
+            "queue",
+            "A door is standing in the woods. It should not be. Press **Knock** and wait on the leaves — when it answers, one visitor is chosen.",
+            filename=filename,
+            fields=(
+                ("Waiting", f"🍂 **{waiting}**", True),
+                ("Answers", f"<t:{int(door['deadline'])}:R>", True),
+            ),
+            footer="You can Knock once. Switching is not needed.",
+        )
+
+    def _embed(self, title: str, description: str, color_key: str, filename: str | None = "door.jpg"):
+        return self._board_embed(color_key if color_key in OUTCOME_STYLE else "queue", description, filename=filename)
 
     async def _attach(self, key: str):
         data = await asyncio.to_thread(load_door_bytes, key)
@@ -408,7 +444,8 @@ class PhantomDoor(commands.Cog):
         await self._save_door(door)
         self._request_refresh(interaction.guild.id)
         await interaction.response.send_message(
-            "You wait on the leaves. When the door answers, someone in line is chosen.",
+            "🍂 You wait on the leaves. When the door answers, one visitor is chosen. "
+            "You'll get a DM either way.",
             ephemeral=True,
         )
 
@@ -431,7 +468,7 @@ class PhantomDoor(commands.Cog):
         if message is None:
             return
         try:
-            await message.edit(embed=self._embed("The Phantom Door", self._queue_text(door), "queue"))
+            await message.edit(embed=self._queue_embed(door, filename="door.jpg"))
         except discord.HTTPException:
             return
 
@@ -482,13 +519,18 @@ class PhantomDoor(commands.Cog):
         except Exception:
             log.exception("Phantom door night stopped for %s", guild_id)
 
-    async def _open_spawn_channel(self, guild):
-        if self._previewing():
-            channel = guild.get_channel(PREVIEW_CHANNEL_ID) or self.bot.get_channel(PREVIEW_CHANNEL_ID)
-            if channel is None or getattr(channel, "guild", None) is None or channel.guild.id != guild.id:
-                log.warning("Phantom door preview channel %s is missing in guild %s", PREVIEW_CHANNEL_ID, guild.id)
-                return None, False
-            return channel, False
+    async def _move_to_category_top(self, channel, category):
+        try:
+            await channel.edit(
+                category=category,
+                position=category.position + 1,
+                reason="Phantom door at the top of the category",
+            )
+        except discord.HTTPException:
+            log.exception("Could not move the phantom door to the top of the category")
+
+    async def _open_spawn_channel(self, guild, preferred=None):
+        del preferred
         category = guild.get_channel(MANOR_CATEGORY_ID)
         if not isinstance(category, discord.CategoryChannel):
             log.warning("Phantom door: manor category missing in guild %s", guild.id)
@@ -513,24 +555,19 @@ class PhantomDoor(commands.Cog):
                 read_message_history=True,
             ),
         }
-        position = min((channel.position for channel in category.channels), default=category.position + 1)
         try:
             channel = await guild.create_text_channel(
                 name=channel_name,
                 category=category,
                 overwrites=overwrites,
-                position=position,
+                position=category.position + 1,
                 topic="A door in the woods. Knock. Chat is closed.",
                 reason="Phantom door",
             )
         except discord.HTTPException:
             log.exception("Failed to create a phantom door channel")
             return None, False
-        try:
-            if channel.position != position:
-                await channel.edit(position=position, reason="Phantom door at top of category")
-        except discord.HTTPException:
-            pass
+        await self._move_to_category_top(channel, category)
         return channel, True
 
     async def _discard_owned_channel(self, channel, owned_channel: bool, reason: str):
@@ -543,27 +580,27 @@ class PhantomDoor(commands.Cog):
         except discord.HTTPException:
             log.exception("Failed to delete a phantom door channel")
 
-    async def _spawn_door(self, guild_id: int, night, scheduled_ts: float):
+    async def _spawn_door(self, guild_id: int, night, scheduled_ts: float, preferred_channel=None) -> str | None:
         if guild_id in self.doors:
-            return
+            return "A door is already open."
         if self._manor_open(guild_id):
             await self.bot.pool.execute(
                 """
                 INSERT INTO night_door_spawns (night_id, guild_id, scheduled_at, skipped)
                 VALUES ($1, $2, $3, $4);
                 """,
-                night["night_id"],
+                night.get("night_id"),
                 guild_id,
                 _utc(scheduled_ts),
                 "manor_open",
             )
-            return
+            return "Skipped because a manor is open."
         guild = self.bot.get_guild(guild_id)
         if guild is None:
-            return
-        channel, owned_channel = await self._open_spawn_channel(guild)
+            return "I could not find this server."
+        channel, owned_channel = await self._open_spawn_channel(guild, preferred_channel)
         if channel is None:
-            return
+            return f"I could not create a door under category `{MANOR_CATEGORY_ID}`."
         try:
             spawn_id = await self.bot.pool.fetchval(
                 """
@@ -575,10 +612,10 @@ class PhantomDoor(commands.Cog):
                 channel.id,
                 _utc(scheduled_ts),
             )
-        except Exception:
+        except Exception as exc:
             log.exception("Failed to log a phantom door spawn")
             await self._discard_owned_channel(channel, owned_channel, "Phantom door log failed")
-            return
+            return f"I could not write the door log: {exc}"
         deadline = time.time() + self._knock_seconds()
         door = {
             "spawn_id": spawn_id,
@@ -595,28 +632,39 @@ class PhantomDoor(commands.Cog):
             "message": None,
         }
         self.doors[guild_id] = door
-        await ping_watchers(
-            channel,
-            f"A phantom door is standing in the woods. You have {self._knock_seconds()} seconds to **Knock**.",
-        )
         attachment = await self._attach("closed")
+        role = find_watch_role(channel.guild)
+        content = None
+        mentions = discord.AllowedMentions.none()
+        if role is not None:
+            content = f"{role.mention} A phantom door is standing in the woods. **Knock** before it answers."
+            mentions = discord.AllowedMentions(roles=[role])
         kwargs = {
-            "embed": self._embed("The Phantom Door", self._queue_text(door), "queue"),
+            "content": content,
+            "embed": self._queue_embed(door, filename="door.jpg" if attachment else None),
             "view": DoorQueueView(),
+            "allowed_mentions": mentions,
         }
         if attachment is not None:
             kwargs["file"] = attachment
         try:
             message = await channel.send(**kwargs)
         except discord.HTTPException:
-            log.exception("Failed to post the phantom door")
-            await self._forget_door(guild_id)
-            await self._discard_owned_channel(channel, owned_channel, "Phantom door post failed")
-            return
+            log.exception("Failed to post the phantom door with art")
+            kwargs.pop("file", None)
+            kwargs["embed"] = self._queue_embed(door, filename=None)
+            try:
+                message = await channel.send(**kwargs)
+            except discord.HTTPException as exc:
+                log.exception("Failed to post the phantom door")
+                await self._forget_door(guild_id)
+                await self._discard_owned_channel(channel, owned_channel, "Phantom door post failed")
+                return f"I could not post the door here: {exc}"
         door["message_id"] = message.id
         door["message"] = message
         await self._save_door(door)
         door["task"] = asyncio.create_task(self._run_door(guild_id))
+        return None
 
     async def _resolve_message(self, door):
         if door.get("message") is not None:
@@ -697,13 +745,13 @@ class PhantomDoor(commands.Cog):
         channel = self.bot.get_channel(door["channel_id"])
         if result.outcome != "empty" and message is not None:
             ajar = await self._attach(result.ajar_key)
-            ajar_embed = self._embed(
-                "The door answers",
+            ajar_embed = self._board_embed(
+                "ajar",
                 "The smoke pulls back. The latch turns by itself.",
-                result.outcome if result.outcome != "empty" else "queue",
+                filename="door.jpg" if ajar else None,
             )
             try:
-                kwargs = {"embed": ajar_embed, "view": None}
+                kwargs = {"embed": ajar_embed, "view": None, "content": None}
                 if ajar is not None:
                     kwargs["attachments"] = [ajar]
                 else:
@@ -713,15 +761,22 @@ class PhantomDoor(commands.Cog):
                 log.exception("Failed to show the cracked door")
         await asyncio.sleep(REVEAL_SECONDS)
         reveal = await self._attach(result.reveal_key)
-        reveal_embed = self._embed(
-            "The Phantom Door",
+        reveal_key = result.outcome if result.outcome in OUTCOME_STYLE else "empty"
+        fields = []
+        if result.visitor_id is not None:
+            fields.append(("Chosen", f"<@{result.visitor_id}>", True))
+            fields.append(("Waiting", f"🍂 **{len(result.receipts)}**", True))
+        reveal_embed = self._board_embed(
+            reveal_key,
             result.story,
-            result.outcome,
+            filename="door.jpg" if reveal else None,
+            fields=fields,
+            footer="Everyone who knocked is being paid. Check your DMs.",
         )
         message = await self._resolve_message(door)
         if message is not None:
             try:
-                kwargs = {"embed": reveal_embed, "view": None}
+                kwargs = {"embed": reveal_embed, "view": None, "content": None}
                 if reveal is not None:
                     kwargs["attachments"] = [reveal]
                 else:
@@ -739,23 +794,58 @@ class PhantomDoor(commands.Cog):
         door["result"] = result
         await self._save_door(door)
         if channel is not None and result.receipts:
-            crumb = "Everyone who knocked received a little something for waiting."
-            if result.visitor_id is not None:
-                crumb = f"<@{result.visitor_id}> was chosen. " + crumb
+            follow = self._board_embed(
+                reveal_key,
+                f"<@{result.visitor_id}> was chosen." if result.visitor_id else "The door answered.",
+                filename=None,
+                fields=(("DMs", "Everyone who knocked has a receipt waiting.", False),),
+                footer="This channel will fade in a moment.",
+            )
             try:
-                await channel.send(crumb, allowed_mentions=discord.AllowedMentions(users=True))
+                await channel.send(
+                    embed=follow,
+                    allowed_mentions=discord.AllowedMentions(users=True),
+                )
             except discord.HTTPException:
                 pass
-        await self._send_receipts(result.receipts)
+        await self._send_receipts(result)
 
-    def _receipt_text(self, receipt) -> str:
-        lines = [receipt.summary, f"💀 Bones: **{receipt.bones}**"]
+    def _reward_lines(self, receipt) -> list[str]:
+        lines = [f"💀 **Bones:** {receipt.bones}"]
         if receipt.bags:
-            lines.append(f"🛍️ Trick-or-treat bags: **{receipt.bags}**")
+            word = "bag" if receipt.bags == 1 else "bags"
+            lines.append(f"🛍️ **Trick-or-treat {word}:** {receipt.bags}")
         if receipt.item is not None:
             item = receipt.item
             stat = item.armor if item.armor else item.damage
-            lines.append(f"🗡️ {item.name} ({item.type_}, {stat} stat, {item.element})")
+            lines.append(f"🗡️ **{item.name}** — {item.type_}, {stat} stat, {item.element}")
+        return lines
+
+    def _dm_embed(self, receipt, result, filename: str | None = None):
+        key = result.outcome if result.outcome in OUTCOME_STYLE else "empty"
+        emoji, title, color = self._style(key)
+        if receipt.visitor:
+            story = result.story.replace(f"<@{receipt.user_id}>", "**You**")
+            description = f"{story}\n\n" + "\n".join(self._reward_lines(receipt))
+            footer = "The woods remember who knocked."
+        else:
+            description = (
+                "The door answered for someone else. You still waited on the leaves, "
+                "and the woods paid you for showing up.\n\n" + "\n".join(self._reward_lines(receipt))
+            )
+            footer = "The woods still paid you for showing up."
+        embed = discord.Embed(
+            title=f"{emoji}  {title}" if receipt.visitor else f"🍂  You waited at the door",
+            description=description,
+            color=color if receipt.visitor else 0x5A463C,
+        )
+        embed.set_footer(text=footer)
+        if filename:
+            embed.set_image(url=f"attachment://{filename}")
+        return embed
+
+    def _receipt_text(self, receipt) -> str:
+        lines = [receipt.summary] + self._reward_lines(receipt)
         return "\n".join(lines)
 
     async def _record_and_pay(self, door, receipt):
@@ -806,15 +896,31 @@ class PhantomDoor(commands.Cog):
                         conn=conn,
                     )
 
-    async def _send_receipts(self, receipts):
+    async def _send_receipts(self, result):
         async def send_one(receipt):
             try:
                 user = self.bot.get_user(receipt.user_id) or await self.bot.fetch_user(receipt.user_id)
-                await user.send(self._receipt_text(receipt))
             except discord.HTTPException:
                 return
+            file = None
+            filename = None
+            if receipt.visitor:
+                file = await self._attach(result.reveal_key)
+                if file is not None:
+                    filename = file.filename
+            embed = self._dm_embed(receipt, result, filename=filename)
+            try:
+                if file is not None:
+                    await user.send(embed=embed, file=file)
+                else:
+                    await user.send(embed=embed)
+            except discord.HTTPException:
+                try:
+                    await user.send(self._receipt_text(receipt))
+                except discord.HTTPException:
+                    return
 
-        await asyncio.gather(*(send_one(receipt) for receipt in receipts), return_exceptions=True)
+        await asyncio.gather(*(send_one(receipt) for receipt in result.receipts), return_exceptions=True)
 
     async def _log_spawn_result(self, door, result):
         spawn_id = door.get("spawn_id")
@@ -989,25 +1095,39 @@ class PhantomDoor(commands.Cog):
     @is_gm()
     @door.command(name="now")
     async def door_now(self, ctx):
+        await self._spawn_now(ctx)
+
+    async def _spawn_now(self, ctx):
         if ctx.guild is None:
-            return
+            return await ctx.send("Use this in the preview channel.")
         if not self._previewing():
             return await ctx.send("`$door now` is only available while the preview channel is set.")
         if ctx.channel.id != PREVIEW_CHANNEL_ID:
-            return await ctx.send(f"Use `$door now` in <#{PREVIEW_CHANNEL_ID}>.")
-        if not self._halloween_enabled():
-            return await ctx.send("Enable the Halloween event before opening a door.")
+            return await ctx.send(
+                f"This channel is `{ctx.channel.id}`. Use `$door now` in <#{PREVIEW_CHANNEL_ID}>."
+            )
         if ctx.guild.id in self.doors:
-            return await ctx.send("A door is already open here.")
+            return await ctx.send("A door is already open here. Wait for it to finish or use `$door stop`.")
         night = self.nights.get(ctx.guild.id) or {
             "night_id": None,
             "guild_id": ctx.guild.id,
         }
-        async with self.spawn_lock:
-            await self._spawn_door(ctx.guild.id, night, time.time())
-        if ctx.guild.id not in self.doors:
-            return await ctx.send("I could not post the door in this channel.")
-        await ctx.send("The door is appearing here.")
+        try:
+            async with self.spawn_lock:
+                error = await self._spawn_door(
+                    ctx.guild.id, night, time.time(), preferred_channel=ctx.channel
+                )
+        except Exception as exc:
+            log.exception("Preview door spawn failed")
+            return await ctx.send(f"`$door now` failed: `{type(exc).__name__}: {exc}`")
+        if error:
+            return await ctx.send(f"`$door now` did not open a door: {error}")
+        door = self.doors.get(ctx.guild.id)
+        where = f"<#{door['channel_id']}>" if door else "the category"
+        await ctx.send(
+            f"Preview door is up in {where} (top of the Halloween category). "
+            f"Knock within **{self._knock_seconds()}** seconds. Use `$door stop` when you are done."
+        )
 
     @is_gm()
     @door.command(name="stop")
