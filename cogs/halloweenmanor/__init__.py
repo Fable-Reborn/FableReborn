@@ -21,12 +21,13 @@ from .rewards import (
     reward_for,
     search_goal,
 )
+from .watch import ensure_watch_role, ping_watchers, set_watching
 
 
 log = logging.getLogger(__name__)
 
 JOIN_SECONDS = 900
-# Seconds before the gate closes -> the @Fablers reminder posted in the manor channel.
+# Seconds before the gate closes -> Night Watch reminder in the manor channel.
 GATE_WARNINGS = {
     60: "The gate closes in 1 minute and the Hollow Manor begins. Press **Investigate** or **Keep watch** now.",
     5: "5 seconds! The gate is closing. Investigators, get ready to press **Search** in the hall.",
@@ -532,10 +533,6 @@ class HalloweenManor(commands.Cog):
         raid["wake"].set()
 
     @staticmethod
-    def _fablers_role(guild):
-        return discord.utils.find(lambda item: item.name.lower() == "fablers", guild.roles)
-
-    @staticmethod
     def _next_warning(raid, now: float):
         if raid["phase"] != "gate":
             return None
@@ -551,17 +548,8 @@ class HalloweenManor(commands.Cog):
         message = raid.get("message")
         if message is None:
             return
-        role = self._fablers_role(message.channel.guild)
         text = GATE_WARNINGS[seconds]
-        try:
-            if role is None:
-                await message.channel.send(text)
-            else:
-                await message.channel.send(
-                    f"{role.mention} {text}", allowed_mentions=discord.AllowedMentions(roles=[role])
-                )
-        except discord.HTTPException:
-            log.exception("Failed to send the Hollow Manor gate warning")
+        await ping_watchers(message.channel, text)
 
     async def _director(self, guild_id: int):
         try:
@@ -964,13 +952,12 @@ class HalloweenManor(commands.Cog):
             }
         )
         card = await asyncio.to_thread(render_manor_card, "gate", 0, 1)
-        role = self._fablers_role(ctx.guild)
-        if role is not None:
-            minutes = JOIN_SECONDS // 60
-            await channel.send(
-                f"{role.mention} The Hollow Manor is open. The gate closes in {minutes} minutes.",
-                allowed_mentions=discord.AllowedMentions(roles=[role]),
-            )
+        role = await ensure_watch_role(ctx.guild)
+        minutes = JOIN_SECONDS // 60
+        await ping_watchers(
+            channel,
+            f"The Hollow Manor is open. The gate closes in {minutes} minutes.",
+        )
         message = await channel.send(
             embed=self._embed(raid),
             file=discord.File(card, filename="manor-card.png"),
@@ -984,8 +971,20 @@ class HalloweenManor(commands.Cog):
         text = _("The manor is open: {channel}").format(channel=channel.mention)
         text += f" Opens today: {opened + 1}/{DAILY_OPEN_LIMIT}."
         if role is None:
-            text += " I could not find a role named fablers, so nobody was pinged."
+            text += " I could not find or create Night Watch, so nobody was pinged."
         await ctx.send(text)
+
+    @manor.command(name="watch")
+    async def manor_watch(self, ctx):
+        if ctx.guild is None:
+            return await ctx.send("Opt in from a server channel.")
+        await ctx.send(await set_watching(ctx.author, True))
+
+    @manor.command(name="unwatch")
+    async def manor_unwatch(self, ctx):
+        if ctx.guild is None:
+            return await ctx.send("Opt out from a server channel.")
+        await ctx.send(await set_watching(ctx.author, False))
 
     @manor.command(name="status")
     async def manor_status(self, ctx):
@@ -1188,4 +1187,7 @@ class HalloweenManor(commands.Cog):
 
 
 async def setup(bot):
+    from .door import PhantomDoor
+
     await bot.add_cog(HalloweenManor(bot))
+    await bot.add_cog(PhantomDoor(bot))

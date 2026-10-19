@@ -20,7 +20,8 @@ This folder is development only. It is not loaded. Do not edit live cogs while b
 
 | Command | What it does |
 |---|---|
-| `$manor open` | Creates `#「👻」hallow-manor` under category `1403273394853511240` (`MANOR_CATEGORY_ID`), pings `@fablers`, and posts the gate. Refuses if Halloween is off, a manor is already open, or the server has already opened 5 manors today (resets at midnight UTC). |
+| `$manor open` | Creates `#「👻」hallow-manor` under category `1403273394853511240` (`MANOR_CATEGORY_ID`), pings **Night Watch**, and posts the gate. Refuses if Halloween is off, a manor is already open, or the server has already opened 5 manors today (resets midnight UTC). |
+| `$manor watch` / `$night watch` | Opt in to Night Watch pings for the manor and the phantom door. `$manor unwatch` / `$night unwatch` turns the ping off. |
 | `$manor status` | Phase, headcount, and bar progress. Anyone can use this. |
 | `$manor skip` | Closes the current room and moves to the next. |
 | `$manor end` | Settles rewards from the current progress. |
@@ -73,3 +74,22 @@ The house clears when searches reach about 70% of (investigators × 3). A solo i
 ## Profile theme
 
 **The Last Lantern** (`hallowmanor`) replaces the seasonal background in `$spookyshop`. It costs 2,500 bones, one purchase, and it is a `$prpg` theme. It can also drop from an active manor search. It is not in the normal profile-theme drop pool. The banner file is `assets/profile_themes/hallowmanor.png`. Equip it with `$prpg theme hallowmanor`.
+
+## Phantom door
+
+A GM starts a night with `$door start 24h` (or `3d` / `7d`). Doors appear at random times, never during 1:00–10:00 AM America/New_York, never while a manor is open, and never two at once. The first 72 hours of a night use 18–22 doors per day; after that, 12–15. The channel is public at the top of the manor category. Only **Night Watch** is pinged.
+
+Players press **Knock** and wait. When the door answers, one visitor is chosen by tickets (pity is hidden). Everyone who knocked gets a crumb. Trick visitors get bones plus the gag (the Stick of Shame on that variant). Treat visitors get more bones and a bag chance. Ethereal (~5%, and only if at least two people knocked) grants a named high-odd-stat weapon, including two-handers.
+
+| Command | What it does |
+|---|---|
+| `$night watch` | Night Watch ping on. Aliases: `$door watch`, `$manor watch`. |
+| `$night unwatch` | Ping off. Channels still appear. |
+| `$door start [window]` | GM. Plan the night. Times are not posted. |
+| `$door now` | GM. Preview only. Spawn one door immediately in the preview channel. |
+| `$door stop` | GM. Cancel leftovers and close a live door. |
+| `$door log` | GM. Recent doors. `$door log <id>` is one door's knockers and rewards. |
+
+Right now `PREVIEW_CHANNEL_ID` is set, so doors only post in that channel. The bot will not create or delete channels. Set that constant to `0` when you are ready to go live.
+
+Art lives in `assets/halloween/door/`. The queue uses `closed.jpg`. Trick and treat crack `ajar.jpg` first; ethereal cracks `ajar-ethereal.jpg`, then `ethereal.jpg`.
