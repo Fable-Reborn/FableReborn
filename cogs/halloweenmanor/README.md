@@ -77,7 +77,7 @@ The house clears when searches reach about 70% of (investigators × 3). A solo i
 
 ## Phantom door
 
-A GM starts a night with `$door start 24h` (or `3d` / `7d`). Doors appear at random times, never during 1:00–10:00 AM America/New_York, never while a manor is open, and never two at once. The first 72 hours of a night use 18–22 doors per day; after that, 12–15. The channel is public at the top of the manor category. Only **Night Watch** is pinged.
+A GM starts a night with `$door start 24h` (or `3d` / `7d`). Doors appear at random times any hour of the day, never while a manor is open, and never two at once. The first 72 hours of a night use 18–22 doors per day; after that, 12–15. The channel is public at the top of the manor category. Only **Night Watch** is pinged.
 
 Players press **Knock** and wait. When the door answers, one visitor is chosen by tickets (pity is hidden). Everyone who knocked gets a crumb. Trick visitors get bones plus the gag (the Stick of Shame on that variant). Treat visitors get more bones and a bag chance. Ethereal (~5%, and only if at least two people knocked) grants a named high-odd-stat weapon, including two-handers.
 

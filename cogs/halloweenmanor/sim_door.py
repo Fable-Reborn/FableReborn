@@ -20,10 +20,6 @@ try:
         ETHEREAL_CHANCE,
         LAUNCH_DOORS,
         MIN_GAP_SECONDS,
-        PEAK_END_HOUR,
-        PEAK_START_HOUR,
-        QUIET_END_HOUR,
-        QUIET_START_HOUR,
         STEADY_DOORS,
         TREAT_CHANCE,
         TRICK_CHANCE,
@@ -43,10 +39,6 @@ except ImportError:
         ETHEREAL_CHANCE,
         LAUNCH_DOORS,
         MIN_GAP_SECONDS,
-        PEAK_END_HOUR,
-        PEAK_START_HOUR,
-        QUIET_END_HOUR,
-        QUIET_START_HOUR,
         STEADY_DOORS,
         TREAT_CHANCE,
         TRICK_CHANCE,
@@ -106,16 +98,13 @@ def main():
     start = datetime(2026, 10, 18, 16, 0, tzinfo=EST).astimezone(timezone.utc)
     launch_spawns = plan_night(start, start + timedelta(hours=24), rng)
     hours = Counter(stamp.astimezone(EST).hour for stamp in launch_spawns)
-    quiet = sum(count for hour, count in hours.items() if QUIET_START_HOUR <= hour < QUIET_END_HOUR)
-    peak = sum(count for hour, count in hours.items() if PEAK_START_HOUR <= hour < PEAK_END_HOUR)
     gaps = [ (b - a).total_seconds() for a, b in zip(launch_spawns, launch_spawns[1:]) ]
     check(
         "launch 24h door count",
         LAUNCH_DOORS[0] * 0.4 <= len(launch_spawns) <= LAUNCH_DOORS[1],
         f"{len(launch_spawns)} doors, hours={dict(sorted(hours.items()))}",
     )
-    check("no quiet-hour doors", quiet == 0, f"{quiet} in 1-10am EST")
-    check("peak hours get more doors", peak >= max(1, len(launch_spawns) // 3), f"{peak}/{len(launch_spawns)} in 4-11pm EST")
+    check("doors can land any hour", len(hours) >= 8, f"{len(hours)} distinct hours")
     check("minimum gap", all(gap >= MIN_GAP_SECONDS - 1 for gap in gaps), f"min gap {min(gaps) if gaps else 0:.0f}s")
 
     night_start = start
@@ -140,7 +129,7 @@ def main():
             return True
         if player in owl:
             return hour >= 22 or hour < 1
-        if PEAK_START_HOUR <= hour < PEAK_END_HOUR:
+        if 16 <= hour < 23:
             return roll_rng.random() < 0.55
         return roll_rng.random() < 0.15
 

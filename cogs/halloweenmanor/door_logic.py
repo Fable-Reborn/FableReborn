@@ -24,10 +24,6 @@ MIN_GAP_SECONDS = 45 * 60
 LAUNCH_HOURS = 72
 LAUNCH_DOORS = (18, 22)
 STEADY_DOORS = (12, 15)
-QUIET_START_HOUR = 1
-QUIET_END_HOUR = 10
-PEAK_START_HOUR = 16
-PEAK_END_HOUR = 23
 SLOT_SECONDS = 5 * 60
 MAX_WINDOW_SECONDS = 14 * 24 * 3600
 
@@ -187,16 +183,8 @@ def doors_for_day(night_started: datetime, day_start: datetime) -> tuple[int, in
     return STEADY_DOORS
 
 
-def _local_hour(moment: datetime) -> int:
-    return moment.astimezone(EST).hour
-
-
 def slot_weight(moment: datetime) -> float:
-    hour = _local_hour(moment)
-    if QUIET_START_HOUR <= hour < QUIET_END_HOUR:
-        return 0.0
-    if PEAK_START_HOUR <= hour < PEAK_END_HOUR:
-        return 3.0
+    del moment
     return 1.0
 
 
@@ -207,14 +195,13 @@ def _eligible_slots(start: datetime, end: datetime) -> list[datetime]:
     if remainder:
         cursor += timedelta(seconds=SLOT_SECONDS - remainder)
     while cursor < end:
-        if slot_weight(cursor) > 0:
-            slots.append(cursor)
+        slots.append(cursor)
         cursor += timedelta(seconds=SLOT_SECONDS)
     return slots
 
 
 def plan_spawns(start: datetime, end: datetime, count: int, rng) -> list[datetime]:
-    """Pick `count` times in the window. Peak EST hours are more likely. Quiet hours are empty."""
+    """Pick `count` times in the window, any hour, with a minimum gap between doors."""
     slots = _eligible_slots(start, end)
     if not slots or count <= 0:
         return []
