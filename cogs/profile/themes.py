@@ -429,6 +429,11 @@ THEMES = {
                      "The goddess of creation and a guardian dragon above her sacred pool.",
                      "#d5b5f5", "#82709e", "#110f20", "#262139", "#faf3ff", "#c5b9d9", "💜", "Fables", "Fable", "wave",
                      title_lines=("Tiamat's", "Grace"), finish="prismatic", layout="creation"),
+        # The Library's own edition: only readers who came in its Founding Week ever own it.
+        ProfileTheme("founding", "The Founding Reader", "THE FIRST TO WALK THE LIBRARY.",
+                     "Candlelight on the Fables Library's doors in its very first week.",
+                     "#ead08e", "#6f8296", "#0a0e18", "#161d2b", "#fbf5e6", "#b9c2cf", "📖", "Fables", "Fable", "quill",
+                     title_lines=("The Founding", "Reader"), finish="prismatic", layout="library"),
     )
 }
 
@@ -607,6 +612,7 @@ ALIASES = {
     "penitent": "gyle", "penance": "gyle", "nether garrison": "gyle",
     "ry'jin": "ryjin", "ryjins dominion": "ryjin", "dominion": "ryjin", "tyrant": "ryjin",
     "az'golath": "ryjin", "azgolath": "ryjin",
+    "founding reader": "founding", "founder": "founding", "library": "founding",
     # The Halloween manor docs and announcement call it hollowmanor / The Last Lantern.
     "hollowmanor": "hallowmanor", "the last lantern": "hallowmanor", "last lantern": "hallowmanor",
     **{theme.name.lower(): theme.key for theme in THEMES.values()},
@@ -1597,7 +1603,8 @@ FABLE_SIZE = (2400, 1700)
 _FABLE_ART = {"sacrament": "tiamat-sacrament-banner-v1.png",
               "gyle": "gyle-nether-garrison-v2.png",
               "ryjin": "ryjin-dominion-banner-v2.png",
-              "tiamat": "tiamat.png"}
+              "tiamat": "tiamat.png",
+              "founding": "founding-reader-v1.png"}
 _FABLE_ART_H = 800
 _MEDALLION = (300, 930)
 _FABLE_PLAQUES = ((600, 1098, 1146, 1258), (1187, 1098, 1733, 1258), (1774, 1098, 2320, 1258))
@@ -1649,6 +1656,14 @@ _FABLES = {
         glow=(160, 255, 54), jewel=((140, 232, 36), (234, 255, 186), (36, 76, 8)),
         lower="pool", tint=(118, 196, 74), haze=(150, 255, 70), sun=None, rays=None,
         motes=((210, 255, 140), (150, 255, 60))),
+    # The Fables Library: candle-gold over the emblem's moonlit silver, the Tiamat door's blue gem.
+    "library": dict(
+        chapter=0, kicker="THE FABLES LIBRARY   ·   FOUNDING WEEK", legend="FOUNDING READER",
+        foil=((58, 62, 74), (150, 162, 180), (230, 236, 244), (255, 252, 240), (226, 196, 128), (120, 100, 60), (246, 226, 176)),
+        ink=((255, 252, 244), (246, 234, 206), (226, 200, 140), (110, 92, 54), (236, 214, 164), (255, 250, 236)),
+        glow=(240, 198, 120), jewel=((66, 128, 230), (214, 232, 255), (14, 32, 92)),
+        lower="lake", tint=(150, 160, 190), haze=(226, 206, 168), sun=None, rays=None,
+        motes=((255, 236, 200), (255, 208, 130))),
 }
 
 
@@ -1879,6 +1894,26 @@ def _fable_medallion(pen, layout, gems, extra):
             pen.disc(cx + math.cos(a)*194, cy + math.sin(a)*194, 4.4 if i % 7 else 6.5)
         for a in (-math.pi/2, 0, math.pi):
             gems.append((cx + math.cos(a)*194, cy + math.sin(a)*194, 8))
+    elif layout == "library":
+        # The Fables emblem around the portrait: a pointed door-arch rising over it, and the
+        # pages of an open book fanned out beneath, like the Library's sign.
+        pen.ring(cx, cy, 190, 2)
+        pen.ring(cx, cy, 200, 1)
+        for side in (-1, 1):
+            for spread, rise, width in ((206, 330, 2.6), (222, 352, 1.1)):
+                # A lancet: each side is an arc whose centre sits across the doorway.
+                radius = (spread*spread + rise*rise) / (2*spread)
+                top = math.acos((radius - spread) / radius)
+                extra.line([(cx + side*(spread - radius + radius*math.cos(t)), cy - radius*math.sin(t))
+                            for t in _steps(0, top, 40)], width)
+            for k in range(4):
+                # Page edges, each a little lower and wider than the one above.
+                reach, sag, lift = 214 + k*18, 196 + k*12, 118 + k*16
+                extra.line([(cx + side*reach*t, cy + lift + (sag - lift)*(1 - t)**2) for t in _steps(0, 1, 30)],
+                           2 if k == 0 else 1)
+            gems.append((cx + side*214, cy + 118, 8))
+        extra.diamond(cx, cy - 330, 14, 1.6)
+        gems.append((cx, cy - 330, 8))
     else:
         # A spiked crown inside a summoning circle.
         for i in range(36):
@@ -1910,7 +1945,7 @@ def _fable_frame(pen, layout, w, h, gems):
     for cx, cy, sx, sy in corners:
         def p(u, v, cx=cx, cy=cy, sx=sx, sy=sy):
             return (cx + sx*u, cy + sy*v)
-        if layout in ("sacrament", "creation"):
+        if layout in ("sacrament", "creation", "library"):
             for radius, width in ((62, 2.2), (76, 1)):
                 pen.line([p(radius*math.cos(t), radius*math.sin(t)) for t in _steps(0, math.pi/2, 28)], width)
             for flip in (False, True):
@@ -2010,6 +2045,13 @@ def _fable_etching(draw, layout, rng, w, h):
             draw.line(points, fill=46, width=2)
             for x, y in points[::14]:
                 draw.ellipse((x-2.2, y-2.2, x+2.2, y+2.2), fill=150)
+    elif layout == "library":
+        # Candlelight rings on the polished floor, and the faint ruled lines of a page.
+        for k, r in enumerate(range(240, 2600, 110)):
+            draw.ellipse((cx-r, 1090 - r*.2, cx+r, 1090 + r*.2), outline=max(10, 60 - k*3), width=1)
+        for y in range(860, h, 34):
+            draw.line((0, y, w, y), fill=14, width=1)
+        draw.line((640, 820, 640, h), fill=26, width=1)
     elif layout == "garrison":
         # Brushed steel: long faint strokes across the parade ground.
         for _ in range(900):
@@ -2177,7 +2219,8 @@ def _fable_base(key):
     metal = metal.reduce(_SS)
 
     band = Image.new("L", (w, h))
-    edition = "SECRET FABLE" if theme.layout == "creation" else f"FABLE {_roman(ed['chapter'])} OF III"
+    edition = ("SECRET FABLE" if theme.layout == "creation" else "FOUNDING EDITION" if theme.layout == "library"
+               else f"FABLE {_roman(ed['chapter'])} OF III")
     _draw_ring_text(band, ed["legend"], edition, "heading", _MEDALLION, 153)
     metal = ImageChops.lighter(metal, band)
 
@@ -2211,7 +2254,8 @@ def _fable_base(key):
 
     # The edition's own lettering.
     _foil_text(canvas, 112, 74, "F A B L E   /   R E B O R N", theme_font(22, "heading"), ink, glow, .5)
-    label = "S E C R E T   E D I T I O N" if theme.layout == "creation" else "F A B L E   E D I T I O N"
+    label = {"creation": "S E C R E T   E D I T I O N", "library": "F O U N D I N G   E D I T I O N"}.get(
+        theme.layout, "F A B L E   E D I T I O N")
     font = theme_font(22, "heading")
     _foil_text(canvas, w - 120 - font.getlength(label), 74, label, font, ink, glow, .7)
     draw = ImageDraw.Draw(canvas)
@@ -2223,7 +2267,7 @@ def _fable_base(key):
             _light(canvas, (x-34, y-34, x+34, y+34), colour, .9)
             draw.polygon([(x, y-r), (x+r, y), (x, y+r), (x-r, y)], fill=colour, outline=ed["foil"][3])
             draw.polygon([(x, y-r), (x, y), (x-r, y)], fill=_lerp((colour, (255, 255, 255)), .55))
-    for i in range(3 if theme.layout != "creation" else 0):
+    for i in range(3 if theme.layout not in ("creation", "library") else 0):
         x, y, r = w - 128 - (2-i)*34, 128, 9
         if i + 1 == ed["chapter"]:
             _light(canvas, (x-40, y-40, x+40, y+40), base, 1)
@@ -2249,7 +2293,9 @@ def _fable_base(key):
     rule = y + 78
     draw.line((112, rule, 112 + epithet_font.getlength(theme.epithet), rule), fill=ed["foil"][2], width=2)
     draw.line((112, rule + 7, 112 + epithet_font.getlength(theme.epithet)*.6, rule + 7), fill=ed["foil"][1], width=1)
-    chip = "S E C R E T   F A B L E" if theme.layout == "creation" else f"F A B L E   {' '.join(_roman(ed['chapter']))}   O F   I I I"
+    chip = ("S E C R E T   F A B L E" if theme.layout == "creation"
+            else "T H E   L I B R A R Y ' S   F I R S T   W E E K" if theme.layout == "library"
+            else f"F A B L E   {' '.join(_roman(ed['chapter']))}   O F   I I I")
     _foil_text(canvas, 112, rule + 26, chip, theme_font(17, "heading"), ink, glow, .55)
 
     for x, y, value, _ in _FABLE_HEADERS:

@@ -45,6 +45,9 @@ class UnlockRule:
         if self.stat == "story":
             # Claimed once the Tiamat Sacrament companion of the same name is unlocked.
             return self.flag in facts.get("companions", ())
+        if self.stat == "unlock":
+            # Claimed once the Fables game server has written this key to `tiamat_unlocks`.
+            return self.flag in facts.get("fable_unlocks", ())
         return self.stat in ("free", "drop") or (
             int(facts.get(self.stat, 0) or 0) >= self.target
             and (not self.god or str(facts.get("god") or "").casefold() == self.god.casefold())
@@ -55,7 +58,7 @@ class UnlockRule:
             return self.label
         if self.stat == "drop":
             return "Must be discovered"
-        if self.stat in ("event", "story"):
+        if self.stat in ("event", "story", "unlock"):
             return self.label
         value = max(0, int(facts.get(self.stat, 0) or 0))
         progress = f"{min(value, self.target):,}/{self.target:,}"
@@ -214,6 +217,8 @@ FABLE_RULES = {
     "gyle": UnlockRule("story", flag="gyle", note="Decide Gyle's fate in The Tiamat Sacrament"),
     "ryjin": UnlockRule("story", flag="ryjin", note="Uncover the true ending of The Tiamat Sacrament"),
     "tiamat": UnlockRule("story", flag="tiamat", note="Unlock Tiamat as a companion"),
+    # Only ever given out once: to readers who signed in during the Library's Founding Week.
+    "founding": UnlockRule("unlock", flag="founding_reader", note="Sign in to the Fables Library during its Founding Week"),
 }
 
 
@@ -370,17 +375,24 @@ async def _claim_locked(conn, user_id):
     if await conn.fetchval("SELECT to_regclass('companions') IS NOT NULL;"):
         companions = await conn.fetchval('SELECT unlocked FROM companions WHERE user_id = $1;', user_id)
     facts["companions"] = frozenset(companions or ())
+    # Rewards the Fables game server writes by Discord ID (utils/tiamat_unlocks.py). Checked
+    # first, because a failed query would abort the caller's transaction.
+    fable_unlocks = []
+    if await conn.fetchval("SELECT to_regclass('tiamat_unlocks') IS NOT NULL;"):
+        fable_unlocks = [row["unlock_key"] for row in await conn.fetch(
+            'SELECT unlock_key FROM tiamat_unlocks WHERE user_id = $1;', user_id)]
+    facts["fable_unlocks"] = frozenset(fable_unlocks)
     rows = await conn.fetch('SELECT theme_key FROM profile_theme_unlocks WHERE user_id = $1;', user_id)
     owned = {row["theme_key"] for row in rows if row["theme_key"] in THEMES} | {"classic"}
     # Only auto-claim free (starter) themes; collectible themes come from drops.
     new = tuple(key for key, rule in RULES.items() if key not in owned and key not in COLLECTIBLE_THEMES and rule.met(facts))
-    starters = [key for key in new if RULES[key].stat not in ("event", "story")]
+    starters = [key for key in new if RULES[key].stat not in ("event", "story", "unlock")]
     if starters:
         await conn.executemany(
             'INSERT INTO profile_theme_unlocks (user_id, theme_key) VALUES ($1, $2) ON CONFLICT (user_id, theme_key) DO NOTHING;',
             [(user_id, key) for key in starters],
         )
-    sources = {"event": "event-flag", "story": "story"}
+    sources = {"event": "event-flag", "story": "story", "unlock": "fable"}
     flagged = [key for key in new if RULES[key].stat in sources]
     if flagged:
         await conn.executemany(

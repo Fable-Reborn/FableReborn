@@ -138,3 +138,4 @@ tests/test_profile_themes.py
 scripts/build_profile_cast_icons.py
 tests/test_draslin_rebuild.py
 tests/test_tiamat_remnant.py
+assets/profile_themes/founding-reader-v1.prompt.md
