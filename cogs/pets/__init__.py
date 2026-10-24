@@ -5057,6 +5057,9 @@ class Pets(commands.Cog):
     def is_pet_equippable(self, pet) -> bool:
         if not pet or pet.get("daycare_boarding_id"):
             return False
+        # Library pets can be equipped from birth: the equipped pet is the one that follows its reader in the Library.
+        if library_pets.is_library_pet(pet):
+            return True
         return str(pet.get("growth_stage") or "").lower() in {"young", "adult"}
 
     async def equip_pet_by_id(self, user_id: int, pet_id: int):
@@ -5072,7 +5075,7 @@ class Pets(commands.Cog):
             if pet.get("daycare_boarding_id"):
                 return None, "❌ This pet is currently boarded in daycare and cannot be used directly."
 
-            if str(pet.get("growth_stage") or "").lower() not in {"young", "adult"}:
+            if not library_pets.is_library_pet(pet) and str(pet.get("growth_stage") or "").lower() not in {"young", "adult"}:
                 return (
                     None,
                     f"❌ **{pet['name']}** must be at least in the **young** growth stage to be equipped.",
