@@ -3212,7 +3212,9 @@ class Help(commands.Cog):
                                     "name": "Count Formula",
                                     "value": (
                                         "Active total is computed as:\n"
-                                        "`COUNT(monster_pets)` + `COUNT(unhatched monster_eggs)` + `COUNT(pending splice_requests)`"
+                                        "`COUNT(monster_pets)` + `COUNT(unhatched monster_eggs)` + `COUNT(pending splice_requests)`\n"
+                                        "Fables Library pets and their eggs aren't counted: they have their own Library shelf "
+                                        "(13 places, see `$pets story`)."
                                     ),
                                     "inline": False,
                                 },

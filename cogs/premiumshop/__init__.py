@@ -841,7 +841,10 @@ class PremiumShop(commands.Cog):
             pets_cog,
             pet.get("learned_skills"),
         )
-        skill_tree = pets_cog.SKILL_TREES.get(str(pet.get("element") or ""), {})
+        if hasattr(pets_cog, "get_skill_tree_key"):
+            skill_tree = pets_cog.get_skill_tree(pets_cog.get_skill_tree_key(pet))
+        else:
+            skill_tree = pets_cog.SKILL_TREES.get(str(pet.get("element") or ""), {})
         skill_lookup = {}
         for branch_skills in skill_tree.values():
             for skill_data in branch_skills.values():
@@ -943,7 +946,7 @@ class PremiumShop(commands.Cog):
     async def _fetch_owned_pets_for_mind_wipe(self, conn, user_id: int):
         return await conn.fetch(
             """
-            SELECT id, name, level, element, skill_points, learned_skills
+            SELECT id, name, default_name, level, element, skill_points, learned_skills
             FROM monster_pets
             WHERE user_id = $1
             ORDER BY id;
@@ -982,7 +985,7 @@ class PremiumShop(commands.Cog):
 
                 pets = await conn.fetch(
                     """
-                    SELECT id, name, level, element, skill_points, learned_skills
+                    SELECT id, name, default_name, level, element, skill_points, learned_skills
                     FROM monster_pets
                     WHERE user_id = $1 AND id = ANY($2::bigint[])
                     ORDER BY id;
@@ -1388,6 +1391,10 @@ class PremiumShop(commands.Cog):
                 return False, _(
                     "Pet Element Scroll cannot be used on god pets like {name}."
                 ).format(name=canonical_god_name)
+            if hasattr(pets_cog, "get_skill_tree_key") and pets_cog.get_skill_tree_key(pet) != pet.get("element"):
+                return False, _(
+                    "Pet Element Scroll cannot be used on Fables Library pets: their element is part of who they are."
+                )
 
             current_element = self._normalize_pet_element(str(pet.get("element") or ""))
             if current_element == desired_element:

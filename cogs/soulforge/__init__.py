@@ -16,6 +16,7 @@ from cogs.splice_identity import (
     canonical_parent_pair_key,
     ensure_splice_identity_schema,
 )
+from utils import library_pets
 from utils.checks import has_char, is_gm, is_patreon
 
 SPLICE_ARCHIVE_USER_ID = 0
@@ -1587,8 +1588,9 @@ class Soulforge(commands.Cog):
         await ensure_splice_identity_schema(conn)
 
     async def _count_user_pet_capacity_items(self, conn, user_id: int) -> int:
+        # Library pets and eggs have their own shelf; they don't use these slots.
         pet_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM monster_pets WHERE user_id = $1;",
+            f"SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND {library_pets.NOT_LIBRARY_PET_SQL};",
             user_id,
         )
 
@@ -1598,7 +1600,7 @@ class Soulforge(commands.Cog):
         egg_count = 0
         if monster_eggs_exists:
             egg_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE;",
+                f"SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND {library_pets.NOT_LIBRARY_EGG_SQL};",
                 user_id,
             )
 
@@ -2196,7 +2198,7 @@ class Soulforge(commands.Cog):
                     (
                         "Your forge must be built and usable.\n"
                         "If forge condition drops too low, splicing is blocked until repaired.\n"
-                        "Some mythical or final-form pets cannot be spliced."
+                        "Some mythical or final-form pets, and Fables Library pets, cannot be spliced."
                     ),
                 ),
             ],
@@ -3565,6 +3567,14 @@ class Soulforge(commands.Cog):
             if pet2_data["default_name"] in unspliceable_pets or "[FINAL]" in pet2_data["default_name"]:
                 await self.bot.reset_cooldown(ctx)
                 return await ctx.send(f"**{pet2_data['default_name']}** cannot be spliced due to its mythical nature.")
+
+            for pet_data in (pet1_data, pet2_data):
+                if library_pets.is_library_pet(pet_data):
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(
+                        f"**{pet_data['name']}** is a Fables Library pet. Library pets grow by evolving "
+                        f"(`{ctx.clean_prefix}pets evolve`), not in the forge."
+                    )
 
             if pet2_data["default_name"] == pet1_data["default_name"]:
                 await self.bot.reset_cooldown(ctx)

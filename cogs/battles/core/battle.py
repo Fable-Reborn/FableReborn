@@ -2565,6 +2565,19 @@ class Battle(AscensionCombat, ABC):
                 f"🏰 Living Fortress prevents **{self.format_number(prevented)} HP** damage to **{target.name}**!"
             )
 
+        # Library species pets (pet_species.py) guard their owner and team their own way.
+        from ..extensions.pet_species import SpeciesSkills
+        for ally in getattr(team, "combatants", []):
+            if ally is target or not getattr(ally, "is_pet", False) or not ally.is_alive():
+                continue
+            if not getattr(ally, "species_tree", None):
+                continue
+            self.prepare_pet_context(ally)
+            damage, species_messages, redirected_to = SpeciesSkills(pet_ext).guard(ally, attacker, target, damage)
+            messages.extend(species_messages)
+            if redirected_to is not None or damage <= 0:
+                return max(Decimal("0"), damage), messages, redirected_to
+
         # Avoid consuming a dual-element attacker's next element while resolving defense.
         attack_element = getattr(attacker, "attack_element", getattr(attacker, "element", "Unknown"))
         if attack_element == "Electric":
