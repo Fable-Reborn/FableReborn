@@ -4980,7 +4980,7 @@ class Profile(commands.Cog):
                     "select_label": f"{name} x{quantity}"[:100],
                     "select_description": effect[:100],
                     "name": name,
-                    "description": f"{effect}.\nDrink it with `$elixir drink {name.lower()}`: it works for 15 minutes of battle. Trade it with `$trade add elixir`.",
+                    "description": f"{effect}.\nDrink it with `$elixir drink {name.lower()}`: it works in every battle for 2 hours. Trade it with `$trade add elixir`.",
                     "quantity": quantity,
                 }
             )

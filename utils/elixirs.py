@@ -27,7 +27,7 @@ from decimal import Decimal
 
 STACK = 99
 ACTIVE_MAX = 2
-ACTIVE_MINUTES = 15
+ACTIVE_MINUTES = 120
 QUALITIES = ("plain", "silver", "gold")
 QUALITY_NAMES = ("Plain", "Silver", "Gold")
 

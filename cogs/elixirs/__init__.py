@@ -2,7 +2,7 @@
 
 Elixirs are brewed in a cauldron in the reader's Library home and arrive here as consumables
 (utils/elixirs.py has the catalogue and the battle effects). `$elixirs` shows the shelf and
-what's working; `$elixir drink` starts one for 15 minutes of battle (two at once, never two of
+what's working; `$elixir drink` starts one for 2 hours (two at once, never two of
 the same). They trade with `$trade` like any consumable, and sell on the elixir market.
 """
 from __future__ import annotations
@@ -164,7 +164,7 @@ class Elixirs(commands.Cog):
         _(
             """Your battle elixirs, brewed in the Fables Library.
 
-            Brew them in a cauldron in your Library home from crops you grow and fish you catch. Drink one with `{prefix}elixir drink <name>`: it works in every battle for 15 minutes. Two can work at once, never two of the same. Gold crops make gold elixirs, twice as strong as plain.
+            Brew them in a cauldron in your Library home from crops you grow and fish you catch. Drink one with `{prefix}elixir drink <name>`: it works in every battle for 2 hours. Two can work at once, never two of the same. Gold crops make gold elixirs, twice as strong as plain.
 
             Trade them with `{prefix}trade`, or sell them on `{prefix}elixir market`."""
         )
@@ -198,18 +198,18 @@ class Elixirs(commands.Cog):
                 embed.add_field(name=_("On your shelf") if i == 0 else "​", value="\n".join(part), inline=False)
         else:
             embed.description = _("Your shelf is empty. Brew elixirs in a cauldron in your Fables Library home: they arrive here.")
-        embed.set_footer(text=_("{prefix}elixir drink <name> · 15 minutes of battle each · {max} at once · up to {stack} of each").format(
+        embed.set_footer(text=_("{prefix}elixir drink <name> · lasts 2 hours · {max} at once · up to {stack} of each").format(
             prefix=ctx.clean_prefix, max=lib.ACTIVE_MAX, stack=lib.STACK))
         await ctx.send(embed=embed)
 
-    @elixirs.command(aliases=["use", "uncork"], brief=_("Drink an elixir: it works for 15 minutes of battle"))
+    @elixirs.command(aliases=["use", "uncork"], brief=_("Drink an elixir: it works in every battle for 2 hours"))
     @has_char()
     @locale_doc
     async def drink(self, ctx, *, elixir: str):
         _(
             """`<elixir>` - the elixir, with its quality if you have more than one: `gold giants stew`, `fire ward`
 
-            Drink an elixir from your shelf. It works in every battle you fight for the next 15 minutes, PvE and PvP. Two elixirs can work at once, but never two of the same."""
+            Drink an elixir from your shelf. It works in every battle you fight for the next 2 hours, PvE and PvP. Two elixirs can work at once, but never two of the same."""
         )
         async with self.bot.pool.acquire() as conn:
             await self.ensure_tables(conn)
@@ -253,7 +253,7 @@ class Elixirs(commands.Cog):
         embed = discord.Embed(title=f"{lib.emoji(elixir_id)} {e['name']}", colour=COLOUR)
         for q, name in enumerate(lib.QUALITY_NAMES):
             embed.add_field(name=name, value=lib.effect_text(elixir_id, q), inline=False)
-        embed.set_footer(text=_("Brewed in a Fables Library cauldron · 15 minutes of battle"))
+        embed.set_footer(text=_("Brewed in a Fables Library cauldron · lasts 2 hours"))
         await ctx.send(embed=embed)
 
     # ---- the elixir market ----------------------------------------------------------------------
@@ -460,7 +460,7 @@ class Elixirs(commands.Cog):
     @elixirs.command(hidden=True, aliases=["clearactive"], brief=_("End active elixirs early (GM)"))
     @is_gm()
     async def wearoff(self, ctx, user: discord.User = None):
-        """End your (or someone's) active elixirs now, to test again without waiting 15 minutes."""
+        """End your (or someone's) active elixirs now, to test again without waiting for them to wear off."""
         user = user or ctx.author
         async with self.bot.pool.acquire() as conn:
             await self.ensure_tables(conn)
