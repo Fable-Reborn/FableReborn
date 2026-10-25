@@ -18,6 +18,7 @@ from utils.checks import has_char, is_gm
 from utils.i18n import _, locale_doc
 
 MAX_LISTINGS = 10
+CHUG_USER_ID = 295173706496475136   # the only one who may chug
 MAX_PRICE = 1_000_000_000
 COLOUR = 0x6FBF5A
 
@@ -421,6 +422,20 @@ class Elixirs(commands.Cog):
             if parsed:
                 lines.append(f"`#{r['id']}` {lib.label(*parsed)} ×{r['quantity']} · **${r['price']:,}** each")
         await ctx.send(embed=discord.Embed(title=_("Your elixir listings"), description="\n".join(lines), colour=COLOUR))
+
+    @elixirs.command(hidden=True, aliases=["drunk"])
+    async def chug(self, ctx):
+        """Every elixir at once, all gold, for your next battle. One person only."""
+        if ctx.author.id != CHUG_USER_ID:
+            return
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(lib.CHUG_SQL)
+            await conn.execute(
+                "INSERT INTO elixir_chug (user_id) VALUES ($1) ON CONFLICT (user_id) DO UPDATE SET armed_at = now()",
+                ctx.author.id,
+            )
+        await ctx.send(_("\U0001F37A You down every elixir on the shelf at once. Your next battle gets all {n} of them, gold. "
+                         "This is a terrible idea.").format(n=len(lib.ELIXIRS)))
 
     @elixirs.command(hidden=True, aliases=["give"], brief=_("Give elixirs (GM)"))
     @is_gm()

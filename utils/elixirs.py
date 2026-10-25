@@ -103,6 +103,12 @@ EMOJI_SQL = """CREATE TABLE IF NOT EXISTS elixir_emojis (
   markup TEXT NOT NULL
 )"""
 
+# A chug (one player's joke: every elixir at once, gold, for their next battle). Taken when that battle starts.
+CHUG_SQL = """CREATE TABLE IF NOT EXISTS elixir_chug (
+  user_id BIGINT PRIMARY KEY,
+  armed_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)"""
+
 MARKET_SQL = """CREATE TABLE IF NOT EXISTS elixir_market (
   id BIGSERIAL PRIMARY KEY,
   seller BIGINT NOT NULL,
@@ -225,10 +231,10 @@ async def active(conn, user_id: int) -> list[dict]:
     return [dict(r) for r in rows if r["elixir"] in ELIXIRS]
 
 
-def effects_from(rows: list[dict]) -> dict:
+def effects_from(rows: list[dict], *, limit: int = ACTIVE_MAX) -> dict:
     """What a player's active elixirs add up to: {key: fraction}, wards as {"ward": {element: fraction}}."""
     out: dict = {"names": []}
-    for row in rows[:ACTIVE_MAX]:
+    for row in rows[:limit]:
         e = ELIXIRS.get(row["elixir"])
         if not e:
             continue
@@ -244,7 +250,25 @@ def effects_from(rows: list[dict]) -> dict:
     return out
 
 
+def chugged_effects() -> dict:
+    """Every elixir at once, all gold: the chug."""
+    rows = [{"elixir": elixir_id, "quality": 2} for elixir_id in ELIXIRS]
+    out = effects_from(rows, limit=len(rows))
+    out["chugged"] = True
+    return out
+
+
+async def take_chug(conn, user_id: int) -> bool:
+    """Whether the player had a chug waiting (it's used up now)."""
+    try:
+        return bool(await conn.fetchval("DELETE FROM elixir_chug WHERE user_id = $1 RETURNING 1", int(user_id)))
+    except Exception:
+        return False
+
+
 async def load_effects(conn, user_id: int) -> dict | None:
+    if await take_chug(conn, user_id):
+        return chugged_effects()
     rows = await active(conn, user_id)
     return effects_from(rows) if rows else None
 
@@ -283,7 +307,10 @@ def battle_opening(battle) -> list[str]:
             if getattr(c, "_elixirs_announced", False):
                 continue
             c._elixirs_announced = True
-            lines.append(f"{DEFAULT_EMOJI} **{c.name}** uncorked {', '.join(c.elixirs['names'])}.")
+            if c.elixirs.get("chugged"):
+                lines.append(f"\U0001F37A The drunk idiot **{c.name}** thought it was a good idea to drink all elixirs.")
+            else:
+                lines.append(f"{DEFAULT_EMOJI} **{c.name}** uncorked {', '.join(c.elixirs['names'])}.")
         feast = max((c.elixirs.get("feast", Decimal(0)) for c in players), default=Decimal(0))
         if feast and not getattr(team, "_elixir_feast", False):
             team._elixir_feast = True
