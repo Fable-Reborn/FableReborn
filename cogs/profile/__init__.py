@@ -462,6 +462,40 @@ class ArmoryPaginatorView(discord.ui.View):
 INVENTORY_HOME = "__home__"
 INVENTORY_PAGE = 25
 
+# The inventory's pictures (custom emotes, inventory set uploaded 2026-10-26).
+INVENTORY_EMOJI = {
+    "category:home": "<:inv_satchel:1564058722081443991>",
+    "category:amulets": "<:inv_amulets:1564058490346147860>",
+    "category:potions": "<:inv_potions:1564058567214895144>",
+    "category:elixirs": "<:inv_elixirs:1564058496318574715>",
+    "category:key_items": "<:inv_key_items:1564058500781449336>",
+    "category:divine_shards": "<:inv_shards:1564058724367335595>",
+    "button:drink": "<:inv_drink:1564058493906853938>",
+    "button:use": "<:inv_use:1564058712845451395>",
+    "button:equip": "<:inv_equip:1564058498655068191>",
+    "button:recycle": "<:inv_recycle:1564058718008639508>",
+    "button:refresh": "<:inv_refresh:1564058720143540295>",
+    "potion:ascension": "<:inv_ascension_potion:1564058492107628676>",
+    "potion:candy": "<:inv_level_candy:1564058503272734780>",
+    "potion:highcandy": "<:inv_super_level_candy:1564058729639313428>",
+    "potion:pet_mind_wipe": "<:inv_pet_mind_wipe:1564058487934288032>",
+    "potion:pet_element_scroll": "<:inv_pet_element_scroll:1564058519127335134>",
+    "potion:weapon_element_scroll": "<:inv_weapon_element_scroll:1564058716079394906>",
+    "potion:splice_final_potion": "<:inv_splice_final_potion:1564058727013687446>",
+    "potion:theme_trade_contract": "<:inv_theme_contract:1564058710244990976>",
+    "amulet:health": "<:healthamulet:1388930139466891265>",
+    "amulet:attack": "<:attackamulet:1388930099516014803>",
+    "amulet:defense": "<:defenseamulet:1388930014111727666>",
+    "amulet:balanced": "<:balancedamulet:1388929966397198470>",
+    "potion:reset": "<:Resetpotion2:1245040954382090270>",
+    "potion:pet_age_potion": "<:ageup:1473265287238385797>",
+    "potion:pet_speed_growth_potion": "<:finalpotion:1473265347581710346>",
+    "potion:pet_xp_potion": "<:SplicePotion:1473266873612107836>",
+    "shard:Good": "<:GoodShard:1472140691667816479>",
+    "shard:Evil": "<:EvilShard:1472140682759110716>",
+    "shard:Chaos": "<:ChaosShard:1472140674215444521>",
+}
+
 
 def _inventory_emoji(text):
     """A select option's emoji from "<:name:id>" or a plain emoji (None when there's none)."""
@@ -487,7 +521,7 @@ class InventoryCategorySelect(discord.ui.Select):
                 label="Overview",
                 value=INVENTORY_HOME,
                 description="Everything at a glance",
-                emoji="🎒",
+                emoji=_inventory_emoji(INVENTORY_EMOJI["category:home"]),
                 default=inventory_view.selected_key == INVENTORY_HOME,
             )
         ]
@@ -680,9 +714,9 @@ class InventoryCategoryView(discord.ui.View):
         if self.confirm and entry:
             # Asking first: only the answer buttons.
             if self.confirm["action"] == "drink":
-                self._button("Drink it", discord.ButtonStyle.success, self.confirm_action, 1, emoji="🧪")
+                self._button("Drink it", discord.ButtonStyle.success, self.confirm_action, 1, emoji=_inventory_emoji(INVENTORY_EMOJI["button:drink"]))
             else:
-                self._button("Recycle it", discord.ButtonStyle.danger, self.confirm_action, 1, emoji="♻️")
+                self._button("Recycle it", discord.ButtonStyle.danger, self.confirm_action, 1, emoji=_inventory_emoji(INVENTORY_EMOJI["button:recycle"]))
             self._button("Cancel", discord.ButtonStyle.secondary, self.cancel_action, 1)
             return
 
@@ -699,18 +733,18 @@ class InventoryCategoryView(discord.ui.View):
                 if entry.get("equipped"):
                     self._button("Unequip", discord.ButtonStyle.secondary, self.unequip_selected_amulet, 3)
                 else:
-                    self._button("Equip", discord.ButtonStyle.success, self.equip_selected_amulet, 3)
+                    self._button("Equip", discord.ButtonStyle.success, self.equip_selected_amulet, 3, emoji=_inventory_emoji(INVENTORY_EMOJI["button:equip"]))
                 self._button("Recycle", discord.ButtonStyle.danger, self.ask_recycle, 3,
-                             disabled=not entry.get("recycle_enabled"))
+                             disabled=not entry.get("recycle_enabled"), emoji=_inventory_emoji(INVENTORY_EMOJI["button:recycle"]))
             elif kind == "potion":
                 self._button("Use", discord.ButtonStyle.success, self.consume_selected_potion, 3,
-                             disabled=not entry.get("button_enabled"))
+                             disabled=not entry.get("button_enabled"), emoji=_inventory_emoji(INVENTORY_EMOJI["button:use"]))
             elif kind == "elixir":
                 self._button("Drink", discord.ButtonStyle.success, self.ask_drink, 3,
-                             disabled=self.drink_problem(entry) is not None, emoji="🧪")
+                             disabled=self.drink_problem(entry) is not None, emoji=_inventory_emoji(INVENTORY_EMOJI["button:drink"]))
             self._button("Back", discord.ButtonStyle.secondary, self.back_to_list, 3)
 
-        self._button("Refresh", discord.ButtonStyle.secondary, self.refresh_inventory, 4, emoji="🔄")
+        self._button("Refresh", discord.ButtonStyle.secondary, self.refresh_inventory, 4, emoji=_inventory_emoji(INVENTORY_EMOJI["button:refresh"]))
         self._button("Armory", discord.ButtonStyle.primary, self.open_armory, 4)
         self._button("Loadouts", discord.ButtonStyle.primary, self.open_loadouts, 4)
         self._button("Close", discord.ButtonStyle.danger, self.close_inventory, 4)
@@ -740,8 +774,8 @@ class InventoryCategoryView(discord.ui.View):
         ]
 
     def build_home_embed(self) -> discord.Embed:
-        embed = self._base("🎒 Inventory", discord.Colour.blurple(),
-                           "Pick a category below. Weapons and armour are in `$armory`.")
+        embed = self._base("Inventory", discord.Colour.blurple(),
+                           f"{INVENTORY_EMOJI['category:home']} Pick a category below. Weapons and armour are in `$armory`.")
         if not self.categories:
             embed.add_field(name="Empty", value="Nothing in your bags yet.", inline=False)
             return embed
@@ -756,7 +790,7 @@ class InventoryCategoryView(discord.ui.View):
         return embed
 
     def build_list_embed(self, category: dict) -> discord.Embed:
-        embed = self._base(f"{category.get('emoji', '📦')} {category['label']}", discord.Colour.blurple(), category["description"])
+        embed = self._base(category["label"], discord.Colour.blurple(), f"{category.get('emoji', '📦')} {category['description']}")
         if category["key"] == "elixirs":
             working = self._working_lines()
             embed.add_field(
@@ -4725,8 +4759,9 @@ class Profile(commands.Cog):
             status = "Equipped" if equipped else "Stored"
             amulet_name = f"Tier {tier} {amulet_type} Amulet"
             refund = self._get_amulet_recycle_refund(amulet_type_key, tier)
+            amulet_emoji = INVENTORY_EMOJI.get(f"amulet:{amulet_type_key}", INVENTORY_EMOJI["category:amulets"])
             amulet_lines.append(
-                f"**{amulet_name}** (ID: {amulet_id}) [{status}]\n"
+                f"{amulet_emoji} **{amulet_name}** (ID: {amulet_id}) [{status}]\n"
                 f"HP +{int(amulet.get('hp') or 0)} | DEF +{int(amulet.get('defense') or 0)} | "
                 f"ATK +{int(amulet.get('attack') or 0)} | ${int(amulet.get('value') or 0):,}"
             )
@@ -4734,6 +4769,7 @@ class Profile(commands.Cog):
                 {
                     "kind": "amulet",
                     "entry_key": f"amulet:{amulet_id}",
+                    "emoji": amulet_emoji,
                     "select_label": f"{amulet_name} #{amulet_id}",
                     "select_description": f"{status} • HP +{int(amulet.get('hp') or 0)} • ATK +{int(amulet.get('attack') or 0)}",
                     "name": amulet_name,
@@ -4918,14 +4954,16 @@ class Profile(commands.Cog):
             quantity = int(definition["quantity"] or 0)
             if quantity < 1:
                 continue
+            potion_emoji = INVENTORY_EMOJI.get(definition["entry_key"], INVENTORY_EMOJI["category:potions"])
             potion_lines.append(
-                f"**{definition['name']}** x{quantity}\n{definition['summary']}"
+                f"{potion_emoji} **{definition['name']}** ×{quantity}\n{definition['summary']}"
             )
             potion_entries.append(
                 {
                     "kind": "potion",
                     "entry_key": definition["entry_key"],
-                    "select_label": f"{definition['name']} x{quantity}",
+                    "emoji": potion_emoji,
+                    "select_label": f"{definition['name']} ×{quantity}",
                     "select_description": definition["summary"],
                     "name": definition["name"],
                     "description": definition["description"],
@@ -5038,8 +5076,9 @@ class Profile(commands.Cog):
                     key=lambda s: s.get("shard_number", 0),
                 )
                 alignment = shards_for_god[0].get("alignment", "Unknown")
+                shard_emoji = INVENTORY_EMOJI.get(f"shard:{alignment}", INVENTORY_EMOJI["category:divine_shards"])
                 shard_lines.append(
-                    f"**{god_name} ({alignment})** [{len(shards_for_god)}/6]\n"
+                    f"{shard_emoji} **{god_name} ({alignment})** [{len(shards_for_god)}/6]\n"
                     + "\n".join(
                         f"Shard {row['shard_number']}: {row['shard_name']}"
                         for row in shards_for_god
@@ -5058,14 +5097,13 @@ class Profile(commands.Cog):
             )
 
         # An icon and a one-line count for each, for the overview and the category menu.
-        icons = {"amulets": "📿", "potions": "🧪", "elixirs": "⚗️", "key_items": "🗝️", "divine_shards": "✨"}
 
         def plural(count, word):
             return f"{count:,} {word}{'' if count == 1 else 's'}"
 
         for category in categories:
             entries = category.get("entries", [])
-            category.setdefault("emoji", icons.get(category["key"], "📦"))
+            category.setdefault("emoji", INVENTORY_EMOJI.get(f"category:{category['key']}", "📦"))
             if category["key"] == "amulets":
                 overview = f"{plural(len(entries), 'amulet')} · {sum(1 for e in entries if e.get('equipped'))} equipped"
             elif category["key"] == "elixirs":

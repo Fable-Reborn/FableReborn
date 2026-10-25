@@ -11,7 +11,7 @@ from utils import elixirs
 def _categories(active=()):
     """The inventory as the builder makes it, from fake rows (no database)."""
     cog = profile.Profile.__new__(profile.Profile)
-    amulets = [{"id": 7, "type": "hp", "tier": 3, "equipped": True, "hp": 120, "defense": 10, "attack": 5, "value": 900}]
+    amulets = [{"id": 7, "type": "health", "tier": 3, "equipped": True, "hp": 120, "defense": 10, "attack": 5, "value": 900}]
     consumables = [
         {"consumable_type": "pet_xp_potion", "quantity": 2},
         {"consumable_type": "elixir_giants_stew_gold", "quantity": 3},
@@ -43,14 +43,18 @@ class TestInventory(unittest.TestCase):
         cats = {c["key"]: c for c in _categories()}
         self.assertEqual(cats["amulets"]["overview"], "1 amulet · 1 equipped")
         self.assertEqual(cats["elixirs"]["overview"], "4 bottles · 0 working")
-        self.assertEqual(cats["elixirs"]["emoji"], "⚗️")
+        self.assertEqual(cats["elixirs"]["emoji"], profile.INVENTORY_EMOJI["category:elixirs"])
         stew = next(e for e in cats["elixirs"]["entries"] if e["elixir_id"] == "giants_stew")
         self.assertEqual((stew["quality"], stew["quantity"], stew["emoji"]), (2, 3, elixirs.emoji("giants_stew")))
+        # The game's own emotes where it has them: the amulet's type, the potion's picture.
+        self.assertEqual(cats["amulets"]["entries"][0]["emoji"], profile.INVENTORY_EMOJI["amulet:health"])
+        xp = next(e for e in cats["potions"]["entries"] if e["entry_key"] == "potion:pet_xp_potion")
+        self.assertEqual(xp["emoji"], profile.INVENTORY_EMOJI["potion:pet_xp_potion"])
 
     def test_the_buttons_follow_the_category(self):
         async def go():
             view = _view(_categories())
-            self.assertEqual(view.build_embed().title, "🎒 Inventory")
+            self.assertEqual(view.build_embed().title, "Inventory")
             self.assertNotIn("Drink", _labels(view))
             # Elixirs: open the Gold Giant's Stew, it can be drunk; Drink asks first.
             view.selected_key = "elixirs"
@@ -96,6 +100,28 @@ class TestInventory(unittest.TestCase):
             self.assertTrue(next(c for c in view.children if getattr(c, "label", "") == "Drink").disabled)
             self.assertIn("Working now (2 of 2)", view.build_home_embed().fields[1].name)
         self.run_async(go())
+
+
+class TestInventoryEmotes(unittest.TestCase):
+    def test_every_picture_is_a_custom_emote_and_every_potion_has_one(self):
+        import re
+        for key, markup in profile.INVENTORY_EMOJI.items():
+            self.assertRegex(markup, r"^<:[A-Za-z0-9_]{2,32}:\d{17,20}>$", key)
+            self.assertIsNotNone(profile._inventory_emoji(markup), key)
+        source = open(profile.__file__, encoding="utf-8").read()
+        for key in re.findall(r'"entry_key": "(potion:[a-z_]+)"', source):
+            self.assertIn(key, profile.INVENTORY_EMOJI, key)
+
+    def test_buttons_carry_their_emotes(self):
+        async def go():
+            view = _view(_categories())
+            view.selected_key, view.selected_entry_key, view.detail_mode = "elixirs", "elixir:elixir_giants_stew_gold", True
+            view.sync_controls()
+            drink = next(c for c in view.children if getattr(c, "label", "") == "Drink")
+            refresh = next(c for c in view.children if getattr(c, "label", "") == "Refresh")
+            self.assertEqual(drink.emoji.name, "inv_drink")
+            self.assertEqual(refresh.emoji.name, "inv_refresh")
+        asyncio.new_event_loop().run_until_complete(go())
 
 
 class FakeResponse:
