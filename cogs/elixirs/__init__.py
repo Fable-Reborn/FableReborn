@@ -8,6 +8,7 @@ the same). They trade with `$trade` like any consumable, and sell on the elixir 
 from __future__ import annotations
 
 import datetime
+import typing
 
 import discord
 from discord.ext import commands
@@ -413,18 +414,60 @@ class Elixirs(commands.Cog):
                 lines.append(f"`#{r['id']}` {lib.label(*parsed)} ×{r['quantity']} · **${r['price']:,}** each")
         await ctx.send(embed=discord.Embed(title=_("Your elixir listings"), description="\n".join(lines), colour=COLOUR))
 
-    @elixirs.command(hidden=True, brief=_("Give elixirs (GM)"))
+    @elixirs.command(hidden=True, aliases=["give"], brief=_("Give elixirs (GM)"))
     @is_gm()
-    async def grant(self, ctx, user: discord.User, amount: int, *, elixir: str):
-        """Give a player elixirs (testing and support)."""
-        picked = await self.resolve(ctx, elixir)
-        if not picked:
-            return
+    async def grant(self, ctx, user: typing.Optional[discord.User] = None, amount: int = 5, *, elixir: str = "all"):
+        """Give elixirs for testing or support. You by default; name someone first for them.
+
+        `$elixir grant` - 5 gold of every elixir to you
+        `$elixir grant 3 silver giants stew` - 3 Silver Giant's Stew to you
+        `$elixir grant @user 10 all plain` - 10 plain of every elixir to them
+        Without a quality it's gold. Anyone already near 99 gets what fits."""
+        user = user or ctx.author
+        if amount < 1 or amount > lib.STACK:
+            return await ctx.send(_("Give 1 to {stack}.").format(stack=lib.STACK))
+        words = elixir.casefold().split()
+        quality = next((lib.QUALITIES.index(w) for w in words if w in lib.QUALITIES), 2)
+        if "all" in words:
+            wanted = [(elixir_id, quality) for elixir_id in lib.ELIXIRS]
+        else:
+            try:
+                elixir_id, named = lib.find(elixir)
+            except LookupError as many:
+                return await ctx.send(_("Which one? {names}").format(names=", ".join(many.args[0])))
+            if not elixir_id:
+                return await ctx.send(_("There's no elixir called `{query}`.").format(query=elixir))
+            wanted = [(elixir_id, quality if named is None else named)]
+        given = []
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
-                if not await self.give(conn, user.id, lib.type_for(*picked), amount):
-                    return await ctx.send(_("That would take them past {stack}.").format(stack=lib.STACK))
-        await ctx.send(_("Gave {user} {amount}× {label}.").format(user=user.display_name, amount=amount, label=lib.label(*picked)))
+                for elixir_id, q in wanted:
+                    ctype = lib.type_for(elixir_id, q)
+                    have = int(await conn.fetchval(
+                        "SELECT COALESCE(SUM(quantity), 0) FROM user_consumables WHERE user_id = $1 AND consumable_type = $2",
+                        user.id, ctype))
+                    n = min(amount, lib.STACK - have)
+                    if n > 0 and await self.give(conn, user.id, ctype, n):
+                        given.append((elixir_id, q, n))
+        if not given:
+            return await ctx.send(_("{user} already has {stack} of those.").format(user=user.display_name, stack=lib.STACK))
+        if len(given) == 1:
+            elixir_id, q, n = given[0]
+            return await ctx.send(_("Gave {user} {n}× {label}.").format(user=user.display_name, n=n, label=lib.label(elixir_id, q)))
+        await ctx.send(_("Gave {user} {quality} elixirs: {count} kinds, up to {amount} each. See `{prefix}elixirs`.").format(
+            user=user.display_name, quality=lib.QUALITY_NAMES[quality].lower(), count=len(given), amount=amount, prefix=ctx.clean_prefix))
+
+    @elixirs.command(hidden=True, aliases=["clearactive"], brief=_("End active elixirs early (GM)"))
+    @is_gm()
+    async def wearoff(self, ctx, user: discord.User = None):
+        """End your (or someone's) active elixirs now, to test again without waiting 15 minutes."""
+        user = user or ctx.author
+        async with self.bot.pool.acquire() as conn:
+            await self.ensure_tables(conn)
+            ended = await conn.fetchval(
+                "WITH gone AS (UPDATE elixir_active SET expires_at = now() WHERE user_id = $1 AND expires_at > now() RETURNING 1) "
+                "SELECT count(*) FROM gone", user.id)
+        await ctx.send(_("{n} active elixir(s) on {user} wore off.").format(n=ended, user=user.display_name))
 
 
 async def setup(bot):
