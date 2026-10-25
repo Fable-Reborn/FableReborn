@@ -3,6 +3,7 @@ from decimal import Decimal
 from .numbers import to_decimal
 from classes import penitent
 from classes.warrior import warrior_damage_reduction_pct
+from utils import elixirs
 import random
 from typing import List, Dict, Any, Optional, Union
 
@@ -257,6 +258,10 @@ class Combatant:
                 return
             seasonal_save = getattr(battle, "try_seasonal_death_save", None)
             if callable(seasonal_save) and seasonal_save(self):
+                return
+            # Phoenix Pepper (a Library elixir): the last chance.
+            config = getattr(battle, "config", None)
+            if (not isinstance(config, dict) or config.get("elixirs", True)) and elixirs.phoenix_save(self):
                 return
         if self.hp < 0:
             self.hp = Decimal('0')

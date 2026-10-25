@@ -142,3 +142,4 @@ assets/profile_themes/founding-reader-v1.prompt.md
 tests/test_library_pet_story_battles.py
 tests/test_library_pets.py
 tests/test_pet_species_skills.py
+tests/test_elixirs.py

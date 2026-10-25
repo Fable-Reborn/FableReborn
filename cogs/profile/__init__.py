@@ -46,7 +46,7 @@ from cogs.help import chunks
 from cogs.shard_communication import user_on_cooldown as user_cooldown
 from cogs.profilecustomization import ProfileCustomization
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageOps
-from utils import checks, colors, random
+from utils import checks, colors, elixirs, random
 from utils.april_fools import get_pet_display_name, mask_pet_record_for_display
 from utils import misc as rpgtools
 from utils.checks import is_gm
@@ -4960,6 +4960,38 @@ class Profile(commands.Cog):
                     "description": "Consumables, scrolls, and other utility items.",
                     "summary_chunks": self._inventory_chunk_lines(potion_lines),
                     "entries": potion_entries,
+                }
+            )
+
+        # Battle elixirs brewed in the Fables Library ($elixirs to drink them).
+        elixir_lines = []
+        elixir_entries = []
+        for ctype, quantity in sorted(premium_quantities.items()):
+            parsed = elixirs.parse_type(ctype)
+            if not parsed or quantity <= 0:
+                continue
+            name = elixirs.label(*parsed, with_emoji=False)
+            effect = elixirs.effect_text(*parsed)
+            elixir_lines.append(f"{elixirs.emoji(parsed[0])} **{name}** x{quantity}\n{effect}")
+            elixir_entries.append(
+                {
+                    "kind": "elixir",
+                    "entry_key": f"elixir:{ctype}",
+                    "select_label": f"{name} x{quantity}"[:100],
+                    "select_description": effect[:100],
+                    "name": name,
+                    "description": f"{effect}.\nDrink it with `$elixir drink {name.lower()}`: it works for 15 minutes of battle. Trade it with `$trade add elixir`.",
+                    "quantity": quantity,
+                }
+            )
+        if elixir_entries:
+            categories.append(
+                {
+                    "key": "elixirs",
+                    "label": "Elixirs",
+                    "description": "Battle elixirs brewed in the Fables Library. Drink them with $elixir drink.",
+                    "summary_chunks": self._inventory_chunk_lines(elixir_lines),
+                    "entries": elixir_entries,
                 }
             )
 
