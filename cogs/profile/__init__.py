@@ -459,64 +459,83 @@ class ArmoryPaginatorView(discord.ui.View):
         await self.ctx.invoke(self.ctx.bot.get_command("preset"))
 
 
+INVENTORY_HOME = "__home__"
+INVENTORY_PAGE = 25
+
+
+def _inventory_emoji(text):
+    """A select option's emoji from "<:name:id>" or a plain emoji (None when there's none)."""
+    if not text:
+        return None
+    try:
+        return discord.PartialEmoji.from_str(str(text))
+    except Exception:
+        return None
+
+
+def _plural(count: int, word: str) -> str:
+    return f"{count:,} {word}{'' if count == 1 else 's'}"
+
+
 class InventoryCategorySelect(discord.ui.Select):
+    """Row 0: the overview, then each category with how much is in it."""
+
     def __init__(self, inventory_view: "InventoryCategoryView"):
         self.inventory_view = inventory_view
         options = [
             discord.SelectOption(
-                label=category["label"][:100],
-                value=category["key"],
-                description=category["description"][:100],
-                default=category["key"] == inventory_view.selected_key,
+                label="Overview",
+                value=INVENTORY_HOME,
+                description="Everything at a glance",
+                emoji="🎒",
+                default=inventory_view.selected_key == INVENTORY_HOME,
             )
-            for category in inventory_view.categories[:25]
         ]
-        super().__init__(
-            placeholder="Choose an inventory category",
-            min_values=1,
-            max_values=1,
-            options=options,
-            row=0,
-            disabled=len(options) <= 1,
-        )
+        for category in inventory_view.categories[:24]:
+            options.append(
+                discord.SelectOption(
+                    label=category["label"][:100],
+                    value=category["key"],
+                    description=str(category.get("overview") or category["description"])[:100],
+                    emoji=_inventory_emoji(category.get("emoji")),
+                    default=category["key"] == inventory_view.selected_key,
+                )
+            )
+        super().__init__(placeholder="Choose a category", min_values=1, max_values=1, options=options, row=0)
 
     async def callback(self, interaction: discord.Interaction):
-        self.inventory_view.selected_key = self.values[0]
-        self.inventory_view.detail_mode = False
-        self.inventory_view.selected_entry_key = None
-        self.inventory_view.item_page = 0
-        self.inventory_view.sync_controls()
-        await interaction.response.edit_message(
-            embed=self.inventory_view.build_embed(),
-            view=self.inventory_view,
-        )
+        view = self.inventory_view
+        view.selected_key = self.values[0]
+        view.detail_mode = False
+        view.selected_entry_key = None
+        view.item_page = 0
+        view.confirm = None
+        view.sync_controls()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
 
 class InventoryEntrySelect(discord.ui.Select):
+    """Row 1: the items on this page of the category, to open one up."""
+
     def __init__(self, inventory_view: "InventoryCategoryView"):
         self.inventory_view = inventory_view
+        category = inventory_view.selected_category()
         entries = inventory_view.visible_entries()
         options = [
             discord.SelectOption(
                 label=entry["select_label"][:100],
                 value=entry["entry_key"],
-                description=str(entry.get("select_description") or "")[:100],
+                description=str(entry.get("select_description") or "")[:100] or None,
+                emoji=_inventory_emoji(entry.get("emoji") or (category or {}).get("emoji")),
                 default=entry["entry_key"] == inventory_view.selected_entry_key,
             )
-            for entry in entries[:25]
+            for entry in entries[:INVENTORY_PAGE]
         ]
         super().__init__(
-            placeholder="Inspect a specific item",
+            placeholder="Open an item",
             min_values=1,
             max_values=1,
-            options=options or [
-                discord.SelectOption(
-                    label="No items on this page",
-                    value="__none__",
-                    description="Switch category or page.",
-                    default=True,
-                )
-            ],
+            options=options or [discord.SelectOption(label="Nothing here", value="__none__", default=True)],
             row=1,
             disabled=not entries,
         )
@@ -524,14 +543,12 @@ class InventoryEntrySelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "__none__":
             return await interaction.response.defer()
-        self.inventory_view.selected_entry_key = self.values[0]
-        self.inventory_view.detail_mode = True
-        self.inventory_view.sync_controls()
-        await interaction.response.edit_message(
-            embed=self.inventory_view.build_embed(),
-            view=self.inventory_view,
-        )
-
+        view = self.inventory_view
+        view.selected_entry_key = self.values[0]
+        view.detail_mode = True
+        view.confirm = None
+        view.sync_controls()
+        await interaction.response.edit_message(embed=view.build_embed(), view=view)
 
 class InventoryTargetConsumeModal(discord.ui.Modal):
     def __init__(self, inventory_view: "InventoryCategoryView", entry: dict):
@@ -579,15 +596,20 @@ class InventoryTargetConsumeModal(discord.ui.Modal):
 
 
 class InventoryCategoryView(discord.ui.View):
+    """$inventory: an overview, a page per category, and each item up close with the actions that fit it
+    (equip and recycle amulets, use potions, drink elixirs). Recycling and drinking ask first."""
+
     def __init__(self, ctx: commands.Context, cog: "Profile", categories: list[dict], timeout: float = 180.0):
         super().__init__(timeout=timeout)
         self.ctx = ctx
         self.cog = cog
         self.categories = categories
-        self.selected_key = categories[0]["key"] if categories else None
+        self.selected_key = INVENTORY_HOME
         self.selected_entry_key: str | None = None
         self.detail_mode = False
         self.item_page = 0
+        self.confirm: dict | None = None      # {"action": "drink" | "recycle", "entry_key": ...} while asking
+        self.message = None
         self.sync_controls()
 
     def _is_allowed_user(self, user_id: int) -> bool:
@@ -597,109 +619,22 @@ class InventoryCategoryView(discord.ui.View):
             allowed_user_ids.add(int(alt_invoker_id))
         return int(user_id) in allowed_user_ids
 
-    def sync_controls(self):
-        self.clear_items()
-        if self.categories:
-            self.add_item(InventoryCategorySelect(self))
-        category = self.selected_category()
-        if category and category.get("entries"):
-            self.add_item(InventoryEntrySelect(self))
-
-        entries = category.get("entries", []) if category else []
-        if len(entries) > 25:
-            prev_page = discord.ui.Button(
-                label="Prev Items",
-                style=discord.ButtonStyle.secondary,
-                row=2,
-                disabled=self.item_page == 0,
-            )
-            prev_page.callback = self.prev_item_page
-            self.add_item(prev_page)
-
-            next_page = discord.ui.Button(
-                label="Next Items",
-                style=discord.ButtonStyle.secondary,
-                row=2,
-                disabled=((self.item_page + 1) * 25) >= len(entries),
-            )
-            next_page.callback = self.next_item_page
-            self.add_item(next_page)
-
-        back_button = discord.ui.Button(
-            label="Back",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-            disabled=not self.detail_mode,
-        )
-        back_button.callback = self.back_to_list
-        self.add_item(back_button)
-
-        selected_entry = self.selected_entry()
-        if self.detail_mode and selected_entry and selected_entry["kind"] == "amulet":
-            equip_button = discord.ui.Button(
-                label="Unequip" if selected_entry.get("equipped") else "Equip",
-                style=(
-                    discord.ButtonStyle.secondary
-                    if selected_entry.get("equipped")
-                    else discord.ButtonStyle.green
-                ),
-                row=3,
-            )
-            equip_button.callback = (
-                self.unequip_selected_amulet
-                if selected_entry.get("equipped")
-                else self.equip_selected_amulet
-            )
-            self.add_item(equip_button)
-            recycle_button = discord.ui.Button(
-                label="Recycle",
-                style=discord.ButtonStyle.danger,
-                row=3,
-                disabled=not bool(selected_entry.get("recycle_enabled")),
-            )
-            recycle_button.callback = self.recycle_selected_amulet
-            self.add_item(recycle_button)
-        elif self.detail_mode and selected_entry and selected_entry["kind"] == "potion":
-            consume_button = discord.ui.Button(
-                label="Consume",
-                style=discord.ButtonStyle.green,
-                row=3,
-                disabled=not bool(selected_entry.get("button_enabled")),
-            )
-            consume_button.callback = self.consume_selected_potion
-            self.add_item(consume_button)
-
-        refresh_button = discord.ui.Button(
-            label="Refresh",
-            style=discord.ButtonStyle.secondary,
-            row=3,
-        )
-        refresh_button.callback = self.refresh_inventory
-        self.add_item(refresh_button)
-
-        armory_button = discord.ui.Button(label="Armory", style=discord.ButtonStyle.primary, row=4)
-        armory_button.callback = self.open_armory
-        self.add_item(armory_button)
-        loadouts_button = discord.ui.Button(label="Loadouts", style=discord.ButtonStyle.primary, row=4)
-        loadouts_button.callback = self.open_loadouts
-        self.add_item(loadouts_button)
-        close_button = discord.ui.Button(label="Close", style=discord.ButtonStyle.danger, row=4)
-        close_button.callback = self.close_inventory
-        self.add_item(close_button)
+    # ---- what's selected -------------------------------------------------------------------------
 
     def selected_category(self) -> dict | None:
+        if self.selected_key == INVENTORY_HOME:
+            return None
         for category in self.categories:
             if category["key"] == self.selected_key:
                 return category
-        return self.categories[0] if self.categories else None
+        return None
 
     def visible_entries(self) -> list[dict]:
         category = self.selected_category()
         if not category:
             return []
-        start = self.item_page * 25
-        end = start + 25
-        return list(category.get("entries", []))[start:end]
+        start = self.item_page * INVENTORY_PAGE
+        return list(category.get("entries", []))[start:start + INVENTORY_PAGE]
 
     def selected_entry(self) -> dict | None:
         category = self.selected_category()
@@ -710,271 +645,322 @@ class InventoryCategoryView(discord.ui.View):
                 return entry
         return None
 
-    async def reload_categories(self):
-        self.categories = await self.cog._fetch_inventory_categories(self.ctx.author.id)
-        category_keys = {category["key"] for category in self.categories}
-        if self.selected_key not in category_keys:
-            self.selected_key = self.categories[0]["key"] if self.categories else None
-            self.item_page = 0
-            self.detail_mode = False
-            self.selected_entry_key = None
+    def working_elixirs(self) -> list[dict]:
+        for category in self.categories:
+            if category["key"] == "elixirs":
+                return list(category.get("working", []))
+        return []
+
+    def drink_problem(self, entry: dict) -> str | None:
+        """Why an elixir can't be drunk right now (None when it can)."""
+        working = self.working_elixirs()
+        same = next((w for w in working if w["elixir"] == entry["elixir_id"]), None)
+        if same:
+            return f"{elixirs.label(same['elixir'], same['quality'], with_emoji=False)} is already working (ends <t:{int(same['expires_at'].timestamp())}:R>)."
+        if len(working) >= elixirs.ACTIVE_MAX:
+            return f"{elixirs.ACTIVE_MAX} elixirs are already working. Wait for one to wear off."
+        if int(entry.get("quantity") or 0) < 1:
+            return "You don't have any left."
+        return None
+
+    # ---- buttons ------------------------------------------------------------------------------
+
+    def _button(self, label, style, callback, row, *, disabled=False, emoji=None):
+        button = discord.ui.Button(label=label, style=style, row=row, disabled=disabled, emoji=emoji)
+        button.callback = callback
+        self.add_item(button)
+
+    def sync_controls(self):
+        self.clear_items()
+        self.add_item(InventoryCategorySelect(self))
         category = self.selected_category()
-        category_entries = category.get("entries", []) if category else []
-        max_page = max(0, (len(category_entries) - 1) // 25) if category_entries else 0
-        if self.item_page > max_page:
-            self.item_page = max_page
-        if self.selected_entry_key and not any(entry["entry_key"] == self.selected_entry_key for entry in category_entries):
-            self.selected_entry_key = None
-            self.detail_mode = False
+        entries = category.get("entries", []) if category else []
+        entry = self.selected_entry() if self.detail_mode else None
+
+        if self.confirm and entry:
+            # Asking first: only the answer buttons.
+            if self.confirm["action"] == "drink":
+                self._button("Drink it", discord.ButtonStyle.success, self.confirm_action, 1, emoji="🧪")
+            else:
+                self._button("Recycle it", discord.ButtonStyle.danger, self.confirm_action, 1, emoji="♻️")
+            self._button("Cancel", discord.ButtonStyle.secondary, self.cancel_action, 1)
+            return
+
+        if entries:
+            self.add_item(InventoryEntrySelect(self))
+        if len(entries) > INVENTORY_PAGE:
+            self._button("◀ Items", discord.ButtonStyle.secondary, self.prev_item_page, 2, disabled=self.item_page == 0)
+            self._button("Items ▶", discord.ButtonStyle.secondary, self.next_item_page, 2,
+                         disabled=(self.item_page + 1) * INVENTORY_PAGE >= len(entries))
+
+        if entry:
+            kind = entry["kind"]
+            if kind == "amulet":
+                if entry.get("equipped"):
+                    self._button("Unequip", discord.ButtonStyle.secondary, self.unequip_selected_amulet, 3)
+                else:
+                    self._button("Equip", discord.ButtonStyle.success, self.equip_selected_amulet, 3)
+                self._button("Recycle", discord.ButtonStyle.danger, self.ask_recycle, 3,
+                             disabled=not entry.get("recycle_enabled"))
+            elif kind == "potion":
+                self._button("Use", discord.ButtonStyle.success, self.consume_selected_potion, 3,
+                             disabled=not entry.get("button_enabled"))
+            elif kind == "elixir":
+                self._button("Drink", discord.ButtonStyle.success, self.ask_drink, 3,
+                             disabled=self.drink_problem(entry) is not None, emoji="🧪")
+            self._button("Back", discord.ButtonStyle.secondary, self.back_to_list, 3)
+
+        self._button("Refresh", discord.ButtonStyle.secondary, self.refresh_inventory, 4, emoji="🔄")
+        self._button("Armory", discord.ButtonStyle.primary, self.open_armory, 4)
+        self._button("Loadouts", discord.ButtonStyle.primary, self.open_loadouts, 4)
+        self._button("Close", discord.ButtonStyle.danger, self.close_inventory, 4)
+
+    # ---- pages ----------------------------------------------------------------------------------
 
     def build_embed(self) -> discord.Embed:
         category = self.selected_category()
-        if self.detail_mode:
-            entry = self.selected_entry()
-            if entry is not None:
-                return self.build_detail_embed(category, entry)
+        if category is None:
+            return self.build_home_embed()
+        entry = self.selected_entry() if self.detail_mode else None
+        if entry is not None:
+            if self.confirm:
+                return self.build_confirm_embed(entry)
+            return self.build_detail_embed(category, entry)
         return self.build_list_embed(category)
 
-    def build_list_embed(self, category: dict | None) -> discord.Embed:
-        embed = discord.Embed(
-            title=_("{user}'s Inventory").format(user=self.ctx.author.display_name),
-            colour=discord.Colour.blurple(),
-            description=(
-                "Weapons have moved to `$armory` with aliases `$ar` and `$arm`.\n"
-                "Choose a category, then inspect a specific item from the dropdown."
-            ),
-        )
+    def _base(self, title: str, colour: discord.Colour, description: str | None = None) -> discord.Embed:
+        embed = discord.Embed(title=title, colour=colour, description=description)
+        embed.set_author(name=f"{self.ctx.author.display_name}'s inventory", icon_url=self.ctx.author.display_avatar.url)
+        return embed
 
-        if not category:
-            embed.add_field(name="Inventory", value="Your inventory is empty.", inline=False)
+    def _working_lines(self) -> list[str]:
+        return [
+            f"{elixirs.label(w['elixir'], w['quality'])}: {elixirs.effect_text(w['elixir'], w['quality'])} · ends <t:{int(w['expires_at'].timestamp())}:R>"
+            for w in self.working_elixirs()
+        ]
+
+    def build_home_embed(self) -> discord.Embed:
+        embed = self._base("🎒 Inventory", discord.Colour.blurple(),
+                           "Pick a category below. Weapons and armour are in `$armory`.")
+        if not self.categories:
+            embed.add_field(name="Empty", value="Nothing in your bags yet.", inline=False)
             return embed
-
         embed.add_field(
-            name="Category",
-            value=f"**{category['label']}**\n{category['description']}",
+            name="Your bags",
+            value="\n".join(f"{c.get('emoji', '📦')} **{c['label']}** · {c.get('overview') or c['description']}" for c in self.categories),
             inline=False,
         )
-        summary_chunks = category.get("summary_chunks", [])
-        if not summary_chunks:
+        working = self._working_lines()
+        if working:
+            embed.add_field(name=f"⚗️ Working now ({len(working)} of {elixirs.ACTIVE_MAX})", value="\n".join(working), inline=False)
+        return embed
+
+    def build_list_embed(self, category: dict) -> discord.Embed:
+        embed = self._base(f"{category.get('emoji', '📦')} {category['label']}", discord.Colour.blurple(), category["description"])
+        if category["key"] == "elixirs":
+            working = self._working_lines()
             embed.add_field(
-                name=category["label"],
-                value="No items in this category.",
+                name=f"Working now ({len(working)} of {elixirs.ACTIVE_MAX})",
+                value="\n".join(working) if working else "Nothing yet. Open an elixir below to drink it.",
                 inline=False,
             )
-        else:
-            for index, chunk in enumerate(summary_chunks, start=1):
-                suffix = "" if len(summary_chunks) == 1 else f" ({index})"
-                embed.add_field(
-                    name=f"{category['label']}{suffix}",
-                    value=chunk,
-                    inline=False,
-                )
-        entry_count = len(category.get("entries", []))
-        if entry_count:
-            embed.add_field(
-                name="Inspect",
-                value="Use the item dropdown below to open a detailed item view.",
-                inline=False,
-            )
-        if entry_count:
-            page_total = max(1, math.ceil(entry_count / 25))
-            embed.set_footer(
-                text=(
-                    f"Category {self.categories.index(category) + 1}/{len(self.categories)}"
-                    f" • Items page {self.item_page + 1}/{page_total}"
-                )
-            )
-        else:
-            embed.set_footer(
-                text=f"Category {self.categories.index(category) + 1}/{len(self.categories)}"
-            )
+        chunks = category.get("summary_chunks", [])
+        if not chunks:
+            embed.add_field(name="​", value="Nothing in here.", inline=False)
+        for chunk in chunks[:5]:
+            embed.add_field(name="​", value=chunk, inline=False)
+        entries = category.get("entries", [])
+        if entries:
+            pages = max(1, math.ceil(len(entries) / INVENTORY_PAGE))
+            embed.set_footer(text=f"Open an item below to see it up close" + (f" · page {self.item_page + 1}/{pages}" if pages > 1 else ""))
         return embed
 
     def build_detail_embed(self, category: dict, entry: dict) -> discord.Embed:
-        if entry["kind"] == "amulet":
-            status = "Equipped" if entry.get("equipped") else "Stored"
-            embed = discord.Embed(
-                title=entry["name"],
-                description=f"{status} • ID `{entry['amulet_id']}`",
-                colour=discord.Colour.gold(),
-            )
-            embed.add_field(name="Tier", value=str(entry["tier"]), inline=True)
-            embed.add_field(name="Type", value=str(entry["amulet_type"]).upper(), inline=True)
-            embed.add_field(name="Value", value=f"${int(entry['value']):,}", inline=True)
-            embed.add_field(
-                name="Stats",
-                value=(
-                    f"❤️ HP +{int(entry['hp'])}\n"
-                    f"⚔️ ATK +{int(entry['attack'])}\n"
-                    f"🛡️ DEF +{int(entry['defense'])}"
-                ),
-                inline=False,
-            )
-            embed.add_field(
-                name="Recycle Refund",
-                value=entry.get("refund_preview") or "This amulet cannot be recycled right now.",
-                inline=False,
-            )
-            embed.add_field(
-                name="Recycle Cooldown",
-                value="`3 minutes` between recycles.",
-                inline=False,
-            )
-            embed.set_footer(text="Use Equip or Recycle, or Back to return to inventory.")
+        kind = entry["kind"]
+        if kind == "amulet":
+            status = "🟢 Equipped" if entry.get("equipped") else "Stored"
+            embed = self._base(entry["name"], discord.Colour.gold(), f"{status} · ID `{entry['amulet_id']}`")
+            embed.add_field(name="Stats", value=(
+                f"❤️ HP +{int(entry['hp']):,}\n⚔️ ATK +{int(entry['attack']):,}\n🛡️ DEF +{int(entry['defense']):,}"), inline=True)
+            embed.add_field(name="Details", value=(
+                f"Tier **{entry['tier']}** · {str(entry['amulet_type']).title()}\nValue **${int(entry['value']):,}**"), inline=True)
+            embed.add_field(name="Recycling gives", value=entry.get("refund_preview") or "Can't be recycled right now.", inline=False)
+            embed.set_footer(text="Recycling has a 3 minute cooldown.")
             return embed
 
-        if entry["kind"] == "potion":
-            embed = discord.Embed(
-                title=entry["name"],
-                description=entry["description"],
-                colour=discord.Colour.purple(),
-            )
-            embed.add_field(name="You Have", value=f"x{int(entry['quantity'])}", inline=True)
-            embed.add_field(name="Consume Command", value=f"`$consume {entry['usage_command']}`", inline=True)
-            embed.add_field(
-                name="Action",
-                value=entry.get("action_text") or "Use Consume to activate this item.",
-                inline=False,
-            )
+        if kind == "potion":
+            embed = self._base(entry["name"], discord.Colour.purple(), entry["description"])
+            embed.add_field(name="You have", value=f"×{int(entry['quantity']):,}", inline=True)
+            embed.add_field(name="Command", value=f"`$consume {entry['usage_command']}`", inline=True)
+            embed.add_field(name="Using it", value=entry.get("action_text") or "Press Use.", inline=False)
             if entry.get("button_note"):
-                embed.add_field(name="Consume Button", value=entry["button_note"], inline=False)
-            embed.set_footer(text="Use Consume or Back to return to inventory.")
+                embed.add_field(name="Note", value=entry["button_note"], inline=False)
             return embed
 
-        if entry["kind"] == "key_item":
-            quantity_text = f"x{int(entry['quantity'])}"
-            embed = discord.Embed(
-                title=entry["name"],
-                description=entry["description"],
-                colour=discord.Colour.dark_teal(),
-            )
-            embed.add_field(name="Quantity", value=quantity_text, inline=True)
-            embed.add_field(name="Type", value="Key Item", inline=True)
+        if kind == "elixir":
+            elixir_id, quality = entry["elixir_id"], entry["quality"]
+            embed = self._base(entry["name"], discord.Colour.green(),
+                               f"{elixirs.emoji(elixir_id)} **{elixirs.effect_text(elixir_id, quality)}**")
+            embed.add_field(name="You have", value=f"×{int(entry['quantity'])} of {elixirs.STACK}", inline=True)
+            embed.add_field(name="Lasts", value=f"{elixirs.ACTIVE_MINUTES // 60} hours, every battle", inline=True)
+            embed.add_field(name="Strength", value=" · ".join(
+                f"{'**' if q == quality else ''}{elixirs.QUALITY_NAMES[q]} {elixirs._num(elixirs.ELIXIRS[elixir_id]['values'][q])}%{'**' if q == quality else ''}"
+                for q in range(3)), inline=False)
+            problem = self.drink_problem(entry)
+            embed.add_field(name="Status", value=problem or "Ready to drink.", inline=False)
+            embed.set_footer(text="Trade with $trade add elixir · sell on $elixir market")
+            return embed
+
+        if kind == "key_item":
+            embed = self._base(entry["name"], discord.Colour.dark_teal(), entry["description"])
+            embed.add_field(name="Quantity", value=f"×{int(entry['quantity'])}", inline=True)
             embed.add_field(name="Quest", value=entry.get("quest_name") or "Unknown", inline=True)
+            embed.set_footer(text="Quest items can't be traded, sold or used outside their quest.")
+            return embed
+
+        return self._base(entry.get("name", category["label"]), discord.Colour.blurple(), entry.get("description", ""))
+
+    def build_confirm_embed(self, entry: dict) -> discord.Embed:
+        if self.confirm["action"] == "drink":
+            elixir_id, quality = entry["elixir_id"], entry["quality"]
+            working = self.working_elixirs()
+            embed = self._base(f"Drink {entry['name']}?", discord.Colour.green(), (
+                f"{elixirs.emoji(elixir_id)} **{elixirs.effect_text(elixir_id, quality)}**\n"
+                f"It works in every battle, PvE and PvP, for **{elixirs.ACTIVE_MINUTES // 60} hours** from now "
+                f"(until <t:{int(discord.utils.utcnow().timestamp()) + elixirs.ACTIVE_MINUTES * 60}:t>)."))
             embed.add_field(
-                name="Restrictions",
-                value="Cannot be traded, sold, discarded, or consumed outside quest turn-in.",
+                name=f"After this: {len(working) + 1} of {elixirs.ACTIVE_MAX} working",
+                value="\n".join(self._working_lines()) or "This will be your only one.",
                 inline=False,
             )
-            embed.set_footer(text="Use Back to return to inventory.")
+            embed.set_footer(text="Once it's drunk it can't be undone.")
             return embed
-
-        embed = discord.Embed(
-            title=entry.get("name", category["label"]),
-            description=entry.get("description", "No additional details."),
-            colour=discord.Colour.blurple(),
-        )
-        embed.set_footer(text="Use Back to return to inventory.")
+        embed = self._base(f"Recycle {entry['name']}?", discord.Colour.red(), "The amulet is destroyed.")
+        embed.add_field(name="You get", value=entry.get("refund_preview") or "Nothing.", inline=False)
+        embed.set_footer(text="Once it's recycled it can't be undone.")
         return embed
 
-    async def prev_item_page(self, interaction: discord.Interaction):
-        if self.item_page > 0:
-            self.item_page -= 1
-        self.detail_mode = False
-        self.selected_entry_key = None
+    # ---- navigation -----------------------------------------------------------------------------
+
+    async def _redraw(self, interaction: discord.Interaction):
         self.sync_controls()
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    async def prev_item_page(self, interaction: discord.Interaction):
+        self.item_page = max(0, self.item_page - 1)
+        self.detail_mode, self.selected_entry_key = False, None
+        await self._redraw(interaction)
 
     async def next_item_page(self, interaction: discord.Interaction):
         category = self.selected_category()
-        total_entries = len(category.get("entries", [])) if category else 0
-        if ((self.item_page + 1) * 25) < total_entries:
+        if category and (self.item_page + 1) * INVENTORY_PAGE < len(category.get("entries", [])):
             self.item_page += 1
-        self.detail_mode = False
-        self.selected_entry_key = None
-        self.sync_controls()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self.detail_mode, self.selected_entry_key = False, None
+        await self._redraw(interaction)
 
     async def back_to_list(self, interaction: discord.Interaction):
-        self.detail_mode = False
-        self.sync_controls()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        self.detail_mode, self.confirm = False, None
+        await self._redraw(interaction)
 
     async def refresh_inventory(self, interaction: discord.Interaction):
         await self.reload_categories()
-        self.sync_controls()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        await self._redraw(interaction)
+
+    async def reload_categories(self):
+        self.categories = await self.cog._fetch_inventory_categories(self.ctx.author.id)
+        if self.selected_key != INVENTORY_HOME and self.selected_category() is None:
+            self.selected_key, self.item_page, self.detail_mode, self.selected_entry_key = INVENTORY_HOME, 0, False, None
+        category = self.selected_category()
+        entries = category.get("entries", []) if category else []
+        self.item_page = min(self.item_page, max(0, (len(entries) - 1) // INVENTORY_PAGE))
+        if self.selected_entry_key and not any(e["entry_key"] == self.selected_entry_key for e in entries):
+            self.selected_entry_key, self.detail_mode = None, False
 
     def _restore_selected_entry(self, entry_key: str | None):
-        if not entry_key:
-            self.detail_mode = False
-            self.selected_entry_key = None
-            return
         category = self.selected_category()
-        if category and any(entry["entry_key"] == entry_key for entry in category.get("entries", [])):
-            self.detail_mode = True
-            self.selected_entry_key = entry_key
+        if entry_key and category and any(e["entry_key"] == entry_key for e in category.get("entries", [])):
+            self.detail_mode, self.selected_entry_key = True, entry_key
         else:
-            self.detail_mode = False
-            self.selected_entry_key = None
+            self.detail_mode, self.selected_entry_key = False, None
+
+    async def _after_action(self, interaction: discord.Interaction, entry_key: str | None, message: str | None):
+        """Reload, stay on the item if it's still there, and tell the player how it went (only they see it)."""
+        await self.reload_categories()
+        self._restore_selected_entry(entry_key)
+        self.sync_controls()
+        if interaction.message:
+            await interaction.message.edit(embed=self.build_embed(), view=self)
+        if message:
+            await interaction.followup.send(message, ephemeral=True)
+
+    # ---- actions ----------------------------------------------------------------------------------
+
+    async def ask_drink(self, interaction: discord.Interaction):
+        entry = self.selected_entry()
+        if not entry or entry["kind"] != "elixir":
+            return await interaction.response.send_message("Open an elixir first.", ephemeral=True)
+        problem = self.drink_problem(entry)
+        if problem:
+            return await interaction.response.send_message(problem, ephemeral=True)
+        self.confirm = {"action": "drink", "entry_key": entry["entry_key"]}
+        await self._redraw(interaction)
+
+    async def ask_recycle(self, interaction: discord.Interaction):
+        entry = self.selected_entry()
+        if not entry or entry["kind"] != "amulet":
+            return await interaction.response.send_message("Open an amulet first.", ephemeral=True)
+        if not entry.get("recycle_enabled"):
+            return await interaction.response.send_message("This amulet can't be recycled right now.", ephemeral=True)
+        self.confirm = {"action": "recycle", "entry_key": entry["entry_key"]}
+        await self._redraw(interaction)
+
+    async def cancel_action(self, interaction: discord.Interaction):
+        self.confirm = None
+        await self._redraw(interaction)
+
+    async def confirm_action(self, interaction: discord.Interaction):
+        action, self.confirm = self.confirm, None
+        entry = self.selected_entry()
+        if not action or not entry or entry["entry_key"] != action["entry_key"]:
+            return await self._redraw(interaction)
+        await interaction.response.defer(ephemeral=True)
+        if action["action"] == "drink":
+            elixir_cog = self.ctx.bot.get_cog("Elixirs")
+            if elixir_cog is None:
+                message = "Elixirs are unavailable right now."
+            else:
+                _ok, message = await elixir_cog.drink_elixir(self.ctx.author.id, entry["elixir_id"], entry["quality"])
+        else:
+            _ok, message = await self.cog._recycle_inventory_amulet(self.ctx.author.id, int(entry["amulet_id"]))
+        await self._after_action(interaction, entry["entry_key"], message)
 
     async def equip_selected_amulet(self, interaction: discord.Interaction):
         entry = self.selected_entry()
         if not entry or entry["kind"] != "amulet":
-            return await interaction.response.send_message("Select an amulet first.", ephemeral=True)
+            return await interaction.response.send_message("Open an amulet first.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
         message = await self.cog._equip_inventory_amulet(self.ctx.author.id, int(entry["amulet_id"]))
-        await self.reload_categories()
-        self._restore_selected_entry(entry["entry_key"])
-        self.sync_controls()
-        if hasattr(interaction, "message") and interaction.message:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
-        await interaction.followup.send(message, ephemeral=True)
+        await self._after_action(interaction, entry["entry_key"], message)
 
     async def unequip_selected_amulet(self, interaction: discord.Interaction):
         entry = self.selected_entry()
         if not entry or entry["kind"] != "amulet":
-            return await interaction.response.send_message("Select an amulet first.", ephemeral=True)
+            return await interaction.response.send_message("Open an amulet first.", ephemeral=True)
         await interaction.response.defer(ephemeral=True)
-        message = await self.cog._unequip_inventory_amulet(
-            self.ctx.author.id,
-            int(entry["amulet_id"]),
-        )
-        await self.reload_categories()
-        self._restore_selected_entry(entry["entry_key"])
-        self.sync_controls()
-        if interaction.message:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
-        await interaction.followup.send(message, ephemeral=True)
-
-    async def recycle_selected_amulet(self, interaction: discord.Interaction):
-        entry = self.selected_entry()
-        if not entry or entry["kind"] != "amulet":
-            return await interaction.response.send_message("Select an amulet first.", ephemeral=True)
-        if not entry.get("recycle_enabled"):
-            return await interaction.response.send_message(
-                "This amulet cannot be recycled right now.",
-                ephemeral=True,
-            )
-        await interaction.response.defer(ephemeral=True)
-        success, message = await self.cog._recycle_inventory_amulet(
-            self.ctx.author.id,
-            int(entry["amulet_id"]),
-        )
-        await self.reload_categories()
-        self._restore_selected_entry(entry["entry_key"])
-        self.sync_controls()
-        if hasattr(interaction, "message") and interaction.message:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
-        await interaction.followup.send(message, ephemeral=True)
+        message = await self.cog._unequip_inventory_amulet(self.ctx.author.id, int(entry["amulet_id"]))
+        await self._after_action(interaction, entry["entry_key"], message)
 
     async def consume_selected_potion(self, interaction: discord.Interaction):
         entry = self.selected_entry()
         if not entry or entry["kind"] != "potion":
-            return await interaction.response.send_message("Select a potion first.", ephemeral=True)
+            return await interaction.response.send_message("Open a potion first.", ephemeral=True)
         if not entry.get("button_enabled"):
-            return await interaction.response.send_message(entry.get("button_note") or "This potion cannot be consumed from here.", ephemeral=True)
+            return await interaction.response.send_message(entry.get("button_note") or "This can't be used from here.", ephemeral=True)
         if entry.get("requires_target"):
             return await interaction.response.send_modal(InventoryTargetConsumeModal(self, entry))
         await interaction.response.defer(ephemeral=True)
-        ok, message = await self.cog._invoke_consume_from_inventory(self.ctx, str(entry["consume_key"]))
-        await self.reload_categories()
-        self._restore_selected_entry(entry["entry_key"])
-        self.sync_controls()
-        if hasattr(interaction, "message") and interaction.message:
-            await interaction.message.edit(embed=self.build_embed(), view=self)
-        if message:
-            await interaction.followup.send(message, ephemeral=True)
+        _ok, message = await self.cog._invoke_consume_from_inventory(self.ctx, str(entry["consume_key"]))
+        await self._after_action(interaction, entry["entry_key"], message)
 
     async def open_armory(self, interaction: discord.Interaction):
         command = self.ctx.bot.get_command("armory")
@@ -994,12 +980,16 @@ class InventoryCategoryView(discord.ui.View):
         await interaction.response.edit_message(view=None)
         self.stop()
 
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message(
-                "This inventory view is not for you.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message("This inventory isn't yours.", ephemeral=True)
             return False
         return True
 
@@ -4718,6 +4708,7 @@ class Profile(commands.Cog):
         premium_consumables,
         god_shards,
         key_items,
+        active_elixirs=None,
     ) -> list[dict]:
         categories = []
         profile_data = dict(profile_row) if profile_row else {}
@@ -4972,26 +4963,31 @@ class Profile(commands.Cog):
                 continue
             name = elixirs.label(*parsed, with_emoji=False)
             effect = elixirs.effect_text(*parsed)
-            elixir_lines.append(f"{elixirs.emoji(parsed[0])} **{name}** x{quantity}\n{effect}")
+            elixir_lines.append(f"{elixirs.emoji(parsed[0])} **{name}** ×{quantity} · {effect}")
             elixir_entries.append(
                 {
                     "kind": "elixir",
                     "entry_key": f"elixir:{ctype}",
-                    "select_label": f"{name} x{quantity}"[:100],
+                    "select_label": f"{name} ×{quantity}"[:100],
                     "select_description": effect[:100],
                     "name": name,
-                    "description": f"{effect}.\nDrink it with `$elixir drink {name.lower()}`: it works in every battle for 2 hours. Trade it with `$trade add elixir`.",
+                    "emoji": elixirs.emoji(parsed[0]),
+                    "elixir_id": parsed[0],
+                    "quality": parsed[1],
+                    "description": effect,
                     "quantity": quantity,
                 }
             )
-        if elixir_entries:
+        working = [dict(row) for row in (active_elixirs or [])]
+        if elixir_entries or working:
             categories.append(
                 {
                     "key": "elixirs",
                     "label": "Elixirs",
-                    "description": "Battle elixirs brewed in the Fables Library. Drink them with $elixir drink.",
+                    "description": "Battle elixirs brewed in the Fables Library: each lasts 2 hours, two at once.",
                     "summary_chunks": self._inventory_chunk_lines(elixir_lines),
                     "entries": elixir_entries,
+                    "working": working,
                 }
             )
 
@@ -5057,8 +5053,28 @@ class Profile(commands.Cog):
                     "description": "Your collected PvE god shards and current set progress.",
                     "summary_chunks": self._inventory_chunk_lines(shard_lines),
                     "entries": [],
+                    "count": len(god_shards),
                 }
             )
+
+        # An icon and a one-line count for each, for the overview and the category menu.
+        icons = {"amulets": "📿", "potions": "🧪", "elixirs": "⚗️", "key_items": "🗝️", "divine_shards": "✨"}
+
+        def plural(count, word):
+            return f"{count:,} {word}{'' if count == 1 else 's'}"
+
+        for category in categories:
+            entries = category.get("entries", [])
+            category.setdefault("emoji", icons.get(category["key"], "📦"))
+            if category["key"] == "amulets":
+                overview = f"{plural(len(entries), 'amulet')} · {sum(1 for e in entries if e.get('equipped'))} equipped"
+            elif category["key"] == "elixirs":
+                overview = f"{plural(sum(int(e['quantity']) for e in entries), 'bottle')} · {len(category.get('working', []))} working"
+            elif category["key"] == "divine_shards":
+                overview = plural(int(category.get("count") or 0), "shard")
+            else:
+                overview = plural(sum(int(e.get("quantity") or 1) for e in entries), "item")
+            category["overview"] = overview
 
         return categories
 
@@ -5124,12 +5140,17 @@ class Profile(commands.Cog):
             else:
                 key_items = []
 
+            try:
+                active_elixirs = await elixirs.active(conn, user_id)
+            except Exception:
+                active_elixirs = []
             return self._build_inventory_categories(
                 amulets,
                 profile_row,
                 premium_consumables,
                 god_shards,
                 key_items,
+                active_elixirs,
             )
         finally:
             if local:
@@ -5325,7 +5346,7 @@ class Profile(commands.Cog):
                 return await ctx.send(_("Your inventory is empty."))
 
             view = InventoryCategoryView(ctx, self, categories)
-            await ctx.send(embed=view.build_embed(), view=view)
+            view.message = await ctx.send(embed=view.build_embed(), view=view)
 
         except Exception as e:
             import traceback

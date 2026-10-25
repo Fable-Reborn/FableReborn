@@ -218,26 +218,34 @@ class Elixirs(commands.Cog):
             if not picked:
                 return
             elixir_id, quality = picked
-            ctype = lib.type_for(elixir_id, quality)
+        ok, message = await self.drink_elixir(ctx.author.id, elixir_id, quality)
+        await ctx.send(message)
+
+    async def drink_elixir(self, user_id: int, elixir_id: str, quality: int) -> tuple[bool, str]:
+        """Drinks one elixir from a player's shelf (the command and $inventory's Drink button).
+        Returns (whether it was drunk, what to tell them)."""
+        ctype = lib.type_for(elixir_id, quality)
+        async with self.bot.pool.acquire() as conn:
+            await self.ensure_tables(conn)
             async with conn.transaction():
-                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"elixir_active:{ctx.author.id}")
-                working = await lib.active(conn, ctx.author.id)
+                await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", f"elixir_active:{user_id}")
+                working = await lib.active(conn, user_id)
                 same = next((r for r in working if r["elixir"] == elixir_id), None)
                 if same:
-                    return await ctx.send(_("{name} is already working for you (ends <t:{t}:R>). Two of the same never stack.").format(
-                        name=lib.label(same["elixir"], same["quality"]), t=_unix(same["expires_at"])))
+                    return False, _("{name} is already working for you (ends <t:{t}:R>). Two of the same never stack.").format(
+                        name=lib.label(same["elixir"], same["quality"]), t=_unix(same["expires_at"]))
                 if len(working) >= lib.ACTIVE_MAX:
                     ends = ", ".join(f"{lib.label(r['elixir'], r['quality'])} (ends <t:{_unix(r['expires_at'])}:R>)" for r in working)
-                    return await ctx.send(_("Two elixirs are already working: {ends}. Wait for one to wear off.").format(ends=ends))
-                if not await self.take(conn, ctx.author.id, ctype, 1):
-                    return await ctx.send(_("You don't have a {name}.").format(name=lib.label(elixir_id, quality, with_emoji=False)))
+                    return False, _("Two elixirs are already working: {ends}. Wait for one to wear off.").format(ends=ends)
+                if not await self.take(conn, user_id, ctype, 1):
+                    return False, _("You don't have a {name}.").format(name=lib.label(elixir_id, quality, with_emoji=False))
                 expires = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=lib.ACTIVE_MINUTES)
                 await conn.execute(
                     "INSERT INTO elixir_active (user_id, elixir, quality, expires_at) VALUES ($1, $2, $3, $4)",
-                    ctx.author.id, elixir_id, quality, expires,
+                    user_id, elixir_id, quality, expires,
                 )
-        await ctx.send(_("{label} uncorked! {effect} in every battle until <t:{t}:t> (<t:{t}:R>).").format(
-            label=lib.label(elixir_id, quality), effect=lib.effect_text(elixir_id, quality), t=_unix(expires)))
+        return True, _("{label} uncorked! {effect} in every battle until <t:{t}:t> (<t:{t}:R>).").format(
+            label=lib.label(elixir_id, quality), effect=lib.effect_text(elixir_id, quality), t=_unix(expires))
 
     @elixirs.command(brief=_("What an elixir does at each quality"))
     @locale_doc
