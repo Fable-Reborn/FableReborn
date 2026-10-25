@@ -64,6 +64,21 @@ class TestBootCogs(unittest.TestCase):
                              ["cogs.locale", "cogs.game_master", "cogs.quests"])
             self.assertFalse((Path(folder) / "config.toml.tmp").exists())
 
+    def test_a_mounted_config_is_rewritten_in_place(self):
+        import errno
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.toml"
+            path.write_bytes(SAMPLE.encode("utf-8"))
+            busy = OSError(errno.EBUSY, "Device or resource busy")
+            with mock.patch.object(Path, "replace", side_effect=busy):
+                backup = boot_cogs.save(path, boot_cogs.apply(boot_cogs.read(SAMPLE), set(), {"cogs.pets"}))
+            self.assertEqual(backup.read_bytes(), SAMPLE.encode("utf-8"))
+            text = path.read_bytes().decode("utf-8")
+            self.assertEqual(tomli.loads(text)["bot"]["initial_extensions"], ["cogs.locale", "cogs.game_master", "cogs.quests"])
+            self.assertTrue(text.endswith('postgres_password = "hunter2"\r\n'))   # no leftover tail from the longer old file
+            self.assertFalse((Path(folder) / "config.toml.tmp").exists())
+
     def test_a_broken_list_is_refused(self):
         with self.assertRaises(ValueError):
             boot_cogs.read('[bot]\ninitial_extensions = ["cogs.a", "cogs.b"]\n')

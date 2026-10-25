@@ -9,6 +9,7 @@ Discord-free so the command and tests can share it.
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -114,11 +115,23 @@ def apply(entries: list[Entry], enable: set[str], disable: set[str]) -> list[Ent
 def save(path: Path, entries: list[Entry]) -> Path:
     """Writes the list into config.toml, keeping a copy of the old file next to it. Returns the copy's path."""
     path = Path(path)
-    text = path.read_text(encoding="utf-8")
+    with open(path, encoding="utf-8", newline="") as f:     # as it is, line endings included
+        text = f.read()
     result = render(text, entries)
     backup = path.with_name(f"{path.name}.bak-{datetime.now():%Y%m%d-%H%M%S}")
     shutil.copy2(path, backup)
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(result, encoding="utf-8", newline="")
-    temporary.replace(path)
+    try:
+        temporary.replace(path)
+    except OSError:
+        # config.toml mounted on its own (a Docker bind mount) can't be swapped for another file, only
+        # rewritten in place. The backup is already written, so a failure here loses nothing.
+        with open(path, "r+", encoding="utf-8", newline="") as f:
+            f.seek(0)
+            f.write(result)
+            f.truncate()
+            f.flush()
+            os.fsync(f.fileno())
+        temporary.unlink(missing_ok=True)
     return backup
