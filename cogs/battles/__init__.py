@@ -17,6 +17,7 @@ from PIL import Image
 import discord
 from utils import misc as rpgtools
 from utils import library_pets
+from utils import unoquil
 from utils.elements import ELEMENT_STRENGTHS
 from utils.markdown import escape_markdown
 from discord.ext import commands, tasks
@@ -12272,7 +12273,16 @@ class Battles(commands.Cog):
                                 content="Failed to start the dragon challenge!",
                                 suppress_failure=True,
                             )
-                        
+
+                        # Now and then the dragon speaks first (utils/unoquil.py).
+                        kin_present = any(
+                            getattr(c, "dragonkin", False) and not c.is_pet
+                            for c in battle.player_team.combatants
+                        )
+                        await self._send_ice_dragon_words(ctx, unoquil.opening_words(
+                            battle.dragon.stage, battle.dragon_level, kin_present=kin_present,
+                        ))
+
                         # Process battle turns
                         turn_count = 0
                         battle_msg = await self._send_with_retry(
@@ -12327,6 +12337,10 @@ class Battles(commands.Cog):
                     if victory is True:  # Players won
                         stage_id = getattr(battle, "dragon_stage_id", None)
                         await self._handle_dragon_victory(ctx, view.party_members, stage_id=stage_id)
+                        # ...and now and then, as it falls, it remembers something.
+                        await self._send_ice_dragon_words(
+                            ctx, unoquil.falling_words(battle.dragon.stage, battle.dragon_level)
+                        )
                     elif victory is False:  # Players lost
                         await self._handle_dragon_defeat(ctx, view.party_members)
                     else:  # Draw
@@ -12449,6 +12463,14 @@ class Battles(commands.Cog):
             f"a new all-time record! The decisive party: {party_mentions}."
         )
         self.bot.dispatch("dragon_world_record", ctx, party_members, int(new_level))
+
+    async def _send_ice_dragon_words(self, ctx, lines):
+        """The Ice Dragon's own words, one quote per line. Nothing to send most of the time."""
+        if not lines:
+            return
+        embed = discord.Embed(description="\n\n".join(f'*"{line}"*' for line in lines), color=0x87CEEB)
+        embed.set_author(name=unoquil.SPEAKER)
+        await self._send_with_retry(ctx, embed=embed, suppress_failure=True)
 
     async def _handle_dragon_victory(self, ctx, party_members, stage_id=None):
         """Handle rewards for defeating the dragon"""

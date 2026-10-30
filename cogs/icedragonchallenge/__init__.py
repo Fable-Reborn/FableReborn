@@ -11,7 +11,6 @@ from cogs.shard_communication import user_on_cooldown
 from utils.checks import has_char, is_gm, is_patreon
 from utils.i18n import _
 from utils import misc as rpgtools
-from utils import unoquil
 from classes import breathcaller, dragonkin, penitent
 from classes.classes import Breathcaller, Penitent
 from classes.classes import from_string as class_from_string
@@ -2291,10 +2290,6 @@ class IceDragonChallenge(commands.Cog):
         if mutator_lines:
             battle_log.append("**This Week's Mutators:**\n" + "\n".join(mutator_lines))
 
-        # Now and then it speaks first (utils/unoquil.py); Dragonkin get an extra line.
-        kin_present = any(p.get("dragonkin") for p in battle_participants if not p.get("is_pet"))
-        await self.send_dragon_words(ctx, unoquil.opening_words(dragon["stage"], kin_present=kin_present))
-
         # Create initial embed
         battle_msg = await ctx.send(embed=await self.create_battle_embed(dragon, battle_participants, battle_log))
         await asyncio.sleep(2)
@@ -2955,22 +2950,8 @@ class IceDragonChallenge(commands.Cog):
         )
         await ctx.send(victory_text)
 
-        # Now and then, as it falls, it remembers something (utils/unoquil.py).
-        await self.send_dragon_words(ctx, unoquil.falling_words(dragon.get("stage") or stage_name))
-
         # Let other systems (Legacy Points, bounties, ...) react to the kill
         self.bot.dispatch("icedragon_victory", ctx, party_members, stage_name, current_level)
-
-    async def send_dragon_words(self, ctx, lines):
-        """The Ice Dragon's own words, one quote per line. Nothing to send most of the time."""
-        if not lines:
-            return
-        embed = discord.Embed(description="\n\n".join(f'*"{line}"*' for line in lines), color=0x87CEEB)
-        embed.set_author(name=unoquil.SPEAKER)
-        try:
-            await ctx.send(embed=embed)
-        except discord.HTTPException:
-            pass
 
     async def handle_defeat(self, ctx, party_members):
         """Handle party defeat"""
