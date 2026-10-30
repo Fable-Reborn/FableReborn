@@ -16,14 +16,17 @@ from utils.checks import is_gm
 from utils.i18n import _, locale_doc
 
 from .door_logic import (
+    CHAOS_MAX_LIVE,
     KNOCK_SECONDS,
     LINGER_SECONDS,
     REVEAL_SECONDS,
     image_path,
     parse_window,
+    plan_chaos,
     plan_night,
     settle_door,
 )
+from .log_pages import LogPages, page_count
 from .watch import ensure_watch_role, find_watch_role, ping_watchers, set_watching
 
 
@@ -39,11 +42,9 @@ PREVIEW_CHANNEL_ID = 0
 PREVIEW_KNOCK_SECONDS = 45
 PREVIEW_LINGER_SECONDS = 20
 PREVIEW_FIRST_SPAWN_SECONDS = 8
-CHAOS_CREATE_DELAY = 0.4
-CHAOS_MAX_DOORS = 24
 CHAOS_PING = (
-    "The woods have no walls now. Doors are standing on every path. "
-    "**Knock** before they answer."
+    "The woods have no walls now. Doors will keep opening on every path — "
+    "when one latch turns, three to eight more follow. **Knock** before they answer."
 )
 EMBED_COLOR = {
     "queue": 0x2B1D24,
@@ -158,6 +159,20 @@ class PhantomDoor(commands.Cog):
     def _pity_lock(self, guild_id: int) -> asyncio.Lock:
         return self.pity_locks.setdefault(guild_id, asyncio.Lock())
 
+    @staticmethod
+    def _remaining_entries(remaining) -> list[tuple[float, bool]]:
+        entries = []
+        for item in remaining or ():
+            if isinstance(item, dict):
+                entries.append((float(item["ts"]), bool(item.get("lead"))))
+            else:
+                entries.append((float(item), False))
+        return entries
+
+    @staticmethod
+    def _store_remaining(entries) -> list[dict]:
+        return [{"ts": ts, "lead": lead} for ts, lead in entries]
+
     def _unique_channel_name(self, guild, base: str) -> str:
         names = {channel.name for channel in guild.text_channels}
         channel_name = base[:100]
@@ -241,6 +256,7 @@ class PhantomDoor(commands.Cog):
             "started_at": night["started_at"],
             "ends_at": night["ends_at"],
             "remaining": night["remaining"],
+            "chaos": bool(night.get("chaos", False)),
         }
         try:
             await self.bot.redis.set(f"halloween:door:night:{night['guild_id']}", json.dumps(payload))
@@ -360,13 +376,18 @@ class PhantomDoor(commands.Cog):
                     await self.bot.redis.srem(NIGHT_KEY, str(guild_id))
                     continue
                 payload = json.loads(_decode(raw))
+                chaos = bool(payload.get("chaos", False))
+                remaining = payload.get("remaining") or []
+                if remaining and not isinstance(remaining[0], dict):
+                    remaining = [{"ts": float(ts), "lead": not chaos} for ts in remaining]
                 night = {
                     "night_id": payload["night_id"],
                     "guild_id": guild_id,
                     "started_by": int(payload["started_by"]),
                     "started_at": float(payload["started_at"]),
                     "ends_at": float(payload["ends_at"]),
-                    "remaining": [float(ts) for ts in payload.get("remaining") or []],
+                    "remaining": remaining,
+                    "chaos": chaos,
                     "wake": asyncio.Event(),
                 }
                 self.nights[guild_id] = night
@@ -535,10 +556,14 @@ class PhantomDoor(commands.Cog):
                 if now >= night["ends_at"] and not self._guild_doors(guild_id):
                     await self._forget_night(guild_id)
                     return
-                upcoming = [ts for ts in night["remaining"] if ts > now - 60]
-                night["remaining"] = upcoming
+                entries = [
+                    (ts, lead)
+                    for ts, lead in self._remaining_entries(night["remaining"])
+                    if ts > now - 60
+                ]
+                night["remaining"] = self._store_remaining(entries)
                 await self._save_night(night)
-                if not upcoming:
+                if not entries:
                     if self._guild_doors(guild_id):
                         await asyncio.sleep(5)
                         continue
@@ -552,7 +577,7 @@ class PhantomDoor(commands.Cog):
                         continue
                     night["wake"].clear()
                     continue
-                nxt = min(upcoming)
+                nxt, lead = min(entries, key=lambda item: item[0])
                 wait = nxt - now
                 if wait > 0:
                     try:
@@ -561,12 +586,21 @@ class PhantomDoor(commands.Cog):
                         continue
                     except asyncio.TimeoutError:
                         pass
-                night["remaining"] = [ts for ts in night["remaining"] if ts != nxt]
+                night["remaining"] = self._store_remaining(
+                    [(ts, is_lead) for ts, is_lead in entries if ts != nxt]
+                )
                 await self._save_night(night)
                 if not self._halloween_enabled():
                     continue
+                chaos = bool(night.get("chaos"))
                 async with self.spawn_lock:
-                    await self._spawn_door(guild_id, night, nxt)
+                    await self._spawn_door(
+                        guild_id,
+                        night,
+                        nxt,
+                        chaos=chaos,
+                        ping=lead or not chaos,
+                    )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -651,6 +685,10 @@ class PhantomDoor(commands.Cog):
     ) -> str | None:
         if not chaos and self._guild_doors(guild_id):
             return "A door is already open."
+        if chaos:
+            live = [door for door in self._guild_doors(guild_id) if door.get("chaos")]
+            if len(live) >= CHAOS_MAX_LIVE:
+                return "Skipped because too many doors are already standing."
         if not chaos and self._manor_open(guild_id):
             await self.bot.pool.execute(
                 """
@@ -668,6 +706,8 @@ class PhantomDoor(commands.Cog):
             return "I could not find this server."
         if category is None:
             category = guild.get_channel(MANOR_CATEGORY_ID)
+        if chaos and rank_position is None and isinstance(category, discord.CategoryChannel):
+            rank_position = self._pick_chaos_rank(guild, category)
         channel, owned_channel = await self._open_spawn_channel(
             guild,
             preferred_channel,
@@ -1136,7 +1176,7 @@ class PhantomDoor(commands.Cog):
             except Exception:
                 log.exception("Failed to record a phantom door night")
                 return await ctx.send("I could not write the door log, so the night did not start.")
-            remaining = [stamp.timestamp() for stamp in spawns]
+            remaining = [{"ts": stamp.timestamp(), "lead": True} for stamp in spawns]
             night = {
                 "night_id": night_id,
                 "guild_id": ctx.guild.id,
@@ -1144,6 +1184,7 @@ class PhantomDoor(commands.Cog):
                 "started_at": started_at.timestamp(),
                 "ends_at": ends_at.timestamp(),
                 "remaining": remaining,
+                "chaos": False,
                 "wake": asyncio.Event(),
             }
             self.nights[ctx.guild.id] = night
@@ -1167,20 +1208,29 @@ class PhantomDoor(commands.Cog):
             return await ctx.send("Open a door from a server channel.")
         if not self._halloween_enabled():
             return await ctx.send("Enable the Halloween event before opening a door.")
-        if self._guild_doors(ctx.guild.id):
+        night = self.nights.get(ctx.guild.id)
+        chaos_night = bool(night and night.get("chaos"))
+        if not chaos_night and self._guild_doors(ctx.guild.id):
             return await ctx.send("A door is already open. Wait for it to finish or use `$door stop`.")
         category = ctx.guild.get_channel(MANOR_CATEGORY_ID)
         if not isinstance(category, discord.CategoryChannel):
             return await ctx.send(
                 f"I could not find the manor category ({MANOR_CATEGORY_ID}) in this server."
             )
-        night = self.nights.get(ctx.guild.id) or {
+        night = night or {
             "night_id": None,
             "guild_id": ctx.guild.id,
+            "chaos": False,
         }
         try:
             async with self.spawn_lock:
-                error = await self._spawn_door(ctx.guild.id, night, time.time())
+                error = await self._spawn_door(
+                    ctx.guild.id,
+                    night,
+                    time.time(),
+                    chaos=chaos_night,
+                    ping=not chaos_night,
+                )
         except Exception as exc:
             log.exception("Forced door spawn failed")
             return await ctx.send(f"`$door now` failed: `{type(exc).__name__}: {exc}`")
@@ -1193,81 +1243,89 @@ class PhantomDoor(commands.Cog):
             "Use `$door stop` to cancel the night."
         )
 
-    def _chaos_anchors(self, category):
-        """One insertion rank per existing channel, bottom to top so positions stay put."""
+    def _pick_chaos_rank(self, guild, category) -> int:
+        from utils import random as utils_random
+
         anchors = [
             channel
             for channel in category.channels
             if not channel.name.startswith("「🚪」")
         ]
         if not anchors:
-            return [category.position + 1]
-        free = max(0, 50 - len(category.channels))
-        take = min(len(anchors), free, CHAOS_MAX_DOORS)
-        return [channel.position for channel in reversed(anchors[-take:])]
+            return category.position + 1
+        live_positions = set()
+        for door in self._guild_doors(guild.id):
+            channel = guild.get_channel(door["channel_id"])
+            if channel is not None:
+                live_positions.add(channel.position)
+        free = [channel for channel in anchors if channel.position not in live_positions]
+        pick = utils_random.choice(free or anchors)
+        return pick.position
 
     @is_gm()
     @door.command(name="chaos")
-    async def door_chaos(self, ctx):
+    async def door_chaos(self, ctx, duration: str = "8h"):
         if ctx.guild is None:
-            return await ctx.send("Open doors from a server channel.")
+            return await ctx.send("Open the woods from a server channel.")
         if not self._halloween_enabled():
             return await ctx.send("Enable the Halloween event before opening the woods.")
-        if any(door.get("chaos") for door in self._guild_doors(ctx.guild.id)):
-            return await ctx.send("Chaos is already running. Wait for those doors to finish or use `$door stop`.")
+        seconds = parse_window(duration)
+        if seconds is None:
+            return await ctx.send("Use a window like `8h`, `3h`, or `24h`.")
         category = ctx.guild.get_channel(MANOR_CATEGORY_ID)
         if not isinstance(category, discord.CategoryChannel):
             return await ctx.send(
-                f"I could not find the manor category ({MANOR_CATEGORY_ID}) in this server."
+                f"I could not find the manor category ({MANOR_CATEGORY_ID}) in this server, so chaos did not start."
             )
-        ranks = self._chaos_anchors(category)
-        if not ranks:
-            return await ctx.send("The Halloween category has no room for more doors.")
-        night = self.nights.get(ctx.guild.id) or {
-            "night_id": None,
-            "guild_id": ctx.guild.id,
-        }
-        opened = []
-        seen = set()
-        errors = []
-        await ensure_watch_role(ctx.guild)
-        async with ctx.typing(), self.start_lock:
-            for index, rank_position in enumerate(ranks):
-                try:
-                    async with self.spawn_lock:
-                        error = await self._spawn_door(
-                            ctx.guild.id,
-                            night,
-                            time.time(),
-                            chaos=True,
-                            ping=False,
-                            rank_position=rank_position,
-                            place="the woods",
-                            category=category,
-                        )
-                except Exception as exc:
-                    log.exception("Chaos door spawn failed")
-                    errors.append(f"{type(exc).__name__}: {exc}")
-                    continue
-                if error:
-                    errors.append(error)
-                else:
-                    for door in self._guild_doors(ctx.guild.id):
-                        if door.get("chaos") and door["channel_id"] not in seen:
-                            seen.add(door["channel_id"])
-                            opened.append(door)
-                if index + 1 < len(ranks):
-                    await asyncio.sleep(CHAOS_CREATE_DELAY)
-        if not opened:
-            detail = errors[0] if errors else "no ranks were free"
-            return await ctx.send(f"`$door chaos` did not open any doors: {detail}")
-        mentions = " ".join(f"<#{door['channel_id']}>" for door in opened)
-        await ping_watchers(ctx.channel, f"{CHAOS_PING}\n{mentions}")
-        extra = f" {len(errors)} path(s) failed." if errors else ""
-        await ctx.send(
-            f"Chaos is up. **{len(opened)}** doors are standing at different ranks in the Halloween category."
-            f"{extra} Knock within **{self._knock_seconds()}** seconds."
-        )
+        async with self.start_lock:
+            if ctx.guild.id in self.nights:
+                return await ctx.send("A phantom door night is already running. `$door stop` first, then `$door chaos`.")
+            started_at = datetime.now(timezone.utc)
+            ends_at = started_at + timedelta(seconds=seconds)
+            from utils import random as utils_random
+
+            planned = plan_chaos(started_at, ends_at, utils_random)
+            try:
+                night_id = await self.bot.pool.fetchval(
+                    """
+                    INSERT INTO night_door_nights (guild_id, started_by, started_at, ends_at)
+                    VALUES ($1, $2, $3, $4) RETURNING id;
+                    """,
+                    ctx.guild.id,
+                    ctx.author.id,
+                    started_at,
+                    ends_at,
+                )
+            except Exception:
+                log.exception("Failed to record a chaos night")
+                return await ctx.send("I could not write the door log, so chaos did not start.")
+            remaining = [{"ts": stamp.timestamp(), "lead": lead} for stamp, lead in planned]
+            leads = sum(1 for _stamp, lead in planned if lead)
+            night = {
+                "night_id": night_id,
+                "guild_id": ctx.guild.id,
+                "started_by": ctx.author.id,
+                "started_at": started_at.timestamp(),
+                "ends_at": ends_at.timestamp(),
+                "remaining": remaining,
+                "chaos": True,
+                "wake": asyncio.Event(),
+            }
+            self.nights[ctx.guild.id] = night
+            await self._save_night(night)
+            night["task"] = asyncio.create_task(self._run_night(ctx.guild.id))
+            await ensure_watch_role(ctx.guild)
+            await ping_watchers(
+                ctx.channel,
+                f"{CHAOS_PING} Until <t:{int(ends_at.timestamp())}:t>.",
+            )
+            await ctx.send(
+                f"Chaos is watching the woods until <t:{int(ends_at.timestamp())}:f>. "
+                f"**{leads}** clusters planned (**{len(remaining)}** doors). "
+                "Each latch pulls 3–8 more onto other ranks within seconds. "
+                f"Players use `{ctx.clean_prefix}night watch`. "
+                f"`{ctx.clean_prefix}door stop` ends it."
+            )
 
     async def _stop_guild_doors(self, guild_id: int):
         async def stop_one(door):
@@ -1321,21 +1379,35 @@ class PhantomDoor(commands.Cog):
         return f"<t:{int(value.timestamp())}:{style}>"
 
     async def _send_spawn_list(self, ctx):
+        async def fetch_page(page: int):
+            return await self._spawn_list_page(ctx, page)
+
+        await LogPages(ctx.author.id, fetch_page).send(ctx)
+
+    async def _spawn_list_page(self, ctx, page: int):
+        total = await self.bot.pool.fetchval(
+            "SELECT COUNT(*) FROM night_door_spawns WHERE guild_id = $1;",
+            ctx.guild.id,
+        )
+        pages = page_count(total, LOG_LIST_SIZE)
+        page = max(0, min(int(page), pages - 1))
         rows = await self.bot.pool.fetch(
             """
             SELECT * FROM night_door_spawns
             WHERE guild_id = $1
             ORDER BY scheduled_at DESC
-            LIMIT $2;
+            LIMIT $2 OFFSET $3;
             """,
             ctx.guild.id,
             LOG_LIST_SIZE,
+            page * LOG_LIST_SIZE,
         )
         night = self.nights.get(ctx.guild.id)
         lines = []
         if night:
+            mode = "Chaos night" if night.get("chaos") else "Night"
             lines.append(
-                f"Night running until {self._stamp(_utc(night['ends_at']))}. "
+                f"{mode} running until {self._stamp(_utc(night['ends_at']))}. "
                 f"**{len(night['remaining'])}** doors still planned."
             )
         else:
@@ -1358,8 +1430,11 @@ class PhantomDoor(commands.Cog):
                 f"{row['knocker_count'] or 0} knocked · visitor {visitor}"
             )
         embed = discord.Embed(title="Phantom door log", description="\n".join(lines)[:4096], color=0xC45C26)
-        embed.set_footer(text=f"{ctx.clean_prefix}door log <id> shows who knocked and what they received.")
-        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        older = " · ▶️ older logs" if pages > 1 else ""
+        embed.set_footer(
+            text=f"Page {page + 1}/{pages}{older} · {ctx.clean_prefix}door log <id> shows who knocked."
+        )
+        return embed, pages
 
     async def _send_spawn_detail(self, ctx, spawn_id: int):
         spawn = await self.bot.pool.fetchrow(

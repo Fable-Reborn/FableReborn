@@ -15,6 +15,8 @@ from pathlib import Path
 
 try:
     from .door_logic import (
+        CHAOS_BURST,
+        CHAOS_WAVE_GAP_SECONDS,
         DOOR_DIR,
         EST,
         ETHEREAL_CHANCE,
@@ -23,17 +25,23 @@ try:
         STEADY_DOORS,
         TREAT_CHANCE,
         TRICK_CHANCE,
+        Pity,
         image_key,
         image_path,
+        parse_window,
+        plan_chaos,
         plan_night,
         settle_door,
         two_hand_stat,
     )
+    from .rewards import THEME_KEYS, OWNED_THEME_BONUS, reward_for, theme_name
 except ImportError:
     ROOT = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(ROOT))
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from door_logic import (
+        CHAOS_BURST,
+        CHAOS_WAVE_GAP_SECONDS,
         DOOR_DIR,
         EST,
         ETHEREAL_CHANCE,
@@ -42,12 +50,16 @@ except ImportError:
         STEADY_DOORS,
         TREAT_CHANCE,
         TRICK_CHANCE,
+        Pity,
         image_key,
         image_path,
+        parse_window,
+        plan_chaos,
         plan_night,
         settle_door,
         two_hand_stat,
     )
+    from rewards import THEME_KEYS, OWNED_THEME_BONUS, reward_for, theme_name
 
 
 CHECKS = []
@@ -223,6 +235,89 @@ def main():
     odd_ok = ethereal_stats.keys() <= {99, two_hand_stat(99)} and not bad_stats
     check("ethereal stats are the top window", odd_ok, f"{dict(sorted(ethereal_stats.items()))} bad={bad_stats[:5]}")
     check("ethereal includes 2h", ethereal_hands["2h"] > 0, f"{dict(ethereal_hands)}")
+
+    check("chaos window 8h", parse_window("8h") == 8 * 3600, str(parse_window("8h")))
+    chaos_rng = random.Random(7)
+    chaos_start = start
+    chaos_end = chaos_start + timedelta(hours=8)
+    chaos_spawns = plan_chaos(chaos_start, chaos_end, chaos_rng)
+    leads = [stamp for stamp, lead in chaos_spawns if lead]
+    extras = [stamp for stamp, lead in chaos_spawns if not lead]
+    lead_gaps = [(b - a).total_seconds() for a, b in zip(leads, leads[1:])]
+    check("chaos 8h has many doors", 80 <= len(chaos_spawns) <= 500, f"{len(chaos_spawns)} doors, {len(leads)} clusters")
+    check("chaos clusters exist", 20 <= len(leads) <= 80, f"{len(leads)} leads")
+    check(
+        "chaos wave gap 8-15 min",
+        all(CHAOS_WAVE_GAP_SECONDS[0] - 1 <= gap <= CHAOS_WAVE_GAP_SECONDS[1] + 1 for gap in lead_gaps),
+        f"min {min(lead_gaps) if lead_gaps else 0:.0f}s max {max(lead_gaps) if lead_gaps else 0:.0f}s",
+    )
+    burst_ok = True
+    burst_sizes = []
+    extra_delays = []
+    for lead in leads[:-1]:
+        cluster = [stamp for stamp, _lead in chaos_spawns if stamp >= lead and (stamp - lead).total_seconds() <= 12]
+        extras_in = [stamp for stamp in cluster if stamp != lead]
+        burst_sizes.append(len(extras_in))
+        extra_delays.extend((stamp - lead).total_seconds() for stamp in extras_in)
+        if not (CHAOS_BURST[0] <= len(extras_in) <= CHAOS_BURST[1]):
+            burst_ok = False
+    check("chaos burst is 3-8 extras", burst_ok and burst_sizes, f"sizes {Counter(burst_sizes)}")
+    check(
+        "chaos extras land within seconds",
+        extra_delays and max(extra_delays) <= 12 and min(extra_delays) > 0,
+        f"delay {min(extra_delays):.2f}-{max(extra_delays):.2f}s" if extra_delays else "none",
+    )
+
+    sitout_wins = Counter()
+    chaos_wins = Counter()
+    for seed in range(40):
+        blocked = settle_door(
+            [1, 2],
+            {1: Pity(extra_tickets=4, sitout_left=2), 2: Pity()},
+            random.Random(seed),
+            chaos=False,
+        )
+        sitout_wins[blocked.visitor_id] += 1
+        allowed = settle_door(
+            [1, 2],
+            {1: Pity(extra_tickets=4, sitout_left=2), 2: Pity()},
+            random.Random(seed),
+            chaos=True,
+        )
+        chaos_wins[allowed.visitor_id] += 1
+    check("sitout benches on a normal door", sitout_wins.get(1, 0) == 0, str(dict(sitout_wins)))
+    check("chaos ignores sitout", chaos_wins.get(1, 0) > 10, str(dict(chaos_wins)))
+
+    two = reward_for(joined_as="active", rooms=2, cleared=False, struggling=False, owns_theme=False)
+    two_clear = reward_for(joined_as="active", rooms=2, cleared=True, struggling=False, owns_theme=False)
+    three = reward_for(joined_as="active", rooms=3, cleared=False, struggling=False, owns_theme=False)
+    three_clear = reward_for(joined_as="active", rooms=3, cleared=True, struggling=False, owns_theme=False)
+    watch = reward_for(joined_as="passive", rooms=0, cleared=True, struggling=False, owns_theme=False)
+    struggle = reward_for(joined_as="active", rooms=3, cleared=False, struggling=True, owns_theme=False)
+    owned = reward_for(joined_as="active", rooms=3, cleared=True, struggling=False, owns_theme=True)
+    check("two-room theme 12%", two.theme_chance == 0.12, str(two.theme_chance))
+    check("two-room clear theme 24%", two_clear.theme_chance == 0.24, str(two_clear.theme_chance))
+    check("three-room theme 25%", three.theme_chance == 0.25, str(three.theme_chance))
+    check("three-room clear theme 50%", three_clear.theme_chance == 0.50, str(three_clear.theme_chance))
+    check("watchers get no theme", watch.theme_chance == 0.0)
+    check("struggling raid gets no theme", struggle.theme_chance == 0.0)
+    check(
+        "owned-all pays bones instead",
+        owned.theme_chance == 0.0 and owned.bones == three_clear.bones + OWNED_THEME_BONUS,
+        f"bones {owned.bones} vs {three_clear.bones}",
+    )
+    check("theme names resolve", all(theme_name(key) for key in THEME_KEYS), ", ".join(THEME_KEYS))
+
+    theme_rng = random.Random(42)
+    grants = Counter()
+    trials = 8000
+    for _ in range(trials):
+        spec = reward_for(joined_as="active", rooms=3, cleared=True, struggling=False, owns_theme=False)
+        if theme_rng.random() < spec.theme_chance:
+            grants[theme_rng.choice(THEME_KEYS)] += 1
+    rate = sum(grants.values()) / trials
+    check("sim full-clear theme rate ~50%", 0.47 <= rate <= 0.53, f"{rate:.1%} {dict(grants)}")
+    check("all four Halloween themes drop", set(grants) == set(THEME_KEYS), str(dict(grants)))
 
     failed = [name for name, ok, _detail in CHECKS if not ok]
     print()

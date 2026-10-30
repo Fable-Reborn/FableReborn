@@ -26,6 +26,11 @@ LAUNCH_DOORS = (18, 22)
 STEADY_DOORS = (12, 15)
 SLOT_SECONDS = 5 * 60
 MAX_WINDOW_SECONDS = 14 * 24 * 3600
+CHAOS_FIRST_SECONDS = (20, 45)
+CHAOS_WAVE_GAP_SECONDS = (8 * 60, 15 * 60)
+CHAOS_BURST = (3, 8)
+CHAOS_BURST_STEP = (0.45, 1.15)
+CHAOS_MAX_LIVE = 10
 
 TRICK_CHANCE = 0.45
 TREAT_CHANCE = 0.50
@@ -245,6 +250,24 @@ def plan_night(started_at: datetime, ends_at: datetime, rng) -> list[datetime]:
         spawns.extend(plan_spawns(cursor, chunk_end, count, rng))
         cursor = chunk_end
     return sorted(spawns)
+
+
+def plan_chaos(started_at: datetime, ends_at: datetime, rng) -> list[tuple[datetime, bool]]:
+    """Random waves: one lead door, then 3–8 more within seconds, repeating through the window."""
+    if ends_at <= started_at:
+        return []
+    spawns: list[tuple[datetime, bool]] = []
+    cursor = started_at + timedelta(seconds=rng.randint(*CHAOS_FIRST_SECONDS))
+    while cursor < ends_at:
+        spawns.append((cursor, True))
+        delay = 0.0
+        for _ in range(rng.randint(*CHAOS_BURST)):
+            delay += rng.uniform(*CHAOS_BURST_STEP)
+            when = cursor + timedelta(seconds=delay)
+            if when < ends_at:
+                spawns.append((when, False))
+        cursor = cursor + timedelta(seconds=rng.randint(*CHAOS_WAVE_GAP_SECONDS))
+    return spawns
 
 
 def tickets_for(pity: Pity, *, ignore_sitout: bool = False) -> int:

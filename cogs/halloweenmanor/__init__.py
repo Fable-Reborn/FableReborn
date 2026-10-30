@@ -24,6 +24,7 @@ from .rewards import (
     search_goal,
     theme_name,
 )
+from .log_pages import LogPages, page_count
 from .watch import ensure_watch_role, ping_watchers, set_watching
 
 
@@ -1107,6 +1108,18 @@ class HalloweenManor(commands.Cog):
         return f"<t:{int(value.timestamp())}:{style}>"
 
     async def _send_run_list(self, ctx):
+        async def fetch_page(page: int):
+            return await self._run_list_page(ctx, page)
+
+        await LogPages(ctx.author.id, fetch_page).send(ctx)
+
+    async def _run_list_page(self, ctx, page: int):
+        total = await self.bot.pool.fetchval(
+            "SELECT COUNT(*) FROM hollow_manor_runs WHERE guild_id = $1;",
+            ctx.guild.id,
+        )
+        pages = page_count(total, LOG_LIST_SIZE)
+        page = max(0, min(int(page), pages - 1))
         runs = await self.bot.pool.fetch(
             """
             SELECT r.*,
@@ -1117,10 +1130,11 @@ class HalloweenManor(commands.Cog):
             WHERE r.guild_id = $1
             GROUP BY r.id
             ORDER BY r.opened_at DESC
-            LIMIT $2;
+            LIMIT $2 OFFSET $3;
             """,
             ctx.guild.id,
             LOG_LIST_SIZE,
+            page * LOG_LIST_SIZE,
         )
         opened = await self._opens_today(ctx.guild.id)
         lines = [
@@ -1146,8 +1160,11 @@ class HalloweenManor(commands.Cog):
                 f"{run['investigators']} investigators · {run['watchers']} watchers · {result} · {closed}"
             )
         embed = discord.Embed(title="Hollow Manor log", description="\n".join(lines)[:4096], color=0xE4572E)
-        embed.set_footer(text=f"{ctx.clean_prefix}manor log <id> shows that manor's players and rewards.")
-        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        older = " · ▶️ older logs" if pages > 1 else ""
+        embed.set_footer(
+            text=f"Page {page + 1}/{pages}{older} · {ctx.clean_prefix}manor log <id> shows that manor's players."
+        )
+        return embed, pages
 
     async def _send_run_detail(self, ctx, run_id: int):
         run = await self.bot.pool.fetchrow(
