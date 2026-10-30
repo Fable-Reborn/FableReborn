@@ -12,6 +12,21 @@ OWNED_THEME_BONUS = 25
 SEARCH_ROOMS = 3
 # Same pool and even odds as an automatic Ragnarok spawn (cogs/raid).
 CRATE_TYPES = ("divine", "fortune", "legendary", "materials")
+# Halloween 2026 event themes. Manor search can grant any the player does not own.
+HALLOWEEN_THEMES = (
+    ("hallowmanor", "The Last Lantern"),
+    ("headlesshorseman", "Hollow Rider"),
+    ("ghostship", "Wraithwake"),
+    ("dancingskeletons", "Bonecourt Revel"),
+)
+THEME_KEYS = tuple(key for key, _name in HALLOWEEN_THEMES)
+THEME_NAMES = dict(HALLOWEEN_THEMES)
+
+
+def theme_name(key: str | None) -> str:
+    if not key:
+        return THEME_NAMES[THEME_KEYS[0]]
+    return THEME_NAMES.get(key, key)
 
 
 @dataclass(frozen=True)
@@ -66,13 +81,13 @@ def reward_for(*, joined_as: str, rooms: int, cleared: bool, struggling: bool, o
     extra_bag_chance = 0.25 if rooms == SEARCH_ROOMS else 0.0
     crate_chance = 0.20 if rooms == SEARCH_ROOMS else 0.0
     if rooms == 2:
-        theme_chance = 0.03
+        theme_chance = 0.12
     elif rooms == SEARCH_ROOMS:
-        theme_chance = 0.08
+        theme_chance = 0.25
     else:
         theme_chance = 0.0
     if cleared and theme_chance:
-        theme_chance = min(0.20, theme_chance * 2)
+        theme_chance = min(0.50, theme_chance * 2)
     if struggling:
         bag_chance *= 0.5
         extra_bag_chance = 0.0

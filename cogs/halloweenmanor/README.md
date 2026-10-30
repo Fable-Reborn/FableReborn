@@ -64,29 +64,33 @@ Investigators, per room they actually search:
 - 38 bones plus 50 per room, plus 25 if the house is cleared
 - bag chance 40% plus 15% per room
 - a full three-room search can roll a second bag (25%) and a crate (20%). The crate type uses the same even split as an automatic Ragnarok spawn: Divine, Fortune, Legendary, or Materials, 25% each
-- two rooms: 3% chance at The Last Lantern, doubled if the house is cleared, capped at 20%
-- three rooms: 8%, same clear bonus and cap
+- two rooms: 12% chance at a Halloween profile theme they do not own, doubled if the house is cleared, capped at 50%
+- three rooms: 25%, same clear bonus and cap
+- the pool is The Last Lantern, Hollow Rider, Wraithwake, and Bonecourt Revel
 - under half progress, theme and crate chances are off and bag chances are halved
-- if they already own the theme, a full search pays 25 extra bones instead of another theme
+- if they already own every Halloween theme, a full search pays 25 extra bones instead of another theme
 
 The house clears when searches reach about 70% of (investigators × 3). A solo investigator still has to search all three rooms.
 
 ## Profile theme
 
-**The Last Lantern** (`hallowmanor`) replaces the seasonal background in `$spookyshop`. It costs 2,500 bones, one purchase, and it is a `$prpg` theme. It can also drop from an active manor search. It is not in the normal profile-theme drop pool. The banner file is `assets/profile_themes/hallowmanor.png`. Equip it with `$prpg theme hallowmanor`.
+**The Last Lantern** (`hallowmanor`) replaces the seasonal background in `$spookyshop`. It costs 2,500 bones, one purchase, and it is a `$prpg` theme. Manor search can also drop it or the other Halloween 2026 themes: **Hollow Rider** (`headlesshorseman`), **Wraithwake** (`ghostship`), and **Bonecourt Revel** (`dancingskeletons`). They are not in the normal profile-theme drop pool. Equip with `$prpg theme <key>`.
 
 ## Phantom door
 
 A GM starts a night with `$door start 24h` (or `3d` / `7d`). Doors appear at random times any hour of the day, never while a manor is open, and never two at once. The first 72 hours of a night use 18–22 doors per day; after that, 12–15. The channel is public at the top of the manor category. Only **Night Watch** is pinged.
 
-Players press **Knock** and wait. When the door answers, one visitor is chosen by tickets (pity is hidden). Everyone who knocked gets a crumb. Trick visitors get bones plus the gag (the Stick of Shame on that variant). Treat visitors get more bones and a bag chance. Ethereal (~5%, and only if at least two people knocked) grants a named high-odd-stat weapon, including two-handers.
+`$door chaos` is the finale: it opens one door per existing channel in that same Halloween category (14 channels means 14 doors), interleaved at those ranks instead of stacked at the top. Night Watch is pinged once. Sitout does not bench anyone for that wave.
+
+Players press **Knock** and wait. When the door answers, one visitor is chosen by tickets (pity is hidden). Everyone who knocked gets a crumb. Trick visitors get bones plus the gag (the Stick of Shame on that variant). Treat visitors get more bones and a bag chance. Ethereal (~5%, and only if at least two people knocked) grants a named weapon at the top odd window: **99** one-hand or **197** two-hand.
 
 | Command | Who | What it does |
 |---|---|---|
 | `$night watch` / `$night unwatch` | Everyone | Night Watch ping on/off. `$manor watch` is the same opt-in. |
 | `$door start [window]` | GM | Plan the night. Times are not posted. |
 | `$door now` | GM | Spawn one door immediately at the top of the Halloween category. |
-| `$door stop` | GM | Cancel leftovers and close a live door. |
+| `$door chaos` | GM | Open a door at each rank in the Halloween category (one per existing channel). |
+| `$door stop` | GM | Cancel leftovers and close every live door. |
 | `$door log` | GM | Recent doors. `$door log <id>` is one door's knockers and rewards. |
 
 Art lives in `assets/halloween/door/`. The queue uses `closed.jpg`. Trick and treat crack `ajar.jpg` first; ethereal cracks `ajar-ethereal.jpg`, then `ethereal.jpg`.

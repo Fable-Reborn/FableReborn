@@ -42,11 +42,13 @@ MAX_EXTRA_TICKETS = 4
 SITOUT_DOORS = 2
 PITY_GUARANTEE_AFTER = 5
 
+# Ethereal weapons always use the top window (99 one-hand / 197 two-hand).
 ONE_HAND_BANDS = (
     (0.60, (81, 83, 85, 87, 89)),
     (0.30, (91, 93, 95, 97)),
     (0.10, (99,)),
 )
+ETHEREAL_STAT_BAND = ONE_HAND_BANDS[-1][1]
 
 TRICK_VARIANTS = ("goblin", "bag", "chimney", "stick")
 TREAT_VARIANTS = ("hostess", "host", "spirit", "table")
@@ -245,27 +247,33 @@ def plan_night(started_at: datetime, ends_at: datetime, rng) -> list[datetime]:
     return sorted(spawns)
 
 
-def tickets_for(pity: Pity) -> int:
-    if pity.sitout_left > 0:
+def tickets_for(pity: Pity, *, ignore_sitout: bool = False) -> int:
+    if not ignore_sitout and pity.sitout_left > 0:
         return 0
     return 1 + max(0, min(pity.extra_tickets, MAX_EXTRA_TICKETS))
 
 
-def pick_visitor(knockers: list[int], pity_map: dict[int, Pity], rng) -> int | None:
+def pick_visitor(
+    knockers: list[int],
+    pity_map: dict[int, Pity],
+    rng,
+    *,
+    ignore_sitout: bool = False,
+) -> int | None:
     if not knockers:
         return None
     guaranteed = [
         user_id
         for user_id in knockers
         if pity_map.get(user_id, Pity()).consecutive_misses >= PITY_GUARANTEE_AFTER
-        and pity_map.get(user_id, Pity()).sitout_left <= 0
+        and (ignore_sitout or pity_map.get(user_id, Pity()).sitout_left <= 0)
     ]
     if guaranteed:
         return rng.choice(guaranteed)
     eligible = []
     weights = []
     for user_id in knockers:
-        tickets = tickets_for(pity_map.get(user_id, Pity()))
+        tickets = tickets_for(pity_map.get(user_id, Pity()), ignore_sitout=ignore_sitout)
         if tickets <= 0:
             continue
         eligible.append(user_id)
@@ -275,7 +283,13 @@ def pick_visitor(knockers: list[int], pity_map: dict[int, Pity], rng) -> int | N
     return rng.choices(eligible, weights=weights, k=1)[0]
 
 
-def update_pity(knockers: list[int], visitor_id: int | None, pity_map: dict[int, Pity]) -> dict[int, Pity]:
+def update_pity(
+    knockers: list[int],
+    visitor_id: int | None,
+    pity_map: dict[int, Pity],
+    *,
+    apply_sitout: bool = True,
+) -> dict[int, Pity]:
     for user_id in knockers:
         pity = pity_map.setdefault(user_id, Pity())
         if pity.sitout_left > 0:
@@ -283,7 +297,7 @@ def update_pity(knockers: list[int], visitor_id: int | None, pity_map: dict[int,
         if visitor_id is not None and user_id == visitor_id:
             pity.extra_tickets = 0
             pity.consecutive_misses = 0
-            pity.sitout_left = SITOUT_DOORS
+            pity.sitout_left = SITOUT_DOORS if apply_sitout else 0
         else:
             pity.consecutive_misses += 1
             pity.extra_tickets = min(MAX_EXTRA_TICKETS, pity.extra_tickets + 1)
@@ -336,15 +350,8 @@ def two_hand_stat(one_hand: int) -> int:
 
 
 def roll_ethereal_stat(two_handed: bool, rng) -> int:
-    roll = rng.random()
-    cursor = 0.0
-    chosen = ONE_HAND_BANDS[-1][1]
-    for chance, band in ONE_HAND_BANDS:
-        cursor += chance
-        if roll < cursor:
-            chosen = band
-            break
-    stat = rng.choice(chosen)
+    del rng
+    stat = ETHEREAL_STAT_BAND[-1]
     return two_hand_stat(stat) if two_handed else stat
 
 
@@ -388,8 +395,15 @@ def _line(pool, visitor: str, rng) -> str:
     return template.format(visitor=visitor)
 
 
-def settle_door(knockers: list[int], pity_map: dict[int, Pity], rng, visitor_name: str = "{visitor}") -> DoorResult:
-    visitor_id = pick_visitor(knockers, pity_map, rng)
+def settle_door(
+    knockers: list[int],
+    pity_map: dict[int, Pity],
+    rng,
+    visitor_name: str = "{visitor}",
+    *,
+    chaos: bool = False,
+) -> DoorResult:
+    visitor_id = pick_visitor(knockers, pity_map, rng, ignore_sitout=chaos)
     if visitor_id is None:
         return DoorResult(
             outcome="empty",
@@ -448,7 +462,7 @@ def settle_door(knockers: list[int], pity_map: dict[int, Pity], rng, visitor_nam
                 summary=summary,
             )
         )
-    update_pity(knockers, visitor_id, pity_map)
+    update_pity(knockers, visitor_id, pity_map, apply_sitout=not chaos)
     return DoorResult(
         outcome=outcome,
         variant=variant,

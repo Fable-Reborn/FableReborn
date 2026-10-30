@@ -181,10 +181,9 @@ def main():
                     ethereal_hands["2h" if two_hand else "1h"] += 1
                     stat = receipt.item.armor or receipt.item.damage
                     ethereal_stats[stat] += 1
-                    if two_hand and (stat % 2 == 0 or stat < two_hand_stat(81)):
-                        bad_stats.append(("2h", receipt.item.name, stat))
-                    if not two_hand and (stat % 2 == 0 or stat < 81):
-                        bad_stats.append(("1h", receipt.item.name, stat))
+                    expected = two_hand_stat(99) if two_hand else 99
+                    if stat != expected:
+                        bad_stats.append(("2h" if two_hand else "1h", receipt.item.name, stat))
 
     total = sum(outcomes.values())
     trick_rate = outcomes["trick"] / total if total else 0
@@ -221,8 +220,8 @@ def main():
         f"always visits {spread}",
     )
 
-    odd_ok = all(stat % 2 == 1 for stat in ethereal_stats) and not bad_stats
-    check("ethereal stats all odd high", odd_ok, f"{dict(sorted(ethereal_stats.items()))} bad={bad_stats[:5]}")
+    odd_ok = ethereal_stats.keys() <= {99, two_hand_stat(99)} and not bad_stats
+    check("ethereal stats are the top window", odd_ok, f"{dict(sorted(ethereal_stats.items()))} bad={bad_stats[:5]}")
     check("ethereal includes 2h", ethereal_hands["2h"] > 0, f"{dict(ethereal_hands)}")
 
     failed = [name for name, ok, _detail in CHECKS if not ok]

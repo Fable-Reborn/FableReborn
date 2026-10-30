@@ -5,6 +5,7 @@ import datetime
 import json
 import logging
 import time
+from collections import defaultdict
 
 import discord
 from discord.ext import commands
@@ -16,10 +17,12 @@ from utils.i18n import _, locale_doc
 from .card import render_manor_card
 from .rewards import (
     CRATE_TYPES,
+    THEME_KEYS,
     community_cleared,
     community_struggling,
     reward_for,
     search_goal,
+    theme_name,
 )
 from .watch import ensure_watch_role, ping_watchers, set_watching
 
@@ -720,11 +723,26 @@ class HalloweenManor(commands.Cog):
         crate = self._receipt_crate(receipt)
         if crate:
             lines.append(f"📦 {crate.capitalize()} crate: **1**")
-        if receipt["theme"]:
-            lines.append(f"🎃 Profile theme: **The Last Lantern**. Equip it with `$prpg theme {THEME_KEY}`.")
+        theme_key = self._receipt_theme_key(receipt)
+        if theme_key:
+            lines.append(
+                f"🎃 Profile theme: **{theme_name(theme_key)}**. Equip it with `$prpg theme {theme_key}`."
+            )
         elif receipt.get("theme_owned"):
-            lines.append("You already own The Last Lantern, so the house paid extra bones instead.")
+            lines.append("You already own every Halloween profile theme, so the house paid extra bones instead.")
         return "\n".join(lines)
+
+    @staticmethod
+    def _receipt_theme_key(receipt: dict) -> str | None:
+        key = receipt.get("theme_key")
+        if isinstance(key, str) and key:
+            return key
+        theme = receipt.get("theme")
+        if theme is True:
+            return THEME_KEY
+        if isinstance(theme, str) and theme:
+            return theme
+        return None
 
     @staticmethod
     def _receipt_crate(receipt: dict):
@@ -752,14 +770,18 @@ class HalloweenManor(commands.Cog):
             raid["phase"] = "results"
             raid["deadline"] = time.time()
             raid["dirty"] = False
-        owned = set()
+        owned_map = defaultdict(set)
         if user_ids:
             rows = await self.bot.pool.fetch(
-                "SELECT user_id FROM profile_theme_unlocks WHERE theme_key=$1 AND user_id = ANY($2::bigint[]);",
-                THEME_KEY,
+                """
+                SELECT user_id, theme_key FROM profile_theme_unlocks
+                WHERE theme_key = ANY($1::text[]) AND user_id = ANY($2::bigint[]);
+                """,
+                list(THEME_KEYS),
                 user_ids,
             )
-            owned = {row["user_id"] for row in rows}
+            for row in rows:
+                owned_map[row["user_id"]].add(row["theme_key"])
         grants = []
         for user_id, role in list(raid["roster"].items()):
             if user_id in raid["receipts"]:
@@ -771,25 +793,28 @@ class HalloweenManor(commands.Cog):
                     grants.append((user_id, receipt))
                 continue
             rooms = len(raid["searches"].get(user_id, ()))
+            missing = [key for key in THEME_KEYS if key not in owned_map.get(user_id, ())]
+            owns_all = not missing
             spec = reward_for(
                 joined_as=role,
                 rooms=rooms,
                 cleared=cleared,
                 struggling=struggling,
-                owns_theme=user_id in owned,
+                owns_theme=owns_all,
             )
             bags = 1 if random.random() < spec.bag_chance else 0
             if bags and random.random() < spec.extra_bag_chance:
                 bags += 1
             crate = random.choice(CRATE_TYPES) if random.random() < spec.crate_chance else None
-            theme = (not (user_id in owned)) and random.random() < spec.theme_chance
+            theme_key = random.choice(missing) if missing and random.random() < spec.theme_chance else None
             receipt = {
                 "summary": spec.summary,
                 "bones": spec.bones,
                 "bags": bags,
                 "crate": crate,
-                "theme": bool(theme),
-                "theme_owned": user_id in owned and rooms == 3 and spec.role == "active" and not struggling,
+                "theme": bool(theme_key),
+                "theme_key": theme_key,
+                "theme_owned": owns_all and rooms == 3 and spec.role == "active" and not struggling,
                 "role": spec.role,
                 "applied": False,
             }
@@ -837,10 +862,11 @@ class HalloweenManor(commands.Cog):
                         f'UPDATE profile SET "{column}" = COALESCE("{column}", 0) + 1 WHERE "user" = $1;',
                         user_id,
                     )
-        if receipt["theme"]:
+        theme_key = self._receipt_theme_key(receipt)
+        if theme_key:
             from cogs.profile.theme_unlocks import grant_event_theme
 
-            await grant_event_theme(self.bot.pool, user_id, THEME_KEY, "hollow_manor")
+            await grant_event_theme(self.bot.pool, user_id, theme_key, "hollow_manor")
 
     async def _send_receipts(self, grants):
         async def send_one(user_id, receipt):
@@ -1169,7 +1195,7 @@ class HalloweenManor(commands.Cog):
                 if player["crate"]:
                     parts.append(f"{player['crate'].capitalize()} crate")
                 if player["theme"]:
-                    parts.append("The Last Lantern")
+                    parts.append("Halloween theme")
                 reward = ", ".join(parts)
             lines.append(
                 f"<@{player['user_id']}> · {role} · {reward} · joined {self._stamp(player['joined_at'], 'T')}"
