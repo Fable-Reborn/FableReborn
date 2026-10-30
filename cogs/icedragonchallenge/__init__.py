@@ -11,6 +11,7 @@ from cogs.shard_communication import user_on_cooldown
 from utils.checks import has_char, is_gm, is_patreon
 from utils.i18n import _
 from utils import misc as rpgtools
+from utils import unoquil
 from classes import breathcaller, dragonkin, penitent
 from classes.classes import Breathcaller, Penitent
 from classes.classes import from_string as class_from_string
@@ -2290,6 +2291,9 @@ class IceDragonChallenge(commands.Cog):
         if mutator_lines:
             battle_log.append("**This Week's Mutators:**\n" + "\n".join(mutator_lines))
 
+        # It sometimes speaks to Dragonkin when it falls (handle_victory).
+        dragon["kin_present"] = any(p.get("dragonkin") for p in battle_participants if not p.get("is_pet"))
+
         # Create initial embed
         battle_msg = await ctx.send(embed=await self.create_battle_embed(dragon, battle_participants, battle_log))
         await asyncio.sleep(2)
@@ -2949,6 +2953,16 @@ class IceDragonChallenge(commands.Cog):
             #f"Each party member receives **{snowflakes_per_member:,} snowflakes**! ❄️"
         )
         await ctx.send(victory_text)
+
+        # Now and then, as it falls, it remembers something (utils/unoquil.py).
+        words = unoquil.falling_words(dragon.get("stage") or stage_name, kin_present=bool(dragon.get("kin_present")))
+        if words:
+            embed = discord.Embed(description="\n\n".join(f'*"{line}"*' for line in words), color=0x87CEEB)
+            embed.set_author(name=unoquil.SPEAKER)
+            try:
+                await ctx.send(embed=embed)
+            except discord.HTTPException:
+                pass
 
         # Let other systems (Legacy Points, bounties, ...) react to the kill
         self.bot.dispatch("icedragon_victory", ctx, party_members, stage_name, current_level)
