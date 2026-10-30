@@ -112,6 +112,25 @@ class Starforge(commands.Cog):
         async with self.bot.pool.acquire() as conn2:
             return int(await conn2.fetchval(query, user_id) or 0)
 
+    async def grant_essence(self, user_id: int, amount: int, conn=None) -> int:
+        """Add Essence to a player. Returns the new balance."""
+        amount = int(amount)
+        if amount <= 0:
+            return await self._essence_balance(user_id, conn=conn)
+        await self.ensure_tables()
+        query = """
+            INSERT INTO starforge_essence (user_id, essence, updated_at)
+            VALUES ($1, $2, NOW())
+            ON CONFLICT (user_id) DO UPDATE
+            SET essence = starforge_essence.essence + EXCLUDED.essence,
+                updated_at = NOW()
+            RETURNING essence
+        """
+        if conn is not None:
+            return int(await conn.fetchval(query, user_id, amount) or 0)
+        async with self.bot.pool.acquire() as conn2:
+            return int(await conn2.fetchval(query, user_id, amount) or 0)
+
     async def _soulbound_item_exists(self, item_id: int, conn) -> bool:
         table_exists = await conn.fetchval(
             "SELECT to_regclass('public.soulbound') IS NOT NULL;"

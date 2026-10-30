@@ -4,6 +4,7 @@ config.json
 patreon_config.json
 acc.json
 macro_detection_backup
+cogs/_cog_backups/
 tools/heartbeat_watchdog_config.json
 cogs/russian/rr_settings.json
 

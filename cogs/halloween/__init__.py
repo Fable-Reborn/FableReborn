@@ -30,6 +30,9 @@ from utils import checks as checks
 from utils import random
 from utils.i18n import _, locale_doc
 
+YUMMY_ESSENCE_CHANCE = 0.05
+YUMMY_ESSENCE_RANGE = (2, 6)
+
 
 class Halloween(commands.Cog):
     def __init__(self, bot):
@@ -588,7 +591,7 @@ class Halloween(commands.Cog):
             """Open a trick or treat bag, you can get some with `{prefix}trickortreat`.
 
             Trick or treat bags contain halloween-themed items, ranging from 1 to 50 base stat.
-            Their value will be between 1 and 200."""
+            Their value will be between 1 and 200. There is also a small chance to find Starforge Essence."""
         )
         if not await self._ensure_event_enabled(ctx):
             return
@@ -675,12 +678,23 @@ class Halloween(commands.Cog):
         )
 
         item["name"] = f"{name} {item['type_']}"
+        essence_gain = (
+            random.randint(*YUMMY_ESSENCE_RANGE)
+            if random.random() < YUMMY_ESSENCE_CHANCE
+            else 0
+        )
         async with self.bot.pool.acquire() as conn:
             await self.bot.create_item(**item, conn=conn)
             await conn.execute(
                 'UPDATE profile SET "trickortreat"="trickortreat"-1 WHERE "user"=$1;',
                 ctx.author.id,
             )
+            if essence_gain:
+                starforge = self.bot.get_cog("Starforge")
+                if starforge is not None:
+                    await starforge.grant_essence(ctx.author.id, essence_gain, conn=conn)
+                else:
+                    essence_gain = 0
         embed = discord.Embed(
             title=_("You gained an item!"),
             description=_("You found a new item when opening a trick-or-treat bag!"),
@@ -692,6 +706,12 @@ class Halloween(commands.Cog):
         embed.add_field(name=_("Damage"), value=item["damage"], inline=True)
         embed.add_field(name=_("Armor"), value=item["armor"], inline=True)
         embed.add_field(name=_("Value"), value=f"${item['value']}", inline=False)
+        if essence_gain:
+            embed.add_field(
+                name="Starforge Essence",
+                value=f"★ A pinch of starlight settled in the bag: **{essence_gain} Essence**.",
+                inline=False,
+            )
         embed.set_footer(
             text=_("Remaining trick-or-treat bags: {bags}").format(
                 bags=ctx.character_data["trickortreat"] - 1
