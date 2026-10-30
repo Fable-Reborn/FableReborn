@@ -47,13 +47,13 @@ MAX_EXTRA_TICKETS = 4
 SITOUT_DOORS = 2
 PITY_GUARANTEE_AFTER = 5
 
-# Ethereal weapons always use the top window (99 one-hand / 197 two-hand).
+# Ethereal weapons roll the high odd window (93–99 one-hand / 185–197 two-hand).
 ONE_HAND_BANDS = (
     (0.60, (81, 83, 85, 87, 89)),
     (0.30, (91, 93, 95, 97)),
     (0.10, (99,)),
 )
-ETHEREAL_STAT_BAND = ONE_HAND_BANDS[-1][1]
+ETHEREAL_STAT_BAND = (93, 95, 97, 99)
 
 TRICK_VARIANTS = ("goblin", "bag", "chimney", "stick")
 TREAT_VARIANTS = ("hostess", "host", "spirit", "table")
@@ -373,8 +373,7 @@ def two_hand_stat(one_hand: int) -> int:
 
 
 def roll_ethereal_stat(two_handed: bool, rng) -> int:
-    del rng
-    stat = ETHEREAL_STAT_BAND[-1]
+    stat = rng.choice(ETHEREAL_STAT_BAND)
     return two_hand_stat(stat) if two_handed else stat
 
 

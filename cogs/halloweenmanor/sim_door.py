@@ -20,6 +20,7 @@ try:
         DOOR_DIR,
         EST,
         ETHEREAL_CHANCE,
+        ETHEREAL_STAT_BAND,
         LAUNCH_DOORS,
         MIN_GAP_SECONDS,
         STEADY_DOORS,
@@ -45,6 +46,7 @@ except ImportError:
         DOOR_DIR,
         EST,
         ETHEREAL_CHANCE,
+        ETHEREAL_STAT_BAND,
         LAUNCH_DOORS,
         MIN_GAP_SECONDS,
         STEADY_DOORS,
@@ -193,8 +195,8 @@ def main():
                     ethereal_hands["2h" if two_hand else "1h"] += 1
                     stat = receipt.item.armor or receipt.item.damage
                     ethereal_stats[stat] += 1
-                    expected = two_hand_stat(99) if two_hand else 99
-                    if stat != expected:
+                    allowed = {two_hand_stat(n) for n in ETHEREAL_STAT_BAND} if two_hand else set(ETHEREAL_STAT_BAND)
+                    if stat not in allowed:
                         bad_stats.append(("2h" if two_hand else "1h", receipt.item.name, stat))
 
     total = sum(outcomes.values())
@@ -232,8 +234,9 @@ def main():
         f"always visits {spread}",
     )
 
-    odd_ok = ethereal_stats.keys() <= {99, two_hand_stat(99)} and not bad_stats
-    check("ethereal stats are the top window", odd_ok, f"{dict(sorted(ethereal_stats.items()))} bad={bad_stats[:5]}")
+    allowed_stats = set(ETHEREAL_STAT_BAND) | {two_hand_stat(n) for n in ETHEREAL_STAT_BAND}
+    odd_ok = ethereal_stats.keys() <= allowed_stats and not bad_stats
+    check("ethereal stats are 93-99 odd", odd_ok, f"{dict(sorted(ethereal_stats.items()))} bad={bad_stats[:5]}")
     check("ethereal includes 2h", ethereal_hands["2h"] > 0, f"{dict(ethereal_hands)}")
 
     check("chaos window 8h", parse_window("8h") == 8 * 3600, str(parse_window("8h")))

@@ -82,7 +82,7 @@ A GM starts a night with `$door start 24h` (or `3d` / `7d`). Doors appear at ran
 
 `$door chaos 8h` (or `3h` / `24h`) is the finale night. Doors still appear at random times, but much more often: a lead door opens, then 3–8 more follow within seconds at other ranks in the Halloween category. Night Watch is pinged when chaos starts and on each lead door. Sitout does not bench anyone during chaos. `$door stop` ends it.
 
-Players press **Knock** and wait. When the door answers, one visitor is chosen by tickets (pity is hidden). Everyone who knocked gets a crumb. Trick visitors get bones plus the gag (the Stick of Shame on that variant). Treat visitors get more bones and a bag chance. Ethereal (~5%, and only if at least two people knocked) grants a named weapon at the top odd window: **99** one-hand or **197** two-hand.
+Players press **Knock** and wait. When the door answers, one visitor is chosen by tickets (pity is hidden). Everyone who knocked gets a crumb. Trick visitors get bones plus the gag (the Stick of Shame on that variant). Treat visitors get more bones and a bag chance. Ethereal (~5%, and only if at least two people knocked) grants a named weapon in the high odd window: **93–99** one-hand or **185–197** two-hand (`2 × stat − 1`).
 
 | Command | Who | What it does |
 |---|---|---|
