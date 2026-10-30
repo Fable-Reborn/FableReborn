@@ -242,6 +242,9 @@ class Bot(commands.AutoShardedBot):
             extensions.insert(quest_index, "cogs.factions")
         if "cogs.aiplayer" not in extensions:
             extensions.append("cogs.aiplayer")
+        # Battle elixirs brewed in the Fables Library.
+        if "cogs.elixirs" not in extensions:
+            extensions.append("cogs.elixirs")
         for extension in extensions:
             try:
                 await self.load_extension(extension)

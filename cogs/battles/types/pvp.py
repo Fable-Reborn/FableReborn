@@ -6,6 +6,7 @@ import discord
 import datetime
 
 from ..core.battle import Battle
+from utils import elixirs
 from classes.warrior import (
     warrior_average_damage_multiplier,
     warrior_average_reduction_pct,
@@ -82,6 +83,10 @@ class PvPBattle(Battle):
         values = list(stats or [0, 0])
         damage = Decimal(str(values[0] if values else 0))
         armor = Decimal(str(values[1] if len(values) > 1 else 0))
+        if self.config.get("elixirs", True):
+            elixir_damage, elixir_armor = elixirs.simple_stat_multipliers(combatant)
+            damage *= elixir_damage
+            armor *= elixir_armor
         if self.config.get("class_buffs", True):
             grade = int(getattr(combatant, "warrior_evolution", 0) or 0)
             effects = getattr(combatant, "spec_effects", None) or {}

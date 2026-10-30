@@ -5,6 +5,8 @@ import random
 import datetime
 
 from utils.april_fools import get_greg_hidden_pet_effects, mask_runtime_name
+from utils import library_pets
+from .pet_species import SpeciesSkills, tree_for_species
 
 class PetExtension:
     """Extension for pet integration in battles"""
@@ -641,6 +643,8 @@ class PetExtension:
 
         effects = pet_combatant.skill_effects
         messages = []
+        if getattr(pet_combatant, 'species_tree', None):
+            messages.extend(SpeciesSkills(self).on_death(pet_combatant))
 
         if 'dark_shield' in effects:
             self._clear_timed_multiplier(pet_combatant, 'dark_shield')
@@ -863,6 +867,10 @@ class PetExtension:
             'learned_lightning_rod',
             any('lightning rod' in str(skill).lower() for skill in (learned_skills or [])),
         )
+        # Library species (pet_species.py) use their own tree, not the element's.
+        if getattr(pet_combatant, 'species_tree', None):
+            SpeciesSkills(self).setup(pet_combatant, learned_skills)
+            return
         if not learned_skills:
             return
             
@@ -1606,7 +1614,9 @@ class PetExtension:
         
         if not hasattr(pet_combatant, 'skill_effects'):
             return damage, []
-            
+        if getattr(pet_combatant, 'species_tree', None):
+            return SpeciesSkills(self).on_attack(pet_combatant, target, damage)
+
         modified_damage = Decimal(str(damage))
         effects = pet_combatant.skill_effects
         messages = []
@@ -2938,7 +2948,9 @@ class PetExtension:
         
         if not hasattr(pet_combatant, 'skill_effects'):
             return damage, []
-            
+        if getattr(pet_combatant, 'species_tree', None):
+            return SpeciesSkills(self).on_damage_taken(pet_combatant, attacker, damage)
+
         incoming_damage = Decimal(str(damage))
         modified_damage = incoming_damage
         effects = pet_combatant.skill_effects
@@ -3335,7 +3347,9 @@ class PetExtension:
             
         effects = pet_combatant.skill_effects
         messages = []
-        
+        if getattr(pet_combatant, 'species_tree', None):
+            messages.extend(SpeciesSkills(self).per_turn(pet_combatant))
+
         # Check for ultimate activation
         if (hasattr(pet_combatant, 'ultimate_threshold') and 
             not getattr(pet_combatant, 'ultimate_activated', False)):
@@ -4605,6 +4619,15 @@ class PetExtension:
                 final_armor *= pet_multiplier
                 final_damage *= pet_multiplier
 
+            # Library-born (pet_species.py): Fables species fight a little above their stats,
+            # +1% per evolution Chapter.
+            species_tree = tree_for_species(pet.get("default_name"))
+            if species_tree:
+                library_born = 1.0 + library_pets.library_born_pct(library_pets.chapter_of(pet)) / 100.0
+                final_hp *= library_born
+                final_armor *= library_born
+                final_damage *= library_born
+
             happiness = pet.get('happiness', 50)
 
             pet_combatant = Combatant(
@@ -4640,6 +4663,9 @@ class PetExtension:
                 elif learned_skills is None:
                     learned_skills = []
 
+            pet_combatant.species_tree = species_tree
+            if species_tree:
+                pet_combatant.library_chapter = library_pets.chapter_of(pet)
             self.apply_skill_effects(pet_combatant, learned_skills)
             self.apply_greg_hidden_effects(ctx.bot, pet_combatant)
 

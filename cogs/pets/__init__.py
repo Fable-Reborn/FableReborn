@@ -45,6 +45,15 @@ from utils.april_fools import (
 from utils.checks import has_char, has_money, is_gm, is_patreon, user_is_patron
 from utils.i18n import _, locale_doc
 from utils.joins import SingleJoinView
+from utils import library_pets
+from cogs.battles.extensions.pet_species import (
+    HEAL_RULE as SPECIES_HEAL_RULE,
+    LIBRARY_BORN,
+    SPECIES_SKILL_TREES,
+    TREE_EMOJIS as SPECIES_TREE_EMOJIS,
+    TREE_IDEAS as SPECIES_TREE_IDEAS,
+    tree_for_species,
+)
 
 DAYCARE_OWNER_REQUIRED_PATREON_TIER = 1
 PET_ELEMENT_EMOJIS = {
@@ -2355,6 +2364,8 @@ class Pets(commands.Cog):
             self.check_pet_growth.start()
         if not self.auto_return_daycare_boardings.is_running():
             self.auto_return_daycare_boardings.start()
+        if not self.deliver_library_eggs.is_running():
+            self.deliver_library_eggs.start()
             
         self.emoji_to_element = {
             "<:f_corruption:1170192253256466492>": "Corrupted",
@@ -2620,11 +2631,14 @@ class Pets(commands.Cog):
             self.check_pet_growth.cancel()
         if self.auto_return_daycare_boardings.is_running():
             self.auto_return_daycare_boardings.cancel()
+        if self.deliver_library_eggs.is_running():
+            self.deliver_library_eggs.cancel()
 
     async def initialize_enhanced_tables(self):
         """Initialize the enhanced pet system database tables"""
         try:
             async with self.bot.pool.acquire() as conn:
+                await self.ensure_library_pet_tables(conn)
                 # Add new columns to existing monster_pets table
                 await conn.execute("""
                     ALTER TABLE monster_pets 
@@ -5043,6 +5057,9 @@ class Pets(commands.Cog):
     def is_pet_equippable(self, pet) -> bool:
         if not pet or pet.get("daycare_boarding_id"):
             return False
+        # Library pets can be equipped from birth: the equipped pet is the one that follows its reader in the Library.
+        if library_pets.is_library_pet(pet):
+            return True
         return str(pet.get("growth_stage") or "").lower() in {"young", "adult"}
 
     async def equip_pet_by_id(self, user_id: int, pet_id: int):
@@ -5058,7 +5075,7 @@ class Pets(commands.Cog):
             if pet.get("daycare_boarding_id"):
                 return None, "❌ This pet is currently boarded in daycare and cannot be used directly."
 
-            if str(pet.get("growth_stage") or "").lower() not in {"young", "adult"}:
+            if not library_pets.is_library_pet(pet) and str(pet.get("growth_stage") or "").lower() not in {"young", "adult"}:
                 return (
                     None,
                     f"❌ **{pet['name']}** must be at least in the **young** growth stage to be equipped.",
@@ -5260,6 +5277,9 @@ class Pets(commands.Cog):
         trust_multiplier = 1 + (trust_bonus_pct / 100.0)
         owner_pet_bonus_pct = float(pet.get("_owner_pet_bonus_pct", 0) or 0)
         owner_multiplier = 1 + (owner_pet_bonus_pct / 100.0)
+        # Library-born species fight a little above their stats, more with each Chapter.
+        if tree_for_species(pet.get("default_name")):
+            owner_multiplier *= 1 + (library_pets.library_born_pct(library_pets.chapter_of(pet)) / 100.0)
 
         base_hp = float(pet.get("hp", 0) or 0)
         base_attack = float(pet.get("attack", 0) or 0)
@@ -5295,9 +5315,29 @@ class Pets(commands.Cog):
         """Calculate total earned skill points from a pet's level."""
         return max(0, int(level or 0) // self.PET_SKILL_POINT_INTERVAL)
 
+    def get_skill_tree_key(self, pet):
+        """The tree a pet learns from: its species' own (Library pets), else its element's."""
+        species_tree = tree_for_species(pet.get("default_name"))
+        return species_tree or pet.get("element")
+
+    def get_skill_tree(self, tree_key):
+        """An element tree or a species tree, by key ({} if neither)."""
+        return self.SKILL_TREES.get(tree_key) or SPECIES_SKILL_TREES.get(tree_key) or {}
+
+    def iter_all_skill_trees(self):
+        """Every learnable tree: the elements, then the Library species."""
+        yield from self.SKILL_TREES.items()
+        yield from SPECIES_SKILL_TREES.items()
+
+    def get_skill_tree_label(self, tree_key):
+        """(emoji, label) for a tree, e.g. ("🔥", "Fire") or ("🖋️", "Inkwyrm")."""
+        if tree_key in SPECIES_SKILL_TREES:
+            return SPECIES_TREE_EMOJIS.get(tree_key, "📖"), tree_key
+        return PET_ELEMENT_EMOJIS.get(tree_key, "❓"), tree_key
+
     def get_all_skill_names_for_element(self, element):
-        """Return all skill names for a pet element in tree order."""
-        skill_tree = self.SKILL_TREES.get(element, {})
+        """Return all skill names for a pet element (or species tree) in tree order."""
+        skill_tree = self.get_skill_tree(element)
         skill_names = []
         for branch_skills in skill_tree.values():
             for skill_data in branch_skills.values():
@@ -5337,12 +5377,12 @@ class Pets(commands.Cog):
     def get_effective_learned_skills(self, pet):
         """Return the skill list a pet should currently have access to."""
         if pet.get("gm_all_skills_enabled"):
-            return self.get_all_skill_names_for_element(pet.get("element"))
+            return self.get_all_skill_names_for_element(self.get_skill_tree_key(pet))
         return self.normalize_learned_skills(pet.get("learned_skills", []))
 
     def get_skill_point_skill_lookup(self, element):
-        """Build a normalized skill metadata lookup for one element tree."""
-        skill_tree = self.SKILL_TREES.get(element, {})
+        """Build a normalized skill metadata lookup for one element (or species) tree."""
+        skill_tree = self.get_skill_tree(element)
         if not skill_tree:
             return {}
 
@@ -5522,14 +5562,15 @@ class Pets(commands.Cog):
             result["repairable"] = False
             return result
 
-        if result["element"] not in self.SKILL_TREES:
+        tree_key = self.get_skill_tree_key(pet)
+        if not self.get_skill_tree(tree_key):
             result["status"] = "unknown_element"
             result["repairable"] = False
             return result
 
         result["earned_skill_points"] = self.get_total_earned_skill_points(result["level"])
         minimum_spent, unknown_count = self.get_minimum_possible_spent_skill_points(
-            result["element"],
+            tree_key,
             result["learned_skills"],
         )
         result["minimum_spent"] = int(minimum_spent)
@@ -5539,7 +5580,7 @@ class Pets(commands.Cog):
 
         while result["repaired_spent"] > result["earned_skill_points"] and result["repaired_skills"]:
             removed_skill, remaining_skills, new_spent = self.pick_skill_to_remove_for_skill_limit(
-                result["element"],
+                tree_key,
                 result["repaired_skills"],
             )
             if not removed_skill:
@@ -5640,19 +5681,22 @@ class Pets(commands.Cog):
             return pets[0]
         return None
 
-    async def award_battle_experience_for_user(self, user_id, battle_xp, trust_gain=1):
-        """Award battle XP to the equipped pet, or only pet if exactly one exists."""
+    async def award_battle_experience_for_user(self, user_id, battle_xp, trust_gain=1, library_story=False):
+        """Award battle XP to the equipped pet, or only pet if exactly one exists.
+
+        library_story: the win also earns a Library pet's Story (the caller says so: PvE wins without the macro
+        penalty; nothing else)."""
         try:
             async with self.bot.pool.acquire() as conn:
                 pet = await self._get_default_pet_for_user(conn, user_id)
             if not pet:
                 return {"awarded_xp": 0, "reason": "no_active_pet"}
-            return await self.award_battle_experience(pet["id"], battle_xp, trust_gain=trust_gain)
+            return await self.award_battle_experience(pet["id"], battle_xp, trust_gain=trust_gain, library_story=library_story)
         except Exception as e:
             print(f"Error awarding battle experience for user {user_id}: {e}")
             return {"awarded_xp": 0, "reason": "error"}
 
-    async def award_battle_experience(self, pet_id, battle_xp, trust_gain=1):
+    async def award_battle_experience(self, pet_id, battle_xp, trust_gain=1, library_story=False):
         """Award experience to a pet after participating in a battle"""
         try:
             requested_xp = max(0, int(battle_xp))
@@ -5661,11 +5705,14 @@ class Pets(commands.Cog):
 
             async with self.bot.pool.acquire() as conn:
                 pet = await conn.fetchrow(
-                    "SELECT id, user_id, name FROM monster_pets WHERE id = $1;",
+                    "SELECT id, user_id, name, default_name FROM monster_pets WHERE id = $1;",
                     pet_id,
                 )
                 if not pet:
                     return {"awarded_xp": 0, "requested_xp": requested_xp, "reason": "pet_not_found"}
+                if library_story and library_pets.is_library_pet(pet) and pet["user_id"]:
+                    # Every win with a Library pet tells a little more of its story (daily share applies).
+                    await self.add_library_story(conn, pet["user_id"], "battle")
 
                 user_id = pet["user_id"]
                 if not user_id or int(user_id) <= 0:
@@ -7075,6 +7122,12 @@ class Pets(commands.Cog):
                 await self.bot.reset_cooldown(ctx)
                 return
 
+            bound = library_pets.bound_message(your_item, "traded") or library_pets.bound_message(their_item, "traded")
+            if bound:
+                await ctx.send(f"❌ {bound}")
+                await self.bot.reset_cooldown(ctx)
+                return
+
             their_user_id = their_item['user_id']
             if their_user_id == ctx.author.id:
                 await ctx.send("❌ You cannot trade with your own items.")
@@ -7205,30 +7258,44 @@ class Pets(commands.Cog):
                         ctx.author.id
                     )
 
-                    # Count current items for both users (excluding the items being traded)
-                    their_pet_count = await conn.fetchval(
-                        """
-                        SELECT 
-                            (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND id != $2) +
-                            (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND id != $3) +
-                            (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
-                        """,
+                    # Count current items for both users (excluding the items being traded). Library pets and eggs
+                    # sit on their own Library shelf, so each kind is counted on its own.
+                    def is_library(item, item_type):
+                        return library_pets.is_library_pet(item) if item_type == 'pet' else library_pets.is_library_egg(item)
+
+                    async def counts(user_id, pet_id, egg_id):
+                        normal = await conn.fetchval(
+                            f"""
+                            SELECT
+                                (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND id != $2 AND {library_pets.NOT_LIBRARY_PET_SQL}) +
+                                (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND id != $3 AND {library_pets.NOT_LIBRARY_EGG_SQL}) +
+                                (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
+                            """,
+                            user_id, pet_id, egg_id
+                        )
+                        shelf = await conn.fetchval(
+                            f"""
+                            SELECT
+                                (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND id != $2 AND {library_pets.LIBRARY_PET_SQL}) +
+                                (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND id != $3 AND {library_pets.LIBRARY_EGG_SQL})
+                            """,
+                            user_id, pet_id, egg_id
+                        )
+                        return int(normal or 0), int(shelf or 0)
+
+                    their_pet_count, their_shelf_count = await counts(
                         their_user_id,
                         their_item_id if their_type == 'pet' else -1,  # Use -1 if not trading a pet
                         their_item_id if their_type == 'egg' else -1   # Use -1 if not trading an egg
                     )
-
-                    author_pet_count = await conn.fetchval(
-                        """
-                        SELECT 
-                            (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND id != $2) +
-                            (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND id != $3) +
-                            (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
-                        """,
+                    author_pet_count, author_shelf_count = await counts(
                         ctx.author.id,
                         your_item_id if your_type == 'pet' else -1,   # Use -1 if not trading a pet
                         your_item_id if your_type == 'egg' else -1    # Use -1 if not trading an egg
                     )
+                    # What each side receives: they get your item, you get theirs.
+                    their_incoming_library = is_library(your_item, your_type)
+                    author_incoming_library = is_library(their_item, their_type)
 
                     # Calculate max pets based on tier
                     def calculate_max_pets(user_id, tier, guild_member=None):
@@ -7260,8 +7327,18 @@ class Pets(commands.Cog):
                     their_max_pets = calculate_max_pets(their_user_id, their_tier, their_member)
                     author_max_pets = calculate_max_pets(ctx.author.id, author_tier, author_member)
 
+                    # The Library shelf, for a Library pet or egg changing hands.
+                    if their_incoming_library and their_shelf_count + 1 > library_pets.LIBRARY_SLOTS:
+                        await ctx.send(f"❌ {their_user.mention}'s Library shelf is full ({library_pets.LIBRARY_SLOTS} places).")
+                        await self.bot.reset_cooldown(ctx)
+                        return
+                    if author_incoming_library and author_shelf_count + 1 > library_pets.LIBRARY_SLOTS:
+                        await ctx.send(f"❌ Your Library shelf is full ({library_pets.LIBRARY_SLOTS} places).")
+                        await self.bot.reset_cooldown(ctx)
+                        return
+
                     # Check if adding one item would exceed limits (since it's a 1:1 trade, we're adding 1 item each)
-                    if their_pet_count + 1 > their_max_pets:
+                    if not their_incoming_library and their_pet_count + 1 > their_max_pets:
                         await ctx.send(
                             f"❌ {their_user.mention} cannot have more than {their_max_pets} pets or eggs (including spliced). "
                             f"They currently have {their_pet_count} items and would exceed the limit."
@@ -7269,7 +7346,7 @@ class Pets(commands.Cog):
                         await self.bot.reset_cooldown(ctx)
                         return
 
-                    if author_pet_count + 1 > author_max_pets:
+                    if not author_incoming_library and author_pet_count + 1 > author_max_pets:
                         await ctx.send(
                             f"❌ You cannot have more than {author_max_pets} pets or eggs. "
                             f"You currently have {author_pet_count} items and would exceed the limit."
@@ -7455,6 +7532,12 @@ class Pets(commands.Cog):
                     await ctx.send(f"❌ You don't have a {item_type} with ID `{your_item_id}`.")
                 else:
                     await ctx.send(f"❌ You don't have a {item_type} with ID or alias `{your_item_ref}`.")
+                await self.bot.reset_cooldown(ctx)
+                return
+
+            bound = library_pets.bound_message(your_item, "sold")
+            if bound:
+                await ctx.send(f"❌ {bound}")
                 await self.bot.reset_cooldown(ctx)
                 return
 
@@ -9008,17 +9091,18 @@ class Pets(commands.Cog):
                 pet = dict(pet)
                 pet.update(dict(snapshot))
 
-        element = pet['element']
-        if element not in self.SKILL_TREES:
+        element = self.get_skill_tree_key(pet)
+        skill_tree = self.get_skill_tree(element)
+        if not skill_tree:
             await ctx.send(f"❌ {pet['name']} has an unknown element: {element}")
             return
 
-        skill_tree = self.SKILL_TREES[element]
         learned_skills = self.get_effective_learned_skills(pet)
         total_skills = len(self.get_all_skill_names_for_element(element))
-        
-        # Get element emoji
-        element_emoji = PET_ELEMENT_EMOJIS.get(element, "❓")
+        library_chapter = library_pets.chapter_of(pet) if library_pets.is_library_pet(pet) else None
+
+        # Get element (or species tree) emoji
+        element_emoji, _tree_label = self.get_skill_tree_label(element)
         gm_override_text = (
             "\n**GM Override:** All element skills enabled"
             if pet.get("gm_all_skills_enabled")
@@ -9028,7 +9112,10 @@ class Pets(commands.Cog):
         embed = discord.Embed(
             title=f"🌳 {pet['name']}'s Skill Tree ({element_emoji} {element})",
             description=f"**Level:** {pet['level']}/{self.PET_MAX_LEVEL} | **Skill Points:** {pet['skill_points']} | **Trust:** {pet['trust_level']}/100\n"
-                       f"**Learned Skills:** {len(learned_skills)}/{total_skills}{gm_override_text}",
+                       f"**Learned Skills:** {len(learned_skills)}/{total_skills}{gm_override_text}"
+                       + (f"\n📖 **{library_pets.form_name(pet)}** · Chapter {library_pets.roman(library_chapter)} of X · "
+                          f"Library-born +{library_pets.library_born_pct(library_chapter)}%"
+                          f"\n**{LIBRARY_BORN}**\n*{SPECIES_TREE_IDEAS[element]} {SPECIES_HEAL_RULE}*" if element in SPECIES_TREE_IDEAS else ""),
             color=discord.Color.blue()
         )
 
@@ -9090,6 +9177,271 @@ class Pets(commands.Cog):
         embed.set_footer(text="Use $pets skillinfo <skill_name> for detailed skill information!")
         await ctx.send(embed=embed)
 
+    # ------------------------------------------------------------------ Fables Library pets
+    async def ensure_library_pet_tables(self, conn):
+        await conn.execute(library_pets.PET_CHAPTER_SQL)
+        await conn.execute(library_pets.STORY_EVENTS_SQL)
+        await conn.execute(library_pets.STORY_WALLET_SQL)
+        await conn.execute(library_pets.LIBRARY_EGGS_SQL)
+
+    async def add_library_story(self, conn, user_id, source, amount=None, request_id=None):
+        """Record Story for a player. Each source counts up to its daily share (utils/library_pets.py)."""
+        amount = library_pets.STORY_SOURCES[source]["amount"] if amount is None else int(amount)
+        if amount <= 0:
+            return False
+        try:
+            result = await conn.execute(
+                "INSERT INTO library_pet_story (user_id, source, amount, request_id) VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (request_id) DO NOTHING;",
+                int(user_id), source, amount, request_id,
+            )
+        except asyncpg.UndefinedTableError:
+            await self.ensure_library_pet_tables(conn)
+            return await self.add_library_story(conn, user_id, source, amount, request_id)
+        return result.endswith("1")
+
+    async def get_library_story(self, conn, user_id):
+        """(balance, today's progress by source)."""
+        try:
+            rows = await conn.fetch(
+                "SELECT source, day, SUM(amount) AS total FROM library_pet_story WHERE user_id = $1 GROUP BY source, day;",
+                int(user_id),
+            )
+            spent = await conn.fetchval("SELECT spent FROM library_pet_story_wallet WHERE user_id = $1;", int(user_id)) or 0
+        except asyncpg.UndefinedTableError:
+            await self.ensure_library_pet_tables(conn)
+            rows, spent = [], 0
+        daily = [(row["source"], row["day"], row["total"]) for row in rows]
+        return library_pets.story_balance(daily, spent), library_pets.today_progress(daily)
+
+    async def queue_library_egg(self, conn, user_id, species_name, source):
+        await self.ensure_library_pet_tables(conn)
+        return await conn.fetchval(
+            "INSERT INTO library_pet_eggs (user_id, species, source) VALUES ($1, $2, $3) RETURNING id;",
+            int(user_id), species_name, source,
+        )
+
+    async def get_pet_capacity(self, conn, user_id):
+        """(used, allowed) normal pet + egg + pending splice slots, by donator tier (as egg drops count them).
+        Library pets and eggs aren't counted: they have their own shelf (get_library_capacity)."""
+        used = await conn.fetchval(
+            f"""
+            SELECT (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND {library_pets.NOT_LIBRARY_PET_SQL})
+                 + (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND {library_pets.NOT_LIBRARY_EGG_SQL})
+                 + (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending');
+            """,
+            int(user_id),
+        ) or 0
+        tier = await conn.fetchval('SELECT tier FROM profile WHERE "user" = $1;', int(user_id)) or 0
+        allowed = {1: 12, 2: 14, 3: 17, 4: 25}.get(int(tier), 10)
+        return int(used), allowed
+
+    async def get_library_capacity(self, conn, user_id):
+        """(used, allowed) places on the Library shelf: Library pets and unhatched Library eggs."""
+        used = await conn.fetchval(
+            f"""
+            SELECT (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND {library_pets.LIBRARY_PET_SQL})
+                 + (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND {library_pets.LIBRARY_EGG_SQL});
+            """,
+            int(user_id),
+        ) or 0
+        return int(used), library_pets.LIBRARY_SLOTS
+
+    @tasks.loop(minutes=1)
+    async def deliver_library_eggs(self):
+        """Library eggs wait until their owner has room on their Library shelf, then arrive ready to hatch."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                await self.ensure_library_pet_tables(conn)
+                waiting = await conn.fetch(
+                    "SELECT * FROM library_pet_eggs WHERE delivered_at IS NULL ORDER BY id LIMIT 50;"
+                )
+                for queued in waiting:
+                    spec = library_pets.species(queued["species"])
+                    if spec is None:
+                        continue
+                    # One of each kind per reader: a second egg of a kind they already have is set aside, not given.
+                    if not str(queued["source"]).startswith("gm") and await conn.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM monster_pets WHERE user_id = $1 AND default_name = $2)"
+                        " OR EXISTS (SELECT 1 FROM monster_eggs WHERE user_id = $1 AND egg_type = $2 AND hatched = FALSE);",
+                        queued["user_id"], spec.name,
+                    ):
+                        await conn.execute("UPDATE library_pet_eggs SET delivered_at = NOW() WHERE id = $1 AND delivered_at IS NULL;", queued["id"])
+                        continue
+                    used, allowed = await self.get_library_capacity(conn, queued["user_id"])
+                    if used >= allowed:
+                        continue
+                    rolled = library_pets.roll_egg(spec)
+                    async with conn.transaction():
+                        claimed = await conn.fetchval(
+                            "UPDATE library_pet_eggs SET delivered_at = NOW() WHERE id = $1 AND delivered_at IS NULL RETURNING id;",
+                            queued["id"],
+                        )
+                        if claimed is None:
+                            continue
+                        egg_id = await conn.fetchval(
+                            """
+                            INSERT INTO monster_eggs (
+                                user_id, egg_type, hp, attack, defense, element, url, hatch_time,
+                                "IV", hp_iv, attack_iv, defense_iv
+                            )
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11)
+                            RETURNING id;
+                            """,
+                            queued["user_id"], spec.name, rolled["hp"], rolled["attack"], rolled["defense"],
+                            spec.element, library_pets.egg_art_url(spec), rolled["IV"],
+                            rolled["hp_iv"], rolled["attack_iv"], rolled["defense_iv"],
+                        )
+                        await conn.execute("UPDATE library_pet_eggs SET egg_id = $1 WHERE id = $2;", egg_id, queued["id"])
+                    user = self.bot.get_user(int(queued["user_id"]))
+                    if user:
+                        try:
+                            await user.send(
+                                f"📖 A **{spec.name}** egg has arrived from the Fables Library "
+                                f"(IV {rolled['IV']:.1f}%). It is about to hatch!"
+                            )
+                        except discord.HTTPException:
+                            pass
+        except Exception as e:
+            print(f"Error in deliver_library_eggs: {e}")
+
+    @deliver_library_eggs.before_loop
+    async def before_deliver_library_eggs(self):
+        await self.bot.wait_until_ready()
+
+    @pets.command(name="story", brief=_("See your Library pets' Story and evolution"))
+    async def library_story(self, ctx):
+        """Story is earned in both games and evolves your Fables Library pets."""
+        async with self.bot.pool.acquire() as conn:
+            balance, progress = await self.get_library_story(conn, ctx.author.id)
+            rows = await conn.fetch("SELECT * FROM monster_pets WHERE user_id = $1 ORDER BY id;", ctx.author.id)
+            shelf_used, shelf_size = await self.get_library_capacity(conn, ctx.author.id)
+        library = [pet for pet in rows if library_pets.is_library_pet(pet)]
+        embed = discord.Embed(
+            title="📖 Story",
+            description=(f"You have **{balance:,} Story** to spend on evolving Fables Library pets.\n"
+                         "Each source counts toward its daily share; it refreshes at midnight UTC."),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(
+            name="Today",
+            value="\n".join(
+                f"{library_pets.STORY_SOURCES[source]['label']}: **{count}/{share}**"
+                for source, (count, share) in progress.items()
+            ),
+            inline=False,
+        )
+        if library:
+            lines = []
+            for pet in library[:10]:
+                chapter = library_pets.chapter_of(pet)
+                check = library_pets.can_evolve(pet, balance)
+                if chapter >= library_pets.MAX_CHAPTER:
+                    status = "fully evolved"
+                elif check.reason == "not_adult":
+                    status = "grows up first"
+                else:
+                    status = (f"Chapter {library_pets.roman(check.next_chapter)}: {check.cost:,} Story, level {check.level_needed}"
+                              + (" ✅" if check.ok else ""))
+                lines.append(f"`{pet['id']}` **{pet['name']}** ({library_pets.form_name(pet)}, "
+                             f"Chapter {library_pets.roman(chapter)}) · {status}")
+            embed.add_field(name="Your Library pets", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="Your Library pets", value="None yet. They hatch from Fables Library eggs.", inline=False)
+        embed.add_field(name="Library shelf", value=(f"**{shelf_used}/{shelf_size}** places (Library pets and eggs; "
+                                                     "they don't use your normal pet slots)"), inline=False)
+        embed.set_footer(text="Use $pets evolve <pet> when a pet is ready.")
+        await ctx.send(embed=embed)
+
+    @pets.command(name="evolve", brief=_("Evolve a Fables Library pet to its next Chapter"))
+    async def library_evolve(self, ctx, pet_ref: str):
+        """Spend Story to evolve a Library pet: stronger stats, more Library-born, new forms at IV and VIII."""
+        async with self.bot.pool.acquire() as conn:
+            await self.ensure_library_pet_tables(conn)
+            async with conn.transaction():
+                pet_id = await self.resolve_pet_id(conn, ctx.author.id, pet_ref)
+                pet = await conn.fetchrow(
+                    "SELECT * FROM monster_pets WHERE user_id = $1 AND id = $2 FOR UPDATE;",
+                    ctx.author.id, pet_id,
+                ) if pet_id is not None else None
+                if not pet:
+                    return await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
+                if pet.get("daycare_boarding_id"):
+                    return await ctx.send("❌ Bring that pet home from daycare first.")
+                await conn.execute(
+                    "INSERT INTO library_pet_story_wallet (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING;",
+                    ctx.author.id,
+                )
+                await conn.fetchval("SELECT spent FROM library_pet_story_wallet WHERE user_id = $1 FOR UPDATE;", ctx.author.id)
+                balance, _progress = await self.get_library_story(conn, ctx.author.id)
+                check = library_pets.can_evolve(pet, balance)
+                if not check.ok:
+                    messages = {
+                        "not_library": "Only Fables Library pets evolve through Chapters.",
+                        "not_adult": f"**{pet['name']}** needs to grow up to an adult first.",
+                        "max_chapter": f"**{pet['name']}** has already reached Chapter X.",
+                        "level": f"**{pet['name']}** needs to be level **{check.level_needed}** for Chapter "
+                                 f"{library_pets.roman(check.next_chapter)}.",
+                        "story": f"Chapter {library_pets.roman(check.next_chapter)} needs **{check.cost:,} Story** "
+                                 f"(you have {balance:,}). See `$pets story`.",
+                    }
+                    return await ctx.send(f"❌ {messages[check.reason]}")
+                old_form = library_pets.form_name(pet)
+                stats = library_pets.evolved_stats(pet)
+                spec = library_pets.species(pet["default_name"])
+                await conn.execute(
+                    "UPDATE library_pet_story_wallet SET spent = spent + $1 WHERE user_id = $2;",
+                    check.cost, ctx.author.id,
+                )
+                await conn.execute(
+                    "UPDATE monster_pets SET hp = $1, attack = $2, defense = $3, library_chapter = $4, url = $5 WHERE id = $6;",
+                    stats["hp"], stats["attack"], stats["defense"], check.next_chapter,
+                    library_pets.art_url(spec, check.next_chapter), pet["id"],
+                )
+        new_form = library_pets.form_name(spec, check.next_chapter)
+        embed = discord.Embed(
+            title=f"📖 Chapter {library_pets.roman(check.next_chapter)}",
+            description=(f"**{pet['name']}** turns the page."
+                         + (f"\n✨ It evolves from **{old_form}** into **{new_form}**!" if new_form != old_form else "")),
+            color=discord.Color.gold(),
+        )
+        embed.add_field(name="Stats", value=f"HP {pet['hp']:,} → **{stats['hp']:,}**\n"
+                                            f"Attack {pet['attack']:,} → **{stats['attack']:,}**\n"
+                                            f"Defense {pet['defense']:,} → **{stats['defense']:,}**", inline=True)
+        unlocks = [f"Library-born +{library_pets.library_born_pct(check.next_chapter)}%"]
+        if check.next_chapter == library_pets.ULTIMATE_CHAPTER:
+            unlocks.append("its ultimates can now be learned")
+        embed.add_field(name="Now", value="\n".join(unlocks), inline=True)
+        # A new form plays its evolution (Astera's animation, ending on the new portrait); other Chapters show the pet.
+        moment = library_pets.evolve_moment_url(spec, check.next_chapter)
+        if moment:
+            embed.set_image(url=moment)
+        else:
+            embed.set_thumbnail(url=library_pets.art_url(spec, check.next_chapter))
+        embed.set_footer(text=f"{check.cost:,} Story spent")
+        await ctx.send(embed=embed)
+
+    @is_gm()
+    @commands.command(hidden=True, name="gmlibraryegg")
+    async def gmlibraryegg(self, ctx, target: discord.User, *, species_name: str):
+        """GM: queue a Fables Library egg for a player (delivered when they have a free slot)."""
+        spec = library_pets.species(species_name) or next(
+            (s for s in library_pets.SPECIES.values() if s.name.lower() == species_name.strip().lower()), None)
+        if spec is None:
+            return await ctx.send("❌ Unknown species. Choose from: " + ", ".join(library_pets.SPECIES))
+        async with self.bot.pool.acquire() as conn:
+            queued_id = await self.queue_library_egg(conn, target.id, spec.name, f"gm:{ctx.author.id}")
+        await ctx.send(f"📖 Queued a **{spec.name}** egg for {target.mention} (#{queued_id}). It arrives when they have a free slot.")
+
+    @is_gm()
+    @commands.command(hidden=True, name="gmlibrarystory")
+    async def gmlibrarystory(self, ctx, target: discord.User, amount: int, *, reason: str = "staff"):
+        """GM: give a player Story (as an event reward)."""
+        async with self.bot.pool.acquire() as conn:
+            await self.add_library_story(conn, target.id, "reward", amount, f"gm:{ctx.message.id}")
+            balance, _progress = await self.get_library_story(conn, target.id)
+        await ctx.send(f"📖 Gave {target.mention} **{amount:,} Story** ({reason}). They now have {balance:,}.")
+
     def calculate_skill_cost_with_battery_life(self, pet, skill_cost):
         """
         Calculate the reduced skill cost if pet has Battery Life ability.
@@ -9122,8 +9474,8 @@ class Pets(commands.Cog):
                     await ctx.send(f"❌ You don't have a pet with ID or alias `{pet_ref}`.")
                     return
 
-            element = pet['element']
-            if element not in self.SKILL_TREES:
+            element = self.get_skill_tree_key(pet)
+            if not self.get_skill_tree(element):
                 await ctx.send(f"❌ {pet['name']} has an unknown element: {element}")
                 return
 
@@ -9132,7 +9484,7 @@ class Pets(commands.Cog):
             skill_branch = None
             skill_level = None
             
-            for branch_name, skills in self.SKILL_TREES[element].items():
+            for branch_name, skills in self.get_skill_tree(element).items():
                 for level, skill_data in skills.items():
                     if skill_data['name'].lower() == skill_name.lower():
                         skill_found = skill_data
@@ -9170,6 +9522,15 @@ class Pets(commands.Cog):
             # Check if pet meets level requirement
             if pet['level'] < skill_level:
                 await ctx.send(f"❌ {pet['name']} needs to be level {skill_level} to learn {skill_found['name']}!")
+                return
+
+            # Library pets open their ultimates at evolution Chapter V.
+            if (int(skill_level) == 10 and library_pets.is_library_pet(pet)
+                    and library_pets.chapter_of(pet) < library_pets.ULTIMATE_CHAPTER):
+                await ctx.send(
+                    f"❌ {pet['name']} must reach evolution Chapter {library_pets.roman(library_pets.ULTIMATE_CHAPTER)} "
+                    f"before it can learn its ultimate. Use `$pets evolve {pet['id']}`."
+                )
                 return
 
             # Learn the skill
@@ -9651,7 +10012,7 @@ class Pets(commands.Cog):
                 round(egg["attack"] * baby_stage["stat_multiplier"]),
                 round(egg["defense"] * baby_stage["stat_multiplier"]),
                 egg["element"],
-                egg["url"],
+                library_pets.hatched_url(egg),
                 baby_stage["stage"],
                 1,
                 growth_time,
@@ -9688,10 +10049,21 @@ class Pets(commands.Cog):
                 if hatch_result is None:
                     continue
 
-                # Notify the user 
+                # Notify the user
                 try:
                     user = self.bot.get_user(hatch_result["user_id"])
-                    if user:
+                    spec = library_pets.species(hatch_result["pet_name"])
+                    if user and spec:
+                        # A Library egg: the hatching itself, from the Library's art.
+                        embed = discord.Embed(
+                            title=f"📖 Your {spec.name} egg hatched!",
+                            description=(f"A little **{spec.name}** has arrived from the Fables Library. "
+                                         f"Raise it to adult, then spend Story to evolve it (`$pets story`)."),
+                            color=discord.Color.gold(),
+                        )
+                        embed.set_image(url=library_pets.hatch_moment_url(spec))
+                        await user.send(embed=embed)
+                    elif user:
                         await user.send(
                             f"Your **Egg** has hatched into a pet named **{hatch_result['pet_name']}**! Check your pet menu to see it."
                         )
@@ -10131,7 +10503,7 @@ class Pets(commands.Cog):
 
             pets = await conn.fetch(
                 """
-                SELECT id, level, skill_points, element, learned_skills
+                SELECT id, level, skill_points, element, default_name, learned_skills
                 FROM monster_pets
                 WHERE user_id <> 0;
                 """
@@ -10147,7 +10519,7 @@ class Pets(commands.Cog):
                 current_skill_points = max(0, int(pet.get("skill_points") or 0))
 
                 spent_skill_points, unknown_count = self.estimate_spent_skill_points(
-                    str(pet.get("element") or ""),
+                    str(self.get_skill_tree_key(pet) or ""),
                     pet.get("learned_skills"),
                 )
                 unknown_skill_entries += int(unknown_count)
@@ -10303,7 +10675,7 @@ class Pets(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             pets = await conn.fetch(
                 """
-                SELECT id, user_id, name, level, skill_points, element, learned_skills, gm_all_skills_enabled
+                SELECT id, user_id, name, level, skill_points, element, default_name, learned_skills, gm_all_skills_enabled
                 FROM monster_pets
                 WHERE user_id <> 0;
                 """
@@ -10507,8 +10879,8 @@ class Pets(commands.Cog):
                     f"❌ {target.mention} does not have a pet with ID or alias `{pet_ref}`."
                 )
 
-            element = pet.get("element")
-            if element not in self.SKILL_TREES:
+            element = self.get_skill_tree_key(pet)
+            if not self.get_skill_tree(element):
                 return await ctx.send(
                     f"❌ {pet['name']} has an unknown element `{element}`."
                 )
@@ -10875,7 +11247,7 @@ class Pets(commands.Cog):
         skill_branch = None
         skill_level = None
         
-        for element, branches in self.SKILL_TREES.items():
+        for element, branches in self.iter_all_skill_trees():
             for branch_name, skills in branches.items():
                 for level, skill_data in skills.items():
                     if skill_data['name'].lower() == skill_name.lower():
@@ -10963,22 +11335,28 @@ class Pets(commands.Cog):
                 elements_text += f"{emoji} **{elem}**\n"
             
             embed.add_field(name="Available Elements", value=elements_text, inline=False)
+            species_text = "".join(
+                f"{self.get_skill_tree_label(tree)[0]} **{tree}**\n" for tree in SPECIES_SKILL_TREES
+            )
+            embed.add_field(name="Fables Library Pets (own trees)", value=species_text, inline=False)
             embed.set_footer(text="Use $pets skilllist <element> to view specific skills")
             await ctx.send(embed=embed)
             return
 
         # Normalize element name
         element = element.capitalize()
-        if element not in self.SKILL_TREES:
+        skill_tree = self.get_skill_tree(element)
+        if not skill_tree:
             await ctx.send(f"❌ Unknown element: {element}. Use `$pets skilllist` to see all elements.")
             return
 
-        skill_tree = self.SKILL_TREES[element]
-        element_emoji = PET_ELEMENT_EMOJIS.get(element, "❓")
-        
+        element_emoji, _tree_label = self.get_skill_tree_label(element)
+        is_species = element in SPECIES_SKILL_TREES
+
         embed = discord.Embed(
-            title=f"{element_emoji} {element} Element - Complete Skill Tree",
-            description=f"All 15 skills available for {element} pets",
+            title=f"{element_emoji} {element} {'Tree' if is_species else 'Element'} - Complete Skill Tree",
+            description=(f"All 15 skills of the {element}'s own tree\n📖 **{LIBRARY_BORN}**\n*{SPECIES_TREE_IDEAS[element]} {SPECIES_HEAL_RULE}*" if is_species
+                         else f"All 15 skills available for {element} pets"),
             color=discord.Color.purple()
         )
 

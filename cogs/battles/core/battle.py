@@ -33,6 +33,7 @@ from discord.ext import commands
 
 from .ascension import AscensionCombat
 from classes import breathcaller, dragonkin, penitent
+from utils import elixirs
 from ..extensions.element_procs import ElementProcExtension
 from classes.warrior import (
     WARRIOR_MOMENTUM_CAP,
@@ -154,12 +155,19 @@ class Battle(AscensionCombat, ABC):
             "tripping": kwargs.get("tripping", True),
             "simple": kwargs.get("simple", False),  # Simple battle = classic battle format
             "status_effects": kwargs.get("status_effects", False),  # Enable status effects system
+            "elixirs": kwargs.get("elixirs", True),  # Library elixirs the players drank (utils/elixirs.py)
         }
 
         for team_index, team in enumerate(self.teams):
             for combatant in getattr(team, "combatants", []):
                 setattr(combatant, "battle", self)
                 setattr(combatant, "_battle_team_index", team_index)
+
+        # Library elixirs: Feast Pot shields, Beast Broth pets, and who uncorked what.
+        if self.config["elixirs"]:
+            for line in elixirs.battle_opening(self):
+                self.log.append((self.action_number, line))
+                self.action_number += 1
     
     @abstractmethod
     async def start_battle(self):
@@ -2287,6 +2295,13 @@ class Battle(AscensionCombat, ABC):
         if dragonkin_mod != 1:
             raw_damage = raw_damage * dragonkin_mod
 
+        # 1b2) Library elixirs: the attacker's chill and crits, the defender's ward.
+        if self.config.get("elixirs", True):
+            elixir_mod, elixir_messages = elixirs.damage_multiplier(attacker, defender, hit_element)
+            if elixir_mod != 1:
+                raw_damage = raw_damage * elixir_mod
+            skill_messages.extend(elixir_messages)
+
         # 1c) Tiamat classes: Penance's Zeal and Bloodlust, Exhale, then the
         # defender's Last Shield guard, Scaleward and Inhale.
         if class_buffs:
@@ -2389,6 +2404,10 @@ class Battle(AscensionCombat, ABC):
             if hasattr(defender, "lights_guidance_original_skill_effects"):
                 defender.skill_effects = getattr(defender, "lights_guidance_original_skill_effects")
                 delattr(defender, "lights_guidance_original_skill_effects")
+
+        # 7b) Library elixirs once the hit lands: lifesteal, thorns, regen, burn, chill, lightning.
+        if self.config.get("elixirs", True):
+            skill_messages.extend(elixirs.after_hit(attacker, defender, final_damage))
 
         # 8) Track damage dealt for pet lifesteal and per-turn effects.
         if getattr(attacker, "is_pet", False):
@@ -2564,6 +2583,19 @@ class Battle(AscensionCombat, ABC):
             messages.append(
                 f"🏰 Living Fortress prevents **{self.format_number(prevented)} HP** damage to **{target.name}**!"
             )
+
+        # Library species pets (pet_species.py) guard their owner and team their own way.
+        from ..extensions.pet_species import SpeciesSkills
+        for ally in getattr(team, "combatants", []):
+            if ally is target or not getattr(ally, "is_pet", False) or not ally.is_alive():
+                continue
+            if not getattr(ally, "species_tree", None):
+                continue
+            self.prepare_pet_context(ally)
+            damage, species_messages, redirected_to = SpeciesSkills(pet_ext).guard(ally, attacker, target, damage)
+            messages.extend(species_messages)
+            if redirected_to is not None or damage <= 0:
+                return max(Decimal("0"), damage), messages, redirected_to
 
         # Avoid consuming a dual-element attacker's next element while resolving defense.
         attack_element = getattr(attacker, "attack_element", getattr(attacker, "element", "Unknown"))

@@ -1397,6 +1397,123 @@
             "ispublic": true,
             "frontier_only": true,
             "frontier_region_id": "fractured_verge"
+        },
+        {
+            "name": "Inkwyrm",
+            "hp": 520,
+            "attack": 720,
+            "defense": 560,
+            "element": "Dark",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/inkwyrm.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Reedling",
+            "hp": 600,
+            "attack": 520,
+            "defense": 680,
+            "element": "Water",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/reedling.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Lanternling",
+            "hp": 560,
+            "attack": 700,
+            "defense": 540,
+            "element": "Fire",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/lanternling.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Gourdling",
+            "hp": 680,
+            "attack": 540,
+            "defense": 580,
+            "element": "Nature",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/gourdling.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Frostfawn",
+            "hp": 600,
+            "attack": 560,
+            "defense": 640,
+            "element": "Water",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/frostfawn.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Hearthkit",
+            "hp": 700,
+            "attack": 560,
+            "defense": 540,
+            "element": "Fire",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/hearthkit.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Ilisrei's Whelp",
+            "hp": 600,
+            "attack": 600,
+            "defense": 600,
+            "element": "Fire",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/ilisreis-whelp.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Knoas's Whelp",
+            "hp": 600,
+            "attack": 600,
+            "defense": 600,
+            "element": "Dark",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/knoass-whelp.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Unoquil's Whelp",
+            "hp": 600,
+            "attack": 600,
+            "defense": 600,
+            "element": "Wind",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/unoquils-whelp.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Xetoa's Whelp",
+            "hp": 600,
+            "attack": 600,
+            "defense": 600,
+            "element": "Water",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/xetoas-whelp.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Tamanir's Whelp",
+            "hp": 600,
+            "attack": 600,
+            "defense": 600,
+            "element": "Electric",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/tamanirs-whelp.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Kadelej's Whelp",
+            "hp": 600,
+            "attack": 600,
+            "defense": 600,
+            "element": "Nature",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/kadelejs-whelp.jpg",
+            "ispublic": false
+        },
+        {
+            "name": "Saphira's Whelp",
+            "hp": 600,
+            "attack": 600,
+            "defense": 600,
+            "element": "Light",
+            "url": "https://game.fablereborn.xyz/assets/library-pets/saphiras-whelp.jpg",
+            "ispublic": false
         }
     ],
     "8": [

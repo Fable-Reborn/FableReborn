@@ -49,6 +49,7 @@ from classes.class_mastery import (
 )
 from classes.endgame import apply_item_progression_bonus, soulbound_level_from_xp
 from classes.specs import RESPEC_COST, SPECS, describe_spec, specs_for_line
+from utils import library_pets
 from cogs.aiplayer.strategy import (
     CLASS_KNOWLEDGE,
     choose_best_equipment,
@@ -1966,7 +1967,10 @@ class AIPlayer(commands.Cog):
                     if hasattr(pet_cog, "get_effective_learned_skills")
                     else pet.get("learned_skills") or []
                 )
-                tree = pet_cog.SKILL_TREES.get(pet.get("element"), {})
+                if hasattr(pet_cog, "get_skill_tree_key"):
+                    tree = pet_cog.get_skill_tree(pet_cog.get_skill_tree_key(pet))
+                else:
+                    tree = pet_cog.SKILL_TREES.get(pet.get("element"), {})
                 for branch, branch_skills in tree.items():
                     for required_level, skill in branch_skills.items():
                         cost = pet_cog.calculate_skill_cost_with_battery_life(
@@ -1995,7 +1999,9 @@ class AIPlayer(commands.Cog):
                 }
             )
 
-        collection_used = len(pets) + len(eggs) + pending_splices
+        # Library pets and eggs sit on their own shelf, outside these slots.
+        collection_used = (sum(1 for pet in pets if not library_pets.is_library_pet(pet))
+                           + sum(1 for egg in eggs if not library_pets.is_library_egg(egg)) + pending_splices)
         for egg in eggs:
             egg["combat_score"] = egg_combat_score(egg)
         weakest_egg = choose_weakest_egg(eggs)
@@ -2049,10 +2055,10 @@ class AIPlayer(commands.Cog):
     async def _owned_egg_snapshot(self, connection) -> list[dict[str, Any]]:
         """Return every unhatched egg with its comparable combat score."""
         rows = await connection.fetch(
-            """
+            f"""
             SELECT id, egg_type, element, "IV", hp, attack, defense, hatch_time
             FROM monster_eggs
-            WHERE user_id=$1 AND hatched=FALSE
+            WHERE user_id=$1 AND hatched=FALSE AND {library_pets.NOT_LIBRARY_EGG_SQL}
             ORDER BY id ASC;
             """,
             DENSETSU_USER_ID,

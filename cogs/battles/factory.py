@@ -28,6 +28,7 @@ from .extensions.pets import PetExtension
 from .extensions.dragon import DragonExtension
 from .settings import BattleSettings
 from utils.april_fools import mask_runtime_name
+from utils import elixirs
 from utils.birthday import (
     BirthdayAssistantIdentity,
     get_active_birthday_assistant,
@@ -1057,7 +1058,7 @@ class BattleFactory:
                 bloodpact_bank_percent = bp.get("bank_pct", 25)
 
             # Create the combatant
-            return Combatant(
+            combatant = Combatant(
                 user=player,
                 hp=total_health,
                 max_hp=total_health,
@@ -1102,6 +1103,9 @@ class BattleFactory:
                 dragonkin=result["race"] == dragonkin.RACE,
                 dragonkin_breath=dragonkin_breath,
             )
+            # Library elixirs the player drank (still working): HP, damage and shields now, the rest in battle.
+            elixirs.apply_to_combatant(combatant, await elixirs.load_effects(conn, player.id))
+            return combatant
 
     async def _load_element_proc_state(self, conn, user_id, equipped_items):
         """Opt-in flag plus best weapon starforge level per element.

@@ -16,6 +16,7 @@ from PIL import Image
 
 import discord
 from utils import misc as rpgtools
+from utils import library_pets
 from utils.elements import ELEMENT_STRENGTHS
 from utils.markdown import escape_markdown
 from discord.ext import commands, tasks
@@ -10750,12 +10751,12 @@ class Battles(commands.Cog):
         rolled = self._roll_egg_stats(monster)
 
         async with self.bot.pool.acquire() as conn:
-            # Count pets, unhatched eggs, and pending splice requests
+            # Count pets, unhatched eggs, and pending splice requests (Library pets and eggs have their own shelf)
             pet_and_egg_count = await conn.fetchval(
-                """
-                SELECT 
-                    (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1) +
-                    (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE) +
+                f"""
+                SELECT
+                    (SELECT COUNT(*) FROM monster_pets WHERE user_id = $1 AND {library_pets.NOT_LIBRARY_PET_SQL}) +
+                    (SELECT COUNT(*) FROM monster_eggs WHERE user_id = $1 AND hatched = FALSE AND {library_pets.NOT_LIBRARY_EGG_SQL}) +
                     (SELECT COUNT(*) FROM splice_requests WHERE user_id = $1 AND status = 'pending')
                 """,
                 ctx.author.id
@@ -10791,23 +10792,23 @@ class Battles(commands.Cog):
                 
                 # Get detailed pet information
                 pets = await conn.fetch(
-                    """
-                    SELECT id, name as display_name, 'pet' as type, 
-                           element, growth_stage, growth_index, hp, attack, defense, 
+                    f"""
+                    SELECT id, name as display_name, 'pet' as type,
+                           element, growth_stage, growth_index, hp, attack, defense,
                            "IV", happiness, hunger, equipped, url
-                    FROM monster_pets 
-                    WHERE user_id = $1
+                    FROM monster_pets
+                    WHERE user_id = $1 AND {library_pets.NOT_LIBRARY_PET_SQL}
                     """,
                     ctx.author.id
                 )
                 
                 # Get detailed egg information
                 eggs = await conn.fetch(
-                    """
+                    f"""
                     SELECT id, egg_type as display_name, 'egg' as type,
                            element, hatch_time, "IV", hp, attack, defense, url
-                    FROM monster_eggs 
-                    WHERE user_id = $1 AND hatched = FALSE
+                    FROM monster_eggs
+                    WHERE user_id = $1 AND hatched = FALSE AND {library_pets.NOT_LIBRARY_EGG_SQL}
                     """,
                     ctx.author.id
                 )

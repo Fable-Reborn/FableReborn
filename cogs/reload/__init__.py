@@ -25,7 +25,144 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 
+from utils import boot_cogs
 from utils.checks import is_gm
+
+
+CONFIG_PATH = Path("config.toml")
+COGS_DIR = Path(__file__).resolve().parents[1]
+
+
+def _cog_name(text: str) -> str:
+    name = text.strip().strip(",").strip('"')
+    return name if name.startswith("cogs.") else f"cogs.{name}"
+
+
+class BootCogsView(discord.ui.View):
+    """The boot list, 25 cogs a page: tick the ones to load at boot, then Save."""
+
+    PAGE = 25
+
+    def __init__(self, author_id: int, bot, entries: list, listed: set):
+        super().__init__(timeout=600)
+        self.author_id = author_id
+        self.bot = bot
+        self.original = {e.name: e.enabled for e in entries}
+        self.entries = entries
+        self.listed = listed
+        self.page = 0
+        self.message = None
+        self.build()
+
+    @property
+    def pages(self) -> int:
+        return max(1, -(-len(self.entries) // self.PAGE))
+
+    def shown(self):
+        return self.entries[self.page * self.PAGE:(self.page + 1) * self.PAGE]
+
+    def build(self):
+        self.clear_items()
+        loaded = set(self.bot.extensions)
+        options = []
+        for e in self.shown():
+            state = "always on" if e.name in boot_cogs.PROTECTED else ("running now" if e.name in loaded else "not running now")
+            if e.name not in self.listed:
+                state += " · not in config yet"
+            options.append(discord.SelectOption(label=e.name[len("cogs."):][:100], value=e.name, description=state[:100], default=e.enabled))
+        select = discord.ui.Select(
+            placeholder=f"Load at boot (page {self.page + 1}/{self.pages})",
+            min_values=0, max_values=len(options), options=options, row=0,
+        )
+        select.callback = self.on_select
+        self.add_item(select)
+        for label, step in (("◀", -1), ("▶", 1)):
+            button = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, row=1, disabled=self.pages == 1)
+            button.callback = self.turner(step)
+            self.add_item(button)
+        save = discord.ui.Button(label="Save", style=discord.ButtonStyle.success, row=1)
+        save.callback = self.on_save
+        self.add_item(save)
+        cancel = discord.ui.Button(label="Cancel", style=discord.ButtonStyle.danger, row=1)
+        cancel.callback = self.on_cancel
+        self.add_item(cancel)
+
+    def changes(self):
+        on = [e.name for e in self.entries if e.enabled and not self.original.get(e.name)]
+        off = [e.name for e in self.entries if not e.enabled and self.original.get(e.name)]
+        return on, off
+
+    def embed(self) -> discord.Embed:
+        on, off = self.changes()
+        enabled = sum(e.enabled for e in self.entries)
+        embed = discord.Embed(
+            title="Cogs that load at boot",
+            description=(
+                f"**{enabled}** on, **{len(self.entries) - enabled}** off, from `config.toml`.\n"
+                "Tick the cogs to load at boot, then **Save**. Changes apply at the next restart; "
+                "use `$load` / `$unload` to change the running bot now.\n"
+                f"Always on: {', '.join(sorted(n[5:] for n in boot_cogs.PROTECTED))}. "
+                f"Loaded whatever the list says: {', '.join(sorted(n[5:] for n in boot_cogs.ALWAYS_LOADED))}."
+            ),
+            colour=discord.Colour.blurple(),
+        )
+        if on or off:
+            text = "\n".join([f"+ {n[5:]}" for n in on] + [f"- {n[5:]}" for n in off])
+            embed.add_field(name="Not saved yet", value=f"```diff\n{text[:1000]}\n```", inline=False)
+        return embed
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("This menu isn't yours.", ephemeral=True)
+            return False
+        return True
+
+    async def on_select(self, interaction: discord.Interaction):
+        picked = set(interaction.data.get("values", []))
+        for e in self.shown():
+            e.enabled = e.name in picked or e.name in boot_cogs.PROTECTED
+        self.build()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+    def turner(self, step: int):
+        async def turn(interaction: discord.Interaction):
+            self.page = (self.page + step) % self.pages
+            self.build()
+            await interaction.response.edit_message(embed=self.embed(), view=self)
+        return turn
+
+    async def on_save(self, interaction: discord.Interaction):
+        on, off = self.changes()
+        if not on and not off:
+            return await interaction.response.send_message("Nothing has changed.", ephemeral=True)
+        # Cogs that were never in the list stay out of it unless they were switched on.
+        keep = [e for e in self.entries if e.name in self.listed or e.enabled]
+        try:
+            backup = boot_cogs.save(CONFIG_PATH, keep)
+        except Exception as error:
+            return await interaction.response.send_message(f"Couldn't save: {type(error).__name__}: {error}", ephemeral=True)
+        self.original = {e.name: e.enabled for e in self.entries}
+        self.listed = {e.name for e in keep}
+        self.stop()
+        embed = self.embed()
+        saved = "\n".join([f"+ {n[5:]}" for n in on] + [f"- {n[5:]}" for n in off])
+        embed.add_field(
+            name="Saved",
+            value=f"```diff\n{saved[:900]}\n```Applies at the next restart. The old file was kept as `{backup.name}`.",
+            inline=False,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    async def on_cancel(self, interaction: discord.Interaction):
+        self.stop()
+        await interaction.response.edit_message(content="Nothing was changed.", embed=None, view=None)
+
+    async def on_timeout(self):
+        if self.message:
+            try:
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
 
 
 class ReloadCog(commands.Cog):
@@ -212,6 +349,66 @@ class ReloadCog(commands.Cog):
         chunk_size = 1900
         for i in range(0, len(combined), chunk_size):
             await ctx.send(f"```{combined[i:i + chunk_size]}```")
+    # ---- which cogs load at boot (config.toml) ----------------------------------------------------
+
+    def _boot_entries(self):
+        text = CONFIG_PATH.read_text(encoding="utf-8")
+        entries = boot_cogs.read(text)
+        listed = {e.name for e in entries}
+        extra = [boot_cogs.Entry(name, False) for name in boot_cogs.available(COGS_DIR)
+                 if name not in listed and name not in boot_cogs.ALWAYS_LOADED]
+        return entries + extra, listed
+
+    @is_gm()
+    @commands.group(name="bootcogs", aliases=["startupcogs"], invoke_without_command=True, hidden=True)
+    async def bootcogs(self, ctx):
+        """See and change which cogs load when the bot boots (config.toml's initial_extensions)."""
+        try:
+            entries, listed = self._boot_entries()
+        except Exception as error:
+            return await ctx.send(f"Couldn't read config.toml: {type(error).__name__}: {error}")
+        view = BootCogsView(ctx.author.id, self.bot, entries, listed)
+        view.message = await ctx.send(embed=view.embed(), view=view)
+
+    async def _switch(self, ctx, names: str, on: bool):
+        wanted = [_cog_name(n) for n in names.replace(",", " ").split() if n.strip()]
+        if not wanted:
+            return await ctx.send(f"Name the cogs: `$bootcogs {'on' if on else 'off'} pets quests`")
+        try:
+            entries, listed = self._boot_entries()
+        except Exception as error:
+            return await ctx.send(f"Couldn't read config.toml: {type(error).__name__}: {error}")
+        known = {e.name: e.enabled for e in entries}
+        unknown = [n for n in wanted if n not in known]
+        if unknown:
+            return await ctx.send(f"No such cog: {', '.join(n[5:] for n in unknown)}")
+        locked = [n for n in wanted if n in boot_cogs.PROTECTED]
+        if not on and locked:
+            return await ctx.send(f"{', '.join(n[5:] for n in locked)} always load (they hold the GM tools).")
+        if all(known[n] == on for n in wanted):
+            return await ctx.send(f"Nothing to change: {', '.join(n[5:] for n in wanted)} already {'load' if on else 'stay off'} at boot.")
+        current = [e for e in entries if e.name in listed]
+        changed = boot_cogs.apply(current, set(wanted) if on else set(), set() if on else set(wanted))
+        try:
+            backup = boot_cogs.save(CONFIG_PATH, changed)
+        except Exception as error:
+            return await ctx.send(f"Couldn't save: {type(error).__name__}: {error}")
+        await ctx.send(
+            f"{'Switched on' if on else 'Switched off'} at boot: {', '.join(n[5:] for n in wanted)}. "
+            f"Applies at the next restart (old file kept as `{backup.name}`)."
+        )
+
+    @is_gm()
+    @bootcogs.command(name="on", aliases=["enable"], hidden=True)
+    async def bootcogs_on(self, ctx, *, cogs: str = ""):
+        """Load these cogs at boot: $bootcogs on pets quests"""
+        await self._switch(ctx, cogs, True)
+
+    @is_gm()
+    @bootcogs.command(name="off", aliases=["disable"], hidden=True)
+    async def bootcogs_off(self, ctx, *, cogs: str = ""):
+        """Don't load these cogs at boot: $bootcogs off vote"""
+        await self._switch(ctx, cogs, False)
 
 
 async def setup(bot):

@@ -7,6 +7,8 @@ The Tiamat game server writes one row per earned unlock into `tiamat_unlocks`
     clutch_badge  finish the story              -> the Clutch of Ilisrei profile badge
     penitent      spare Gyle                    -> the Penitent class
     breathcaller  hold all seven Soul Gems      -> the Breathcaller class (secret)
+    founding_reader  sign in during the Fables Library's Founding Week
+                                                -> The Founding Reader profile theme
 
 Players who finished before the table existed are covered by the companion
 unlocks the server already wrote: Az'uar is given for finishing the story and the
@@ -30,7 +32,8 @@ DRAGONKIN = "dragonkin"
 CLUTCH_BADGE = "clutch_badge"
 PENITENT = "penitent"
 BREATHCALLER = "breathcaller"
-KEYS = frozenset({DRAGONKIN, CLUTCH_BADGE, PENITENT, BREATHCALLER})
+FOUNDING_READER = "founding_reader"
+KEYS = frozenset({DRAGONKIN, CLUTCH_BADGE, PENITENT, BREATHCALLER, FOUNDING_READER})
 
 # Unlock -> the Tiamat companion that already proves it.
 COMPANION_PROOF = {DRAGONKIN: "azuar", CLUTCH_BADGE: "azuar", BREATHCALLER: "tiamat"}
@@ -41,6 +44,7 @@ HINTS = {
     CLUTCH_BADGE: "Finish the story of The Tiamat Sacrament.",
     PENITENT: "Show mercy to Gyle in The Tiamat Sacrament.",
     BREATHCALLER: "???",
+    FOUNDING_READER: "Sign in to the Fables Library during its Founding Week.",
 }
 
 

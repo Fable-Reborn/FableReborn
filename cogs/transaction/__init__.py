@@ -25,6 +25,7 @@ import discord
 from discord.ext import commands
 
 from classes.converters import CrateRarity, IntGreaterThan, MemberWithCharacter
+from utils import elixirs
 from utils.i18n import _, locale_doc
 # Add this import for deep copy
 import copy
@@ -482,12 +483,13 @@ class Transaction(commands.Cog):
             "weapon_element_scroll",
             "theme_trade_contract",
         }
-        return normalized in valid_types
+        return normalized in valid_types or elixirs.is_elixir_type(normalized)
 
     def _valid_consumable_type_display(self) -> str:
         return (
             "pet_age_potion, pet_speed_growth_potion, pet_xp_potion, pet_mind_wipe, "
-            "pet_element_scroll, splice_final_potion, weapon_element_scroll, theme_trade_contract"
+            "pet_element_scroll, splice_final_potion, weapon_element_scroll, theme_trade_contract, "
+            "and elixirs as elixir_<name>_<plain|silver|gold> (see $elixirs)"
         )
 
     @staticmethod
@@ -858,6 +860,16 @@ class Transaction(commands.Cog):
                     profile_cols_to_change_user2[
                         "money"
                     ] = relative_money_difference_user2
+                # Library elixirs: each side still has what they offer, and nobody ends up past the stack.
+                for ctype in {c for gives in (user1_gives, user2_gives) for c in gives.get("consumables", {}) if elixirs.is_elixir_type(c)}:
+                    give1 = int(user1_gives.get("consumables", {}).get(ctype, 0) or 0)
+                    give2 = int(user2_gives.get("consumables", {}).get(ctype, 0) or 0)
+                    have1 = int(await conn.fetchval("SELECT COALESCE(SUM(quantity), 0) FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;", user1.id, ctype))
+                    have2 = int(await conn.fetchval("SELECT COALESCE(SUM(quantity), 0) FROM user_consumables WHERE user_id = $1 AND consumable_type = $2;", user2.id, ctype))
+                    if have1 < give1 or have2 < give2:
+                        return await chan.send(_("Trade cancelled. Things were traded away in the meantime."))
+                    if have1 - give1 + give2 > elixirs.STACK or have2 - give2 + give1 > elixirs.STACK:
+                        return await chan.send(_("Trade cancelled. Nobody can hold more than {stack} of one elixir.").format(stack=elixirs.STACK))
                 # Now, verify nothing has been traded away
                 # Items are most obvious
                 if len(user1_items) < len(user1_gives["items"]) or len(
@@ -1011,8 +1023,12 @@ class Transaction(commands.Cog):
                 # Handle crafting resources transfer
                 await self.transfer_crafting_resources(conn, user1, user2, user1_gives.get("resources", {}), user2_gives.get("resources", {}))
 
-                # Transfer premium consumables
-                for ctype in ["pet_age_potion", "pet_speed_growth_potion", "pet_xp_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll", "theme_trade_contract"]:
+                # Transfer premium consumables (and Library elixirs)
+                traded_elixirs = sorted(
+                    {c for c in user1_gives.get("consumables", {}) if elixirs.is_elixir_type(c)}
+                    | {c for c in user2_gives.get("consumables", {}) if elixirs.is_elixir_type(c)}
+                )
+                for ctype in ["pet_age_potion", "pet_speed_growth_potion", "pet_xp_potion", "pet_mind_wipe", "pet_element_scroll", "splice_final_potion", "weapon_element_scroll", "theme_trade_contract", *traded_elixirs]:
                     qty1 = user1_gives.get("consumables", {}).get(ctype, 0)
                     qty2 = user2_gives.get("consumables", {}).get(ctype, 0)
                     if qty1 > 0:
@@ -1338,6 +1354,24 @@ class Transaction(commands.Cog):
         ctx.transaction["consumables"][ctype] = in_trade + amount
         await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         await self.update(ctx)
+
+    @has_transaction()
+    @add.command(name="elixir", aliases=["elixirs"], brief=_("Adds Library elixirs to a trade."))
+    @locale_doc
+    async def add_elixir(self, ctx, amount: IntGreaterThan(0), *, elixir: str):
+        """
+        `<amount>` - How many
+        `<elixir>` - The elixir and its quality, e.g. `gold giants stew`
+
+        Adds battle elixirs from your shelf ($elixirs) to the trade.
+        """
+        try:
+            elixir_id, quality = elixirs.find(elixir)
+        except LookupError as many:
+            return await ctx.send(f"Which one? {', '.join(many.args[0])}")
+        if not elixir_id:
+            return await ctx.send(f"❌ There's no elixir called `{elixir}`.")
+        await self.add_consumable(ctx, elixirs.type_for(elixir_id, 0 if quality is None else quality), amount)
 
     @has_transaction()
     @add.command(name="consumables", brief=_("Adds multiple premium consumables to a trade."))

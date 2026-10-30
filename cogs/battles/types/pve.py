@@ -697,6 +697,8 @@ class PvEBattle(Battle):
                     self.ctx.author.id,
                     pet_battle_xp,
                     trust_gain=1,
+                    # Library pet Story: real wins only, never while the macro penalty is on.
+                    library_story=self.macro_penalty_level < 12,
                 )
             
             # Award crafting resources based on monster level (skip if macro penalty active)
