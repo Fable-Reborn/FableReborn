@@ -1,4 +1,4 @@
-"""The Ice Dragon's words: rarely, after it falls, it says something.
+"""The Ice Dragon's words: rarely, as a fight starts or as it falls, it says something.
 
 Canon (Library Hall plaques, Tower story):
 - Tiamat made the world, turned her body to stone, and the first dragons rose from her pool.
@@ -17,15 +17,15 @@ import random
 SPEAK_CHANCE = 0.07
 SPEAKER = "The Ice Dragon"
 
-# stage name -> what it might say as it falls (one is picked)
+# stage name -> (as a fight starts, as it falls); each has its own SPEAK_CHANCE roll
 ICE_DRAGON_WORDS = {
     "Frostbite Wyrm": (
-        "Climbers. The three send you every winter, and every winter I fall.",
+        "Climbers. The three send you every winter. Do they still call it a Rite?",
         "Seven kept the old world. The three unmade it in a single day. "
         "You count your years from that day and don't even know it.",
     ),
     "Corrupted Ice Dragon": (
-        "Their cold is in my blood. More each week. Soon I won't know what I am.",
+        "Their cold is in my blood. More each week. Strike while I still know what I am.",
         "We were born from her pool to guard this world. We fought them. We nearly won.",
     ),
     "Permafrost": (
@@ -42,17 +42,25 @@ ICE_DRAGON_WORDS = {
     ),
 }
 
-# Added for Dragonkin (Tiamat finishers) while it still remembers.
+# Added to its opening words for Dragonkin (Tiamat finishers) while it still remembers.
 KIN_LINE = "You carry the old blood. They missed one. Good."
 KIN_STAGES = ("Frostbite Wyrm", "Corrupted Ice Dragon", "Permafrost")
 
 
-def falling_words(stage: str, *, kin_present: bool = False, rng=random) -> list[str]:
-    """Lines it says this time it falls: usually none (SPEAK_CHANCE per kill)."""
+def opening_words(stage: str, *, kin_present: bool = False, rng=random) -> list[str]:
+    """Lines as a fight starts: usually none (SPEAK_CHANCE per fight)."""
     words = ICE_DRAGON_WORDS.get(stage)
     if not words or rng.random() >= SPEAK_CHANCE:
         return []
-    lines = [rng.choice(words)]
+    lines = [words[0]]
     if kin_present and stage in KIN_STAGES:
         lines.append(KIN_LINE)
     return lines
+
+
+def falling_words(stage: str, *, rng=random) -> list[str]:
+    """Lines as it falls: usually none (SPEAK_CHANCE per kill)."""
+    words = ICE_DRAGON_WORDS.get(stage)
+    if not words or rng.random() >= SPEAK_CHANCE:
+        return []
+    return [words[1]]
