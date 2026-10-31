@@ -245,6 +245,9 @@ class Bot(commands.AutoShardedBot):
         # Battle elixirs brewed in the Fables Library.
         if "cogs.elixirs" not in extensions:
             extensions.append("cogs.elixirs")
+        # Readers asking for their pets to be drawn walking in the Library.
+        if "cogs.petart" not in extensions:
+            extensions.append("cogs.petart")
         for extension in extensions:
             try:
                 await self.load_extension(extension)
