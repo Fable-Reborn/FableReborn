@@ -1460,12 +1460,13 @@ class PresetDeleteConfirmView(discord.ui.View):
 
 
 class PresetManagerView(discord.ui.View):
-    def __init__(self, cog: "Profile", ctx, rows):
+    def __init__(self, cog: "Profile", ctx, rows, max_slots: int):
         super().__init__(timeout=300)
         self.cog = cog
         self.ctx = ctx
         self.author_id = int(ctx.author.id)
         self.rows = list(rows)
+        self.max_slots = max_slots
         self.selected_id = str(self.rows[0]["preset_id"]) if self.rows else None
         self.message = None
         self.rebuild_components()
@@ -1478,7 +1479,8 @@ class PresetManagerView(discord.ui.View):
                 "SELECT preset_id, item_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
                 ctx.author.id,
             )
-        return cls(cog, ctx, rows)
+            max_slots = await cog.get_preset_limit(conn, ctx.author.id)
+        return cls(cog, ctx, rows, max_slots)
 
     async def reload(self):
         async with self.cog.bot.pool.acquire() as conn:
@@ -1487,6 +1489,7 @@ class PresetManagerView(discord.ui.View):
                 "SELECT preset_id, item_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
                 self.author_id,
             ))
+            self.max_slots = await self.cog.get_preset_limit(conn, self.author_id)
         ids = {str(row["preset_id"]) for row in self.rows}
         if self.selected_id not in ids:
             self.selected_id = str(self.rows[0]["preset_id"]) if self.rows else None
@@ -1504,7 +1507,7 @@ class PresetManagerView(discord.ui.View):
     def build_embed(self):
         embed = discord.Embed(
             title="🧰 Loadout Manager",
-            description="Save and apply up to five gear loadouts without typing item IDs.",
+            description=f"Save and apply up to {self.max_slots} gear loadouts without typing item IDs.",
             color=discord.Color.blurple(),
         )
         if not self.rows:
@@ -1514,7 +1517,7 @@ class PresetManagerView(discord.ui.View):
             for row in self.rows:
                 marker = "▶" if str(row["preset_id"]) == self.selected_id else "•"
                 lines.append(f"{marker} **{row['preset_id']}** — {self.describe_row(row)}")
-            embed.add_field(name=f"Saved ({len(self.rows)}/{self.cog.MAX_PRESETS})", value="\n".join(lines), inline=False)
+            embed.add_field(name=f"Saved ({len(self.rows)}/{self.max_slots})", value="\n".join(lines), inline=False)
         selected = self.selected_row()
         if selected:
             item_ids, has_amulet, amulet_id = self.cog._split_preset_saved_ids(selected["item_ids"] or [])
@@ -1598,6 +1601,8 @@ class PresetManagerView(discord.ui.View):
 class Profile(commands.Cog):
     _PRESET_AMULET_MARKER_OFFSET = 1_000_000_000
     MAX_PRESETS = 6
+    # Donator tiers get extra loadout slots; everyone else keeps MAX_PRESETS.
+    PRESET_SLOTS_BY_TIER = {1: 7, 2: 8, 3: 9, 4: 12}
     _VETERAN_BADGE_IDS_PATH = Path("assets") / "data" / "veteran_badge_ids.txt"
     _AUTO_DEVELOPER_BADGE_IDS = frozenset(
         {
@@ -2855,6 +2860,11 @@ class Profile(commands.Cog):
             item_ids.append(raw_id)
 
         return item_ids, preset_has_amulet_state, preset_amulet_id
+
+    async def get_preset_limit(self, conn, user_id: int) -> int:
+        """How many presets this user may keep, by donator tier."""
+        tier = await conn.fetchval('SELECT tier FROM profile WHERE "user" = $1;', int(user_id)) or 0
+        return self.PRESET_SLOTS_BY_TIER.get(int(tier), self.MAX_PRESETS)
 
     async def sanitize_presets_for_user(
         self,
@@ -5910,7 +5920,7 @@ class Profile(commands.Cog):
         Optional mode:
           - items (default): only equipment from inventory
           - all: equipment + current amulet state
-        Enforces a maximum of MAX_PRESETS (6) total presets per user.
+        Enforces a per-user preset limit: MAX_PRESETS (6), more for donator tiers.
         Usage:
             $preset create raid_loadout
             $preset create raid_loadout all
@@ -5987,9 +5997,10 @@ class Profile(commands.Cog):
             )
 
             # If user is at max and we are not overwriting an existing preset, block
-            if preset_count >= self.MAX_PRESETS and not existing_preset:
+            preset_limit = await self.get_preset_limit(conn, ctx.author.id)
+            if preset_count >= preset_limit and not existing_preset:
                 return await ctx.send(
-                    f"You already have {self.MAX_PRESETS} presets. Please delete one first or use the same name to overwrite."
+                    f"You already have {preset_count}/{preset_limit} presets. Please delete one first or use the same name to overwrite."
                 )
 
             # 4) Insert or update the preset in the DB
