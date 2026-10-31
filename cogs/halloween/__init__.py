@@ -591,7 +591,7 @@ class Halloween(commands.Cog):
             """Open a trick or treat bag, you can get some with `{prefix}trickortreat`.
 
             Trick or treat bags contain halloween-themed items, ranging from 1 to 50 base stat.
-            Their value will be between 1 and 200. There is also a small chance to find Starforge Essence."""
+            Their value will be between 1 and 200."""
         )
         if not await self._ensure_event_enabled(ctx):
             return
@@ -706,7 +706,7 @@ class Halloween(commands.Cog):
         embed.add_field(name=_("Damage"), value=item["damage"], inline=True)
         embed.add_field(name=_("Armor"), value=item["armor"], inline=True)
         embed.add_field(name=_("Value"), value=f"${item['value']}", inline=False)
-        if essence_gain:
+        if essence_gain > 0:
             embed.add_field(
                 name="Starforge Essence",
                 value=f"★ A pinch of starlight settled in the bag: **{essence_gain} Essence**.",
