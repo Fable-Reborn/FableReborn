@@ -10,6 +10,7 @@ whichever cluster flips the row to done is the one that sends it.
 """
 from __future__ import annotations
 
+import asyncio
 import datetime
 import io
 import json
@@ -26,6 +27,8 @@ from utils.i18n import _, locale_doc
 COLOUR = 0xC9A86A
 CHECK_MINUTES = 30
 QUEUE_SHOWN = 25
+# The Library's site turns away some default client names, so the bot says who it is.
+HEADERS = {"User-Agent": "FableReborn/1.0 (+petart)"}
 
 log = logging.getLogger(__name__)
 
@@ -52,14 +55,43 @@ class PetArt(commands.Cog):
 
     # ---- the Library's sprite list -------------------------------------------------------------
 
-    async def drawn_keys(self) -> set[str] | None:
-        """Species keys the Library already has sprites for, or None if the list can't be read."""
+    async def sprite_list(self) -> dict | None:
+        """The Library's PetSprites.json, or None if it can't be read."""
         try:
-            async with self.bot.session.get(lib.SPRITES_URL, timeout=15) as resp:
+            async with self.bot.session.get(lib.SPRITES_URL, timeout=15, headers=HEADERS) as resp:
                 if resp.status != 200:
                     return None
-                return lib.drawn_keys(json.loads(await resp.text()))
+                return json.loads(await resp.text())
         except Exception:   # timeouts, bad JSON, the site being down: try again next time
+            return None
+
+    async def drawn_keys(self) -> set[str] | None:
+        """Species keys the Library already has sprites for, or None if the list can't be read."""
+        listing = await self.sprite_list()
+        return None if listing is None else lib.drawn_keys(listing)
+
+    async def fetch_bytes(self, url: str | None) -> bytes | None:
+        if not url:
+            return None
+        try:
+            async with self.bot.session.get(url, timeout=15, headers=HEADERS) as resp:
+                return await resp.read() if resp.status == 200 else None
+        except Exception:
+            return None
+
+    async def sprite_preview(self, row, listing: dict | None) -> bytes | None:
+        """The species' new sheet beside its portrait, for the DM, or None if the sprite isn't live yet."""
+        entry = lib.sprite_entry(listing, row["species_key"])
+        if entry is None:
+            return None
+        sheet = await self.fetch_bytes(lib.sheet_url(entry["file"]))
+        if sheet is None:
+            return None
+        portrait = await self.fetch_bytes(row["portrait"])
+        try:
+            return await asyncio.to_thread(lib.sheet_preview, sheet, entry["frame"], portrait,
+                                           f"{row['species']} ({row['species_key']})")
+        except Exception:   # the DM still goes out, just without the picture
             return None
 
     @tasks.loop(minutes=CHECK_MINUTES)
@@ -84,22 +116,32 @@ class PetArt(commands.Cog):
                 "RETURNING *",
                 list(keys or []), list(ids or []), by,
             )
+        listing = await self.sprite_list() if rows else None
         for row in rows:
-            await self.tell(row["user_id"], _(
-                "\U0001F3A8 **Your {pet} has been drawn!**\n"
-                "{species} now has its own walking sprite in the Fables Library. Equip it with "
-                "`$pets equip {id}` and it walks beside you, and so does every {species} out there.\n"
-                "You can request another pet <t:{next}:R>."
-            ).format(pet=row["pet_name"], species=row["species"], id=row["pet_id"],
-                     next=_unix(lib.next_request_at(row["requested_at"]))))
+            embed = discord.Embed(
+                title=_("\U0001F3A8 Your {pet} has been drawn!").format(pet=row["pet_name"]),
+                description=_(
+                    "**{species}** now has its own walking sprite in the Fables Library. Equip it with "
+                    "`$pets equip {id}` and it walks beside you, and so does every {species} out there.\n\n"
+                    "You can request another pet <t:{next}:R>."
+                ).format(species=row["species"], id=row["pet_id"], next=_unix(lib.next_request_at(row["requested_at"]))),
+                colour=COLOUR)
+            preview = await self.sprite_preview(row, listing)
+            file = None
+            if preview:
+                file = discord.File(io.BytesIO(preview), filename="sprite.png")
+                embed.set_image(url="attachment://sprite.png")
+            elif row["portrait"]:
+                embed.set_thumbnail(url=row["portrait"])
+            await self.tell(row["user_id"], embed=embed, file=file)
         return rows
 
-    async def tell(self, user_id: int, text: str) -> None:
+    async def tell(self, user_id: int, text: str = None, *, embed=None, file=None) -> None:
         user = await self.bot.get_user_global(user_id)
         if user is None:
             return
         try:
-            await user.send(text)
+            await user.send(text, embed=embed, file=file)
         except (discord.Forbidden, discord.HTTPException):
             pass
 
@@ -260,22 +302,28 @@ class PetArt(commands.Cog):
     @petart.command(hidden=True, brief=_("The drawing queue (GM)"))
     @is_gm()
     async def queue(self, ctx):
-        """Open requests, oldest first: request number, species, who asked."""
+        """Open requests, oldest first: one card each with the pet's picture (click the name for full size)."""
         async with self.bot.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT * FROM pet_art_requests WHERE status = ANY($1::text[]) ORDER BY requested_at", list(lib.OPEN))
         if not rows:
             return await ctx.send(_("The queue is empty."))
-        lines = [
-            f"`#{r['id']}` {'✏️' if r['status'] == 'drawing' else '⏳'} **{r['species']}** (`{r['species_key']}`) "
-            f"· {r['pet_name']} · <@{r['user_id']}> · <t:{_unix(r['requested_at'])}:R>"
-            for r in rows[:QUEUE_SHOWN]
-        ]
+        cards = []
+        for r in rows[:QUEUE_SHOWN]:
+            card = discord.Embed(
+                title=f"#{r['id']} {'✏️' if r['status'] == 'drawing' else '⏳'} {r['species']}"[:256],
+                url=r["portrait"] or None,
+                description=f"`{r['species_key']}` · {r['pet_name']} · <@{r['user_id']}> · <t:{_unix(r['requested_at'])}:R>",
+                colour=COLOUR)
+            if r["portrait"]:
+                card.set_image(url=r["portrait"])
+            cards.append(card)
         drawing = sum(1 for r in rows if r["status"] == "drawing")
-        embed = discord.Embed(title=_("Pet art queue"), description="\n".join(lines), colour=COLOUR)
-        embed.set_footer(text=_("{n} waiting · {d} being drawn · $petart batch [count] · $petart complete <#id or species>").format(
+        cards[-1].set_footer(text=_("{n} waiting · {d} being drawn · $petart batch [count] · $petart complete <#id or species>").format(
             n=len(rows) - drawing, d=drawing))
-        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        # Discord takes 10 embeds a message.
+        for start in range(0, len(cards), 10):
+            await ctx.send(embeds=cards[start:start + 10], allowed_mentions=discord.AllowedMentions.none())
 
     @petart.command(hidden=True, brief=_("Start a batch and get its requests.json (GM)"))
     @is_gm()

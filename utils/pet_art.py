@@ -14,13 +14,18 @@ Used by cogs/petart. Discord-free so the tests can use it.
 from __future__ import annotations
 
 import datetime
+import io
 import re
 import unicodedata
+
+from PIL import Image, ImageDraw
 
 from utils import library_pets
 
 COOLDOWN = datetime.timedelta(days=28)
 SPRITES_URL = "https://game.fablereborn.xyz/games/hub/data/PetSprites.json"
+SHEETS_URL = "https://game.fablereborn.xyz/games/hub/img/pets/"
+PREVIEW_BG = (54, 48, 62, 255)
 ART_PROMPT = "reports/Pets-Sprite-ArtPrompt.md"
 
 OPEN = ("queued", "drawing")
@@ -103,6 +108,47 @@ def drawn_keys(sprites_json) -> set[str]:
     """Species keys with a walking sprite in the Library's PetSprites.json."""
     sprites = (sprites_json or {}).get("sprites") if isinstance(sprites_json, dict) else None
     return set(sprites) if isinstance(sprites, dict) else set()
+
+
+def sprite_entry(sprites_json, key: str) -> dict | None:
+    """A species' sheet from PetSprites.json: {"file": name, "frame": [w, h]}, or None."""
+    sprites = (sprites_json or {}).get("sprites") if isinstance(sprites_json, dict) else None
+    entry = sprites.get(key) if isinstance(sprites, dict) else None
+    if not isinstance(entry, dict) or not entry.get("file"):
+        return None
+    frame = entry.get("frame") or [48, 48]
+    return {"file": str(entry["file"]), "frame": [int(frame[0]), int(frame[1])]}
+
+
+def sheet_url(file: str) -> str:
+    return SHEETS_URL + file + ".png"
+
+
+def sheet_preview(sheet_png: bytes, frame=(48, 48), portrait: bytes | None = None, label: str = "", zoom: int = 3) -> bytes:
+    """The new sprite for the reader's DM, laid out like tools/pets/build_sheets.py's preview: every frame
+    enlarged without blurring (rows facing down, left, right, up), with the pet's portrait beside it."""
+    sheet = Image.open(io.BytesIO(sheet_png)).convert("RGBA")
+    fw, fh = int(frame[0]), int(frame[1])
+    sheet = sheet.crop((0, 0, fw * 3, fh * 4)).resize((fw * 3 * zoom, fh * 4 * zoom), Image.NEAREST)
+    pad, label_h = 12, 18 if label else 0
+    picture = None
+    if portrait:
+        try:
+            picture = Image.open(io.BytesIO(portrait)).convert("RGBA")
+            fit = min(fw * 4 * zoom / picture.width, sheet.height / picture.height)
+            picture = picture.resize((max(1, round(picture.width * fit)), max(1, round(picture.height * fit))), Image.LANCZOS)
+        except Exception:   # a portrait that won't open: the sheet alone still shows
+            picture = None
+    width = pad * 2 + sheet.width + (pad + picture.width if picture else 0)
+    out = Image.new("RGBA", (width, pad * 2 + label_h + sheet.height), PREVIEW_BG)
+    if label:
+        ImageDraw.Draw(out).text((pad, pad), label, fill=(240, 230, 210, 255))
+    out.alpha_composite(sheet, (pad, pad + label_h))
+    if picture:
+        out.alpha_composite(picture, (pad * 2 + sheet.width, pad + label_h + (sheet.height - picture.height) // 2))
+    buffer = io.BytesIO()
+    out.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def batch_file(rows, batch: str, made: datetime.datetime) -> dict:

@@ -53,5 +53,31 @@ class TestPetArt(unittest.TestCase):
                                             "portrait": "https://x/p.png", "request": 3}])
 
 
+    def test_sprite_entry_and_url(self):
+        listing = {"sprites": {"codexwyrm": {"file": "codexwyrm", "frame": [48, 48]}, "odd": {"frame": [48, 48]}}}
+        self.assertEqual(pet_art.sprite_entry(listing, "codexwyrm"), {"file": "codexwyrm", "frame": [48, 48]})
+        self.assertIsNone(pet_art.sprite_entry(listing, "odd"))
+        self.assertIsNone(pet_art.sprite_entry(listing, "missing"))
+        self.assertIsNone(pet_art.sprite_entry(None, "codexwyrm"))
+        self.assertEqual(pet_art.sheet_url("codexwyrm"), "https://game.fablereborn.xyz/games/hub/img/pets/codexwyrm.png")
+
+    def test_sheet_preview_shows_every_frame_beside_the_portrait(self):
+        import io
+        from PIL import Image
+        sheet = Image.new("RGBA", (144, 192))
+        sheet.paste((200, 60, 60, 255), (16, 16, 32, 44))
+        png = io.BytesIO()
+        sheet.save(png, "PNG")
+        portrait = io.BytesIO()
+        Image.new("RGB", (400, 400), (20, 120, 200)).save(portrait, "JPEG")
+        out = Image.open(io.BytesIO(pet_art.sheet_preview(png.getvalue(), (48, 48), portrait.getvalue(), "Pavorinex (pavorinex)")))
+        self.assertEqual(out.format, "PNG")
+        self.assertEqual(out.height, 12 * 2 + 18 + 192 * 3)
+        self.assertEqual(out.width, 12 * 3 + 144 * 3 + 400 * 576 // 400)
+        self.assertEqual(out.convert("RGB").getpixel((12 + 20 * 3, 12 + 18 + 20 * 3)), (200, 60, 60))
+        alone = Image.open(io.BytesIO(pet_art.sheet_preview(png.getvalue(), (48, 48), b"not an image")))
+        self.assertEqual(alone.size, (12 * 2 + 144 * 3, 12 * 2 + 192 * 3))
+
+
 if __name__ == "__main__":
     unittest.main()
