@@ -6,7 +6,7 @@ from pathlib import Path
 import discord
 
 ASSETS = Path(__file__).resolve().parents[2] / "assets" / "fables"
-COVERS = {"crownfall": "crownfall.png", "tiamat": "tiamat-cinematic.png"}
+COVERS = {"crownfall": "crownfall.png", "tiamat": "tiamat-title.png"}
 COLOURS = {"crownfall": 0xD4A94E, "tiamat": 0x8FBBD0}
 
 
