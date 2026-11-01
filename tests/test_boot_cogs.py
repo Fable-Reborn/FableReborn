@@ -91,6 +91,19 @@ class TestBootCogs(unittest.TestCase):
         self.assertIn("cogs.reload", names)
         self.assertNotIn("cogs.__pycache__", names)
 
+    def test_extra_cogs_load_once_and_only_when_config_misses_them(self):
+        loaded = boot_cogs.with_extras(["cogs.locale", "cogs.tiamat", "cogs.quests"])
+        for name in boot_cogs.EXTRA_COGS:
+            self.assertEqual(loaded.count(name), 1, name)
+        self.assertLess(loaded.index("cogs.tiamat"), loaded.index("cogs.quests"))   # config's place kept
+        self.assertEqual(loaded.index("cogs.factions") + 1, loaded.index("cogs.quests"))
+        self.assertEqual(boot_cogs.with_extras(loaded), loaded)
+
+    def test_every_extra_cog_exists(self):
+        names = boot_cogs.available(Path(__file__).resolve().parents[1] / "cogs")
+        for name in boot_cogs.ALWAYS_LOADED:
+            self.assertIn(name, names)
+
     def test_the_real_config_round_trips(self):
         config = Path(__file__).resolve().parents[1] / "config.toml"
         if not config.exists():
