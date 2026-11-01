@@ -50,6 +50,26 @@ LIBRARY_EGGS_SQL = """CREATE TABLE IF NOT EXISTS library_pet_eggs (
 
 PET_CHAPTER_SQL = "ALTER TABLE monster_pets ADD COLUMN IF NOT EXISTS library_chapter INTEGER NOT NULL DEFAULT 0"
 
+# An egg waiting for room on a full shelf tells its owner once.
+EGG_WAIT_NOTICE_SQL = "ALTER TABLE library_pet_eggs ADD COLUMN IF NOT EXISTS shelf_full_told BOOLEAN NOT NULL DEFAULT FALSE"
+
+# One "ready to evolve" DM per pet and Chapter.
+EVOLVE_NOTICES_SQL = """CREATE TABLE IF NOT EXISTS library_pet_evolve_notices (
+  pet_id BIGINT NOT NULL,
+  chapter INTEGER NOT NULL,
+  told_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (pet_id, chapter)
+)"""
+
+# Where each kind of egg comes from (the Library's Handbook says the same).
+EGG_SOURCES = (
+    "Inkwyrm: find the Keeper's twelve lost books in the Library\n"
+    "Reedling: fill 25 pages of your fish journal\n"
+    "Lanternling and Gourdling: Hallow's Eve in the Library\n"
+    "Frostfawn and Hearthkit: Winter Feast in the Library\n"
+    "The seven Soulgem Whelps: one for each of the Seven's statues in the Hall, freed in The Tiamat Sacrament"
+)
+
 
 @dataclass(frozen=True)
 class Species:

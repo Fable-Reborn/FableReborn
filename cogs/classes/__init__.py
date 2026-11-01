@@ -303,6 +303,8 @@ class Classes(commands.Cog):
             - Bards empower the whole party — mending refrains in the Battle Tower and war-songs that raise everyone's damage in the Ice Dragon Challenge
             - Beastmasters forge a Pack Bond, greatly strengthening their equipped pet everywhere it fights beside them
             - Paragons gain added damage *and* defense and use Adaptive Mastery in battle; the class is only available to donators
+            - Penitents build Penance from wounds and take blows meant for allies; earned by showing mercy to Gyle in The Tiamat Sacrament (`{prefix}fables`)
+            - The Tiamat Sacrament hides one more class, for those who find what it keeps secret
 
             The second class unlocks at level 12. Selecting a class the first time is free (No Class -> Class), but changing it later will cost $5,000 (Class -> another Class)
 

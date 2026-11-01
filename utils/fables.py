@@ -1,5 +1,31 @@
 """Fable rewards: accepts an asyncpg pool OR an existing transaction connection."""
 
+GAME_URL = "https://game.fablereborn.xyz"
+
+# The Tiamat Sacrament is unlocked in the Battle Tower: opening the hidden Door 4 (Freedom) at the finale on
+# prestige 5 or above always unlocks it (the Library lies beyond the Tower's fourth door), and every Ice Dragon
+# win has a 5% chance to, once you've reached prestige 5.
+TIAMAT = "tiamat"
+TIAMAT_MIN_PRESTIGE = 5
+TIAMAT_TOWER_DOOR = "door_4_freedom"
+TIAMAT_DRAGON_CHANCE = 0.05
+
+HOW_TO_UNLOCK = (
+    "**The Tiamat Sacrament** unlocks in two ways once you've reached Battle Tower prestige "
+    f"{TIAMAT_MIN_PRESTIGE}:\n"
+    "• open the hidden **Door 4** at the end of the Battle Tower (always unlocks it)\n"
+    f"• win the Ice Dragon Challenge ({TIAMAT_DRAGON_CHANCE:.0%} chance each win)"
+)
+
+
+def tower_unlocks_tiamat(door_key, prestige) -> bool:
+    return door_key == TIAMAT_TOWER_DOOR and int(prestige or 0) >= TIAMAT_MIN_PRESTIGE
+
+
+def dragon_unlocks_tiamat(prestige, roll) -> bool:
+    """`roll` is random.random()."""
+    return int(prestige or 0) >= TIAMAT_MIN_PRESTIGE and roll < TIAMAT_DRAGON_CHANCE
+
 async def unlock_fable(db, discord_id: int, fable_id: str, *, source: str = "reward") -> bool:
     """Grant once; return True for a new unlock, False if already owned.
 

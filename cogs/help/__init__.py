@@ -4018,6 +4018,7 @@ class IdleHelp(commands.HelpCommand):
                 f"{self.group_emoji if isinstance(c, commands.Group) else self.command_emoji}"
                 f" `{self.context.clean_prefix}{c.qualified_name} {c.signature}` - {_(c.brief) if c.brief else _('No brief help available')}"
                 for c in cog.get_commands()
+                if not c.hidden
             ],
             footer=_("See '{prefix}help <command>' for more detailed info").format(
                 prefix=self.context.clean_prefix
@@ -4082,8 +4083,10 @@ class IdleHelp(commands.HelpCommand):
             ),
             bot=self.context.bot,
             color=self.context.bot.config.game.primary_colour,
-            description=_(group.help).format(prefix=self.context.clean_prefix),
-            cmds=list(group.commands),
+            description=_(group.help).format(prefix=self.context.clean_prefix)
+            if group.help
+            else _("No help available"),
+            cmds=[c for c in group.commands if not c.hidden],
         )
         await menu.start(self.context)
 

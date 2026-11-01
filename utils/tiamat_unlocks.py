@@ -85,8 +85,35 @@ def _missing_table(error) -> bool:
     return getattr(error, "sqlstate", None) == "42P01" or type(error).__name__ == "UndefinedTableError"
 
 
+# `told`: whether the player has had a DM about the unlock. Rows from before this column count as told; rows the
+# game server writes from now on start untold (its INSERT names its columns, so it gets the default).
+TOLD_SQL = (
+    "ALTER TABLE tiamat_unlocks ADD COLUMN IF NOT EXISTS told BOOLEAN NOT NULL DEFAULT TRUE;"
+    "ALTER TABLE tiamat_unlocks ALTER COLUMN told SET DEFAULT FALSE"
+)
+
+# The DM each unlock sends when it lands.
+NEWS = {
+    DRAGONKIN: "🐉 You finished The Tiamat Sacrament! The **Dragonkin** race is yours: choose it with `$race`.",
+    CLUTCH_BADGE: "🥚 The **Clutch of Ilisrei** badge is now on your profile, for finishing The Tiamat Sacrament.",
+    PENITENT: "⚔️ You showed Gyle mercy. The **Penitent** class is yours: choose it with `$class`.",
+    BREATHCALLER: "🌬️ You hold all seven Soul Gems. The secret **Breathcaller** class is yours: choose it with `$class`.",
+    FOUNDING_READER: "📚 You visited the Fables Library in its Founding Week. "
+                     "The **Founding Reader** profile theme is yours: see `$prpg themes`.",
+}
+
+
 async def ensure_table(conn) -> None:
     await conn.execute(TABLE_SQL)
+    await conn.execute(TOLD_SQL)
+
+
+async def take_untold(conn) -> list:
+    """Marks every untold unlock told and returns those rows (user_id, unlock_key), so each DM goes out once
+    even with several bot clusters sweeping."""
+    return await conn.fetch(
+        "UPDATE tiamat_unlocks SET told = TRUE WHERE NOT told RETURNING user_id, unlock_key;"
+    )
 
 
 async def unlocks_for(conn, user_id: int) -> set[str]:

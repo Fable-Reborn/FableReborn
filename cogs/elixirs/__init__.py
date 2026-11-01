@@ -132,8 +132,9 @@ class Elixirs(commands.Cog):
             await ctx.send(_("Which one? {names}").format(names=", ".join(many.args[0])))
             return None
         if not elixir_id:
-            await ctx.send(_("There's no elixir called `{query}`. See your shelf with `{prefix}elixirs`.").format(
-                query=query, prefix=ctx.clean_prefix))
+            names = ", ".join(sorted(e["name"] for e in lib.ELIXIRS.values()))
+            await ctx.send(_("There's no elixir called `{query}`. The elixirs are: {names}.").format(
+                query=query, names=names))
             return None
         if quality is None and owned is not None:
             mine = [q for (e, q), n in owned.items() if e == elixir_id and n > 0]
@@ -165,7 +166,9 @@ class Elixirs(commands.Cog):
         _(
             """Your battle elixirs, brewed in the Fables Library.
 
-            Brew them in a cauldron in your Library home from crops you grow and fish you catch. Drink one with `{prefix}elixir drink <name>`: it works in every battle for 2 hours. Two can work at once, never two of the same. Gold crops make gold elixirs, twice as strong as plain.
+            Brew them in a cauldron in your Library home from crops you grow and fish you catch. Every linked reader can claim a free home in the Fables Library (https://game.fablereborn.xyz, `{prefix}link`). Drink one with `{prefix}elixir drink <name>`: it works in every battle for 2 hours. Two can work at once, never two of the same. Silver crops make silver elixirs (1.5x as strong as plain) and gold crops make gold ones (2x).
+
+            `{prefix}elixir info <name>` explains any elixir; a name it doesn't know lists them all.
 
             Trade them with `{prefix}trade`, or sell them on `{prefix}elixir market`."""
         )
