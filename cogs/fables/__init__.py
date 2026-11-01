@@ -31,7 +31,7 @@ class Fables(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(name="fables", brief="See your unlocked playable stories")
+    @commands.command(name="fables", aliases=["play", "library"], brief="Where to play the Fables, and your unlocked stories")
     async def fables(self, ctx):
         """Your Fables: story games played on the web at https://game.fablereborn.xyz with your linked account.
 
