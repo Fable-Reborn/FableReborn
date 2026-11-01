@@ -84,6 +84,55 @@ async def revoke_link_code(pool, profile_user: int, code: str) -> None:
         )
 
 
+# Password resets: a one-use code DMed to the Discord account a Fables account is linked to. Only its hash is
+# stored; the game server (src/economy.js claimPasswordReset) checks it against the username, allows a few wrong
+# tries, and deletes it once used. A new request replaces any older code.
+RESET_CODE_TTL_MINUTES = 15
+PASSWORD_RESETS_SQL = """CREATE TABLE IF NOT EXISTS tiamat_password_resets (
+  profile_user BIGINT PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+)"""
+
+
+def generate_reset_code() -> str:
+    body = "".join(secrets.choice(LINK_ALPHABET) for _ in range(12))   # 60 bits
+    return f"RESET-{body[:4]}-{body[4:8]}-{body[8:]}"
+
+
+async def issue_reset_code(pool, profile_user: int) -> tuple[str, str]:
+    """(code, game username) for the account linked to this Discord user. LookupError if there isn't one."""
+    code = generate_reset_code()
+    async with pool.acquire() as connection:
+        async with connection.transaction():
+            username = await connection.fetchval(
+                "SELECT game_username FROM tiamat_players WHERE profile_user=$1", profile_user
+            )
+            if not username:
+                raise LookupError("Your profile isn't linked to a Fables account yet. Create one with `$link`.")
+            await connection.execute(PASSWORD_RESETS_SQL)
+            await connection.execute("DELETE FROM tiamat_password_resets WHERE expires_at <= NOW()")
+            await connection.execute(
+                """
+                INSERT INTO tiamat_password_resets (profile_user, code_hash, expires_at)
+                VALUES ($1, $2, NOW() + ($3 * INTERVAL '1 minute'))
+                ON CONFLICT (profile_user) DO UPDATE
+                SET code_hash=EXCLUDED.code_hash, expires_at=EXCLUDED.expires_at, attempts=0, created_at=NOW()
+                """,
+                profile_user,
+                hash_link_code(code),
+                RESET_CODE_TTL_MINUTES,
+            )
+    return code, username
+
+
+async def revoke_reset_code(pool, profile_user: int) -> None:
+    async with pool.acquire() as connection:
+        await connection.execute("DELETE FROM tiamat_password_resets WHERE profile_user=$1", profile_user)
+
+
 async def fetch_rpg_profile(pool, profile_user: int):
     async with pool.acquire() as connection:
         return await connection.fetchrow(

@@ -18,9 +18,13 @@ from .service import (
     convert_gold_to_crowns,
     fetch_dragon_card,
     fetch_rpg_profile,
+    RESET_CODE_TTL_MINUTES,
     issue_link_code,
+    issue_reset_code,
     revoke_link_code,
+    revoke_reset_code,
 )
+from cogs.shard_communication import user_on_cooldown as user_cooldown
 
 
 log = logging.getLogger(__name__)
@@ -238,6 +242,37 @@ class Tiamat(commands.Cog):
             await ctx.send("I sent your one-use RPG link code by DM.", delete_after=20)
         except Exception as e:
             print(f"Error in link command: {e}")
+            await ctx.send(f"An error occurred while processing your request. {e}")
+
+    @user_cooldown(120)
+    @commands.command(name="resetpassword", aliases=["forgotpassword", "passwordreset"],
+                      brief="Reset your Fables password with a code sent by DM")
+    async def resetpassword(self, ctx) -> None:
+        """DMs you a one-use code to set a new password for the Fables account linked to this Discord account.
+
+        On the sign-in screen at https://game.fablereborn.xyz choose Log In, then Forgot password?, and enter your
+        username, the code and a new password. The code works once, for 15 minutes, and only for your own account;
+        asking again replaces it. Staff will never ask you for it."""
+        try:
+            try:
+                code, username = await issue_reset_code(self.bot.pool, ctx.author.id)
+            except LookupError as error:
+                return await ctx.send(str(error))
+            try:
+                await ctx.author.send(
+                    f"🔑 **Fables password reset** for **{username}**\n\n"
+                    f"Your one-use reset code: **`{code}`**\n\n"
+                    f"On the sign-in screen at {GAME_URL}, choose **Log In**, then **Forgot password?**, and enter "
+                    f"your username, this code and a new password. It works once, for {RESET_CODE_TTL_MINUTES} minutes.\n\n"
+                    "Never give this code to anyone: staff will never ask for it. If you didn't ask for a reset, "
+                    "ignore this message: your password hasn't changed."
+                )
+            except discord.Forbidden:
+                await revoke_reset_code(self.bot.pool, ctx.author.id)
+                return await ctx.send("I couldn't DM you. Turn on direct messages and run `$resetpassword` again.")
+            await ctx.send("I sent your password reset code by DM.", delete_after=20)
+        except Exception as e:
+            log.exception("resetpassword failed")
             await ctx.send(f"An error occurred while processing your request. {e}")
 
     @checks.has_char()
