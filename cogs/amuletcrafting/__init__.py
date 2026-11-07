@@ -163,10 +163,10 @@ class AmuletTypeView(ui.View):
             return None
             
         type_emoji = {
-            "balanced": "<:balancedamulet:1388929966397198470>",
-            "attack": "<:attackamulet:1388930099516014803>", 
-            "defense": "<:defenseamulet:1388930014111727666>",
-            "health": "<:healthamulet:1388930139466891265>"
+            "balanced": "<:balancedamulet:1473320652009111702>",
+            "attack": "<:attackamulet:1473320623202893895>", 
+            "defense": "<:defenseamulet:1473320597047087134>",
+            "health": "<:healthamulet:1473320566005170470>"
         }
         
         # Get all tiers for this type
@@ -1096,10 +1096,10 @@ class AmuletCrafting(commands.Cog):
                 )
 
                 emoji_map = {
-                    "balanced": "<:balancedamulet:1388929966397198470>",
-                    "attack": "<:attackamulet:1388930099516014803>",
-                    "defense": "<:defenseamulet:1388930014111727666>",
-                    "health": "<:healthamulet:1388930139466891265>"
+                    "balanced": "<:balancedamulet:1473320652009111702>",
+                    "attack": "<:attackamulet:1473320623202893895>",
+                    "defense": "<:defenseamulet:1473320597047087134>",
+                    "health": "<:healthamulet:1473320566005170470>"
                 }
                 emoji = emoji_map.get(type_, "✨")
 
@@ -1242,10 +1242,10 @@ class AmuletCrafting(commands.Cog):
         
         # Amulet types
         amulet_types = (
-            f"<:balancedamulet:1388929966397198470> **Balanced** - Equal HP, Attack, Defense bonuses\n"
-            f"<:attackamulet:1388930099516014803> **Attack** - High Attack, moderate HP/Defense\n"
-            f"<:defenseamulet:1388930014111727666> **Defense** - High Defense, moderate HP/Attack\n"
-            f"<:healthamulet:1388930139466891265> **Health** - High HP, moderate Attack/Defense"
+            f"<:balancedamulet:1473320652009111702> **Balanced** - Equal HP, Attack, Defense bonuses\n"
+            f"<:attackamulet:1473320623202893895> **Attack** - High Attack, moderate HP/Defense\n"
+            f"<:defenseamulet:1473320597047087134> **Defense** - High Defense, moderate HP/Attack\n"
+            f"<:healthamulet:1473320566005170470> **Health** - High HP, moderate Attack/Defense"
         )
         embed.add_field(name="🎯 Amulet Types", value=amulet_types, inline=False)
         
