@@ -1,0 +1,156 @@
+# Parked Fable Dev bot. Deployment fable-bot-dev in namespace fable.
+# Same images and git tree on fablenode01 as the live bot, with its own
+# Discord token. The live bot is deployment fable-bot. Scaling this
+# deployment does not affect the live one.
+#
+# The FableDev and IdleRPGDev databases were refreshed from the live
+# databases on 2026-11-07. They are not empty.
+#
+# Replicas must be 0 or 1. Never higher.
+#
+# On fablenode01:
+#   Start: sudo k3s kubectl -n fable scale deploy/fable-bot-dev --replicas=1
+#   Stop:  sudo k3s kubectl -n fable scale deploy/fable-bot-dev --replicas=0
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fable-bot-dev
+  namespace: fable
+  labels:
+    app: fable-bot-dev
+    fable.reborn/role: dev
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: fable-bot-dev
+  template:
+    metadata:
+      labels:
+        app: fable-bot-dev
+        fable.reborn/role: dev
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: fablenode01
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: ssh-setup
+          image: docker.io/library/fable-bot:local
+          imagePullPolicy: Never
+          command: ["sh", "-c"]
+          args:
+            - install -m 600 /ssh-src/id_rsa /ssh/id_rsa &&
+              install -m 644 /ssh-src/known_hosts /ssh/known_hosts
+          volumeMounts:
+            - name: github-ssh-src
+              mountPath: /ssh-src
+              readOnly: true
+            - name: github-ssh
+              mountPath: /ssh
+      containers:
+        - name: fable
+          image: docker.io/library/fable-bot:local
+          imagePullPolicy: Never
+          workingDir: /home/fableadmin/FableRPG-FINAL/FableRPG-FINAL/Fable
+          command: ["python", "/app/wait_local.py"]
+          env:
+            - name: HOME
+              value: /home/fable
+            - name: GIT_SSH_COMMAND
+              value: "ssh -o UserKnownHostsFile=/home/fable/.ssh/known_hosts -o StrictHostKeyChecking=yes"
+            - name: FABLE_SINGLETON_LOCK
+              value: "1"
+            - name: WAIT_FOR_OKAPI
+              value: "1"
+            - name: WAIT_FOR_CHESS
+              value: "1"
+          resources:
+            requests:
+              memory: 1Gi
+            limits:
+              memory: 4Gi
+          volumeMounts:
+            - name: fable-code
+              mountPath: /home/fableadmin/FableRPG-FINAL/FableRPG-FINAL/Fable
+            - name: config
+              mountPath: /home/fableadmin/FableRPG-FINAL/FableRPG-FINAL/Fable/config.toml
+              subPath: config.toml
+              readOnly: true
+            - name: github-ssh
+              mountPath: /home/fable/.ssh
+        - name: okapi
+          image: docker.io/library/fable-okapi:local
+          imagePullPolicy: Never
+          env:
+            - name: PORT
+              value: "3010"
+          ports:
+            - containerPort: 3010
+          resources:
+            requests:
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+        - name: chess
+          image: docker.io/library/fable-chess:local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 4000
+          resources:
+            requests:
+              memory: 256Mi
+            limits:
+              memory: 2Gi
+      volumes:
+        - name: fable-code
+          hostPath:
+            path: /home/fableadmin/FableRPG-FINAL/FableRPG-FINAL/Fable
+            type: Directory
+        - name: github-ssh-src
+          secret:
+            secretName: fable-github-ssh
+            defaultMode: 0440
+        - name: github-ssh
+          emptyDir: {}
+        - name: config
+          secret:
+            secretName: fable-config-dev
+            items:
+              - key: config.toml
+                path: config.toml
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: fable-pg-dev
+  namespace: fable
+spec:
+  cluster:
+    name: fable-pg
+  name: FableDev
+  owner: fableadmin
+  template: template0
+  encoding: UTF8
+  localeCollate: en_US.utf8
+  localeCType: en_US.utf8
+  databaseReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: fable-pg-idlerpg-dev
+  namespace: fable
+spec:
+  cluster:
+    name: fable-pg
+  name: IdleRPGDev
+  owner: fableadmin
+  template: template0
+  encoding: UTF8
+  localeCollate: en_US.utf8
+  localeCType: en_US.utf8
+  databaseReclaimPolicy: retain
