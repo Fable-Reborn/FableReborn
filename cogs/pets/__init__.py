@@ -2366,6 +2366,8 @@ class Pets(commands.Cog):
             self.auto_return_daycare_boardings.start()
         if not self.deliver_library_eggs.is_running():
             self.deliver_library_eggs.start()
+        if not self.notice_library_evolutions.is_running():
+            self.notice_library_evolutions.start()
             
         self.emoji_to_element = {
             "<:f_corruption:1170192253256466492>": "Corrupted",
@@ -2633,6 +2635,8 @@ class Pets(commands.Cog):
             self.auto_return_daycare_boardings.cancel()
         if self.deliver_library_eggs.is_running():
             self.deliver_library_eggs.cancel()
+        if self.notice_library_evolutions.is_running():
+            self.notice_library_evolutions.cancel()
 
     async def initialize_enhanced_tables(self):
         """Initialize the enhanced pet system database tables"""
@@ -5948,8 +5952,11 @@ class Pets(commands.Cog):
             ctx.command = previous_command
 
     # Command to use the paginator
-    @commands.group(invoke_without_command=True)
+    @commands.group(invoke_without_command=True, brief=_("Browse and care for your pets and eggs"))
     async def pets(self, ctx):
+        """Browse your pets and eggs. Equip one to fight beside you; it also follows you around the Fables Library.
+
+        `{prefix}pets help` is the full guide. Fables Library pets evolve through Chapters with Story: see `{prefix}pets story`."""
 
         try:
             await self.check_pet(ctx.author.id)
@@ -9183,6 +9190,8 @@ class Pets(commands.Cog):
         await conn.execute(library_pets.STORY_EVENTS_SQL)
         await conn.execute(library_pets.STORY_WALLET_SQL)
         await conn.execute(library_pets.LIBRARY_EGGS_SQL)
+        await conn.execute(library_pets.EGG_WAIT_NOTICE_SQL)
+        await conn.execute(library_pets.EVOLVE_NOTICES_SQL)
 
     async def add_library_story(self, conn, user_id, source, amount=None, request_id=None):
         """Record Story for a player. Each source counts up to its daily share (utils/library_pets.py)."""
@@ -9266,10 +9275,29 @@ class Pets(commands.Cog):
                         " OR EXISTS (SELECT 1 FROM monster_eggs WHERE user_id = $1 AND egg_type = $2 AND hatched = FALSE);",
                         queued["user_id"], spec.name,
                     ):
-                        await conn.execute("UPDATE library_pet_eggs SET delivered_at = NOW() WHERE id = $1 AND delivered_at IS NULL;", queued["id"])
+                        set_aside = await conn.fetchval(
+                            "UPDATE library_pet_eggs SET delivered_at = NOW() WHERE id = $1 AND delivered_at IS NULL RETURNING id;",
+                            queued["id"],
+                        )
+                        if set_aside:
+                            await self.tell_library_owner(
+                                queued["user_id"],
+                                f"📖 Another **{spec.name}** egg turned up in the Fables Library, but you already have one. "
+                                "Library pets are one of each kind, so it stays in the Library.",
+                            )
                         continue
                     used, allowed = await self.get_library_capacity(conn, queued["user_id"])
                     if used >= allowed:
+                        told = await conn.fetchval(
+                            "UPDATE library_pet_eggs SET shelf_full_told = TRUE WHERE id = $1 AND NOT shelf_full_told RETURNING id;",
+                            queued["id"],
+                        )
+                        if told:
+                            await self.tell_library_owner(
+                                queued["user_id"],
+                                f"📖 A **{spec.name}** egg is waiting for you in the Fables Library, but your Library shelf "
+                                f"is full ({used}/{allowed}). Release a Library pet to make room and it arrives a minute later.",
+                            )
                         continue
                     rolled = library_pets.roll_egg(spec)
                     async with conn.transaction():
@@ -9293,17 +9321,56 @@ class Pets(commands.Cog):
                             rolled["hp_iv"], rolled["attack_iv"], rolled["defense_iv"],
                         )
                         await conn.execute("UPDATE library_pet_eggs SET egg_id = $1 WHERE id = $2;", egg_id, queued["id"])
-                    user = self.bot.get_user(int(queued["user_id"]))
-                    if user:
-                        try:
-                            await user.send(
-                                f"📖 A **{spec.name}** egg has arrived from the Fables Library "
-                                f"(IV {rolled['IV']:.1f}%). It is about to hatch!"
-                            )
-                        except discord.HTTPException:
-                            pass
+                    await self.tell_library_owner(
+                        queued["user_id"],
+                        f"📖 A **{spec.name}** egg has arrived from the Fables Library "
+                        f"(IV {rolled['IV']:.1f}%). It is about to hatch!",
+                    )
         except Exception as e:
             print(f"Error in deliver_library_eggs: {e}")
+
+    async def tell_library_owner(self, user_id, text):
+        """DMs a Library pet owner; a closed DM is fine, the news is in `$pets story` too."""
+        try:
+            user = self.bot.get_user(int(user_id)) or await self.bot.fetch_user(int(user_id))
+            await user.send(text)
+        except discord.HTTPException:
+            pass
+
+    @tasks.loop(minutes=30)
+    async def notice_library_evolutions(self):
+        """Tells a reader, once per pet and Chapter, when a Library pet has the Story and level to evolve."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                await self.ensure_library_pet_tables(conn)
+                pets = await conn.fetch(
+                    f"SELECT * FROM monster_pets WHERE {library_pets.LIBRARY_PET_SQL} AND user_id > 0 ORDER BY user_id, id;"
+                )
+                balances = {}
+                for pet in pets:
+                    owner = int(pet["user_id"])
+                    if owner not in balances:
+                        balances[owner] = (await self.get_library_story(conn, owner))[0]
+                    check = library_pets.can_evolve(pet, balances[owner])
+                    if not check.ok:
+                        continue
+                    first = await conn.fetchval(
+                        "INSERT INTO library_pet_evolve_notices (pet_id, chapter) VALUES ($1, $2) "
+                        "ON CONFLICT DO NOTHING RETURNING pet_id;",
+                        pet["id"], check.next_chapter,
+                    )
+                    if first:
+                        await self.tell_library_owner(
+                            owner,
+                            f"📖 **{pet['name']}** is ready for Chapter {library_pets.roman(check.next_chapter)} "
+                            f"({check.cost:,} Story). Evolve it with `$pets evolve {pet['id']}`.",
+                        )
+        except Exception as e:
+            print(f"Error in notice_library_evolutions: {e}")
+
+    @notice_library_evolutions.before_loop
+    async def before_notice_library_evolutions(self):
+        await self.bot.wait_until_ready()
 
     @deliver_library_eggs.before_loop
     async def before_deliver_library_eggs(self):
@@ -9347,7 +9414,8 @@ class Pets(commands.Cog):
                              f"Chapter {library_pets.roman(chapter)}) · {status}")
             embed.add_field(name="Your Library pets", value="\n".join(lines), inline=False)
         else:
-            embed.add_field(name="Your Library pets", value="None yet. They hatch from Fables Library eggs.", inline=False)
+            embed.add_field(name="Your Library pets", value="None yet. They hatch from Fables Library eggs:\n"
+                                                           + library_pets.EGG_SOURCES, inline=False)
         embed.add_field(name="Library shelf", value=(f"**{shelf_used}/{shelf_size}** places (Library pets and eggs; "
                                                      "they don't use your normal pet slots)"), inline=False)
         embed.set_footer(text="Use $pets evolve <pet> when a pet is ready.")
@@ -9715,7 +9783,10 @@ class Pets(commands.Cog):
 
     @pets.command(brief=_("Equip a pet to fight alongside you in battles"))
     async def equip(self, ctx, pet_ref: str):
-        """Equip a pet to fight alongside you in battles and raids"""
+        """Equip a pet to fight alongside you in battles and raids.
+
+        Your equipped pet is also the one that follows you around the Fables Library. Pets can be equipped from
+        the Young stage; Fables Library pets from birth."""
         try:
             async with self.bot.pool.acquire() as conn:
                 pet, pet_id = await self.fetch_pet_for_user(conn, ctx.author.id, pet_ref)
@@ -11090,7 +11161,7 @@ class Pets(commands.Cog):
             embed.add_field(
                 name=_("⚔️ Battle & Management"),
                 value=_(
-                    "• `$pets equip <id|alias>` - Equip pet for battles (Young stage+ only)\n"
+                    "• `$pets equip <id|alias>` - Equip pet for battles; it also follows you in the Fables Library (Young stage+, Library pets from birth)\n"
                     "• `$pets unequip` - Unequip current battle pet\n"
                     "• `$pets rename <id|alias> <name>` - Rename your pet\n"
                     "• `$pets alias <id|alias> <alias|clear>` - Set or clear a pet alias\n"
@@ -11131,6 +11202,20 @@ class Pets(commands.Cog):
                     "• **Loyal** (61-80): +8% battle stats 😍\n"
                     "• **Devoted** (81-100): +10% battle stats 🥰\n\n"
                     "**Leveling:** Pets gain XP from feeding, training, and battles. Skill points are earned every 10 levels!"
+                ),
+                inline=False,
+            )
+
+            embed.add_field(
+                name=_("📖 Fables Library Pets"),
+                value=_(
+                    "13 special species that hatch from Fables Library eggs: one of each kind, not tradable, "
+                    "on their own 13-place Library shelf (not your pet slots).\n"
+                    "Once adult they evolve through 10 **Chapters** with **Story**, earned by winning battles with them, "
+                    "visiting the Library, and fishing, harvesting and table games there (each has a daily share). New forms at Chapters IV and VIII, "
+                    "ultimate skills from Chapter V. I DM you when one is ready.\n"
+                    "• `$pets story` - Your Story, today's sources and each pet's next Chapter\n"
+                    "• `$pets evolve <id|alias>` - Evolve a ready Library pet"
                 ),
                 inline=False,
             )

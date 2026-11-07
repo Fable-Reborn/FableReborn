@@ -321,6 +321,10 @@ class Rebuild(commands.Cog):
         embed.add_field(name=f"Brought home ({len(home)} of {len(rules.MISSING_NAMES)})", inline=False,
                         value=" · ".join(f"{rules.MISSING_NAMES.get(p, p)}{' ★' if first else ''}" for p, first in home)
                         or "Nobody yet. Follow the calls for help in The Tiamat Sacrament.")
+        bonuses = [f"Dragonkin: +{round((rules.DRAGONKIN_BONUS - 1) * 100)}% on every supply run"] + [
+            f"{line}: " + ", ".join(f"x{mult:g} {material} on supply runs" for material, mult in by_material.items())
+            for line, by_material in rules.CLASS_BONUSES.items()]
+        embed.add_field(name="Tiamat races and classes help", value="\n".join(bonuses), inline=False)
         if any(first for _, first in home):
             embed.set_footer(text="★ You found them first: they're home in Draslin for everyone.")
         return embed
@@ -404,6 +408,9 @@ class Rebuild(commands.Cog):
     @checks.has_char()
     @rebuild.command(name="me", aliases=["mine"], brief="Your part in the rebuild")
     async def me(self, ctx) -> None:
+        """Your materials (all time and this week), today's cart space, your supply run, your vote, and the missing
+        people you've brought home from The Tiamat Sacrament. Dragonkin, Breathcallers and Penitents bring back
+        more from supply runs."""
         if not await self.gate(ctx):
             return
         await ctx.send(embed=await self.me_embed(ctx.author))
@@ -447,6 +454,8 @@ class Rebuild(commands.Cog):
 
     @rebuild.command(name="builders", aliases=["top", "wall"], brief="Everyone who has helped, most first")
     async def builders(self, ctx) -> None:
+        """The Wall of Builders: the 15 who have brought Draslin the most materials, and how many missing people
+        each has brought home (🏠)."""
         if not await self.gate(ctx):
             return
         async with self.bot.pool.acquire() as conn:

@@ -154,6 +154,10 @@ class Companions(commands.Cog):
             await self.grant_clutch_badges()
         except Exception:
             log.exception("Tiamat badge sync failed")
+        try:
+            await self.tell_tiamat_unlocks()
+        except Exception:
+            log.exception("Tiamat unlock DMs failed")
 
     @sync_tiamat_badges.before_loop
     async def before_badge_sync(self):
@@ -180,6 +184,23 @@ class Companions(commands.Cog):
         if granted:
             log.info("Granted the Clutch of Ilisrei badge to %s player(s)", granted)
         return granted
+
+    async def tell_tiamat_unlocks(self) -> int:
+        """DMs each player once about every Tiamat reward that has landed since the last sweep."""
+        async with self.bot.pool.acquire() as conn:
+            rows = await tiamat_unlocks.take_untold(conn)
+        told = 0
+        for row in rows:
+            news = tiamat_unlocks.NEWS.get(row["unlock_key"])
+            if not news:
+                continue
+            try:
+                user = self.bot.get_user(row["user_id"]) or await self.bot.fetch_user(row["user_id"])
+                await user.send(news)
+                told += 1
+            except discord.HTTPException:
+                pass
+        return told
 
     async def get_row(self, user_id):
         row = await self.bot.pool.fetchrow(
@@ -213,6 +234,8 @@ class Companions(commands.Cog):
     async def companions(self, ctx):
         """Browse the companion roster and pick who travels with you.
 
+        Companions are the characters of The Tiamat Sacrament (`{prefix}fables`): you unlock them at moments in its
+        story. The one you choose appears on your dragon card (`{prefix}tdragon`).
         Locked companions appear as silhouettes; only their alignment is known.
         Some companions are secret and reveal nothing until found."""
         unlocked, selected = await self.get_row(ctx.author.id)

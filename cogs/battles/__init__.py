@@ -5467,6 +5467,10 @@ class Battles(commands.Cog):
             )
             prestige_level = int(prestige_level or 0)
 
+        if selected_door_key:
+            # Door 4 at prestige 5+ unlocks The Tiamat Sacrament (cogs/fables).
+            self.bot.dispatch("battletower_ending", ctx, selected_door_key, prestige_level)
+
         # Get emoji mapping for display
         emotes = {
             "common": "<:c_common:1403797578197368923>",

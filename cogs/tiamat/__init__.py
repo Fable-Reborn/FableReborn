@@ -8,6 +8,7 @@ import discord
 from discord.ext import commands
 
 from utils import checks
+from utils.fables import GAME_URL
 
 from .dragon_card import DragonCard, render_dragon_card
 from .online import build_online_embeds, build_player_embed, fetch_online, find_player
@@ -17,9 +18,13 @@ from .service import (
     convert_gold_to_crowns,
     fetch_dragon_card,
     fetch_rpg_profile,
+    RESET_CODE_TTL_MINUTES,
     issue_link_code,
+    issue_reset_code,
     revoke_link_code,
+    revoke_reset_code,
 )
+from cogs.shard_communication import user_on_cooldown as user_cooldown
 
 
 log = logging.getLogger(__name__)
@@ -162,7 +167,7 @@ class Tiamat(commands.Cog):
         if not linked:
             embed.description = (
                 "Not linked yet. Run `$link`, then enter the private code while "
-                "creating your RPG account."
+                f"creating your account at {GAME_URL}."
             )
             embed.add_field(name="Crown wallet", value="Not linked", inline=False)
             return embed, False
@@ -198,14 +203,19 @@ class Tiamat(commands.Cog):
         embed.set_footer(
             text=(
                 f"One-way conversion: {GOLD_PER_CROWN:,} Fable gold = 1 crown · "
-                "RPG stats are client-reported"
+                "Your dragon card: $tdragon · RPG stats are client-reported"
             )
         )
         return embed, True
 
     @checks.has_char()
-    @commands.command(name="link", brief="Create a private Tiamat RPG link code")
+    @commands.command(name="link", brief="Get the code that links your profile to the Fables")
     async def link(self, ctx) -> None:
+        """DMs you a one-use code that links this profile to a Fables account.
+
+        Open https://game.fablereborn.xyz, choose to create an account, and enter the code in the Discord link code box.
+        One account opens the Fables Library and every Fable you unlock (`{prefix}fables`), and shares your crowns,
+        pets, elixirs and Fable rewards with this profile. The code expires after a few minutes."""
         try:
             try:
                 code, linked = await issue_link_code(self.bot.pool, ctx.author.id)
@@ -218,10 +228,11 @@ class Tiamat(commands.Cog):
                 )
             try:
                 await ctx.author.send(
-                    "Your one-use Tiamat RPG account link code is:\n\n"
+                    "Your one-use Fables link code is:\n\n"
                     f"**`{code}`**\n\n"
-                    f"Enter it when creating the RPG account. It expires in "
-                    f"{LINK_CODE_TTL_MINUTES} minutes. Never give this code to another player."
+                    f"Open {GAME_URL}, create your account and enter it in the Discord link code box. "
+                    "That one account opens the Fables Library and every Fable you unlock. "
+                    f"The code expires in {LINK_CODE_TTL_MINUTES} minutes. Never give it to another player."
                 )
             except discord.Forbidden:
                 await revoke_link_code(self.bot.pool, ctx.author.id, code)
@@ -233,6 +244,37 @@ class Tiamat(commands.Cog):
             print(f"Error in link command: {e}")
             await ctx.send(f"An error occurred while processing your request. {e}")
 
+    @user_cooldown(120)
+    @commands.command(name="resetpassword", aliases=["forgotpassword", "passwordreset"],
+                      brief="Reset your Fables password with a code sent by DM")
+    async def resetpassword(self, ctx) -> None:
+        """DMs you a one-use code to set a new password for the Fables account linked to this Discord account.
+
+        On the sign-in screen at https://game.fablereborn.xyz choose Log In, then Forgot password?, and enter your
+        username, the code and a new password. The code works once, for 15 minutes, and only for your own account;
+        asking again replaces it. Staff will never ask you for it."""
+        try:
+            try:
+                code, username = await issue_reset_code(self.bot.pool, ctx.author.id)
+            except LookupError as error:
+                return await ctx.send(str(error))
+            try:
+                await ctx.author.send(
+                    f"🔑 **Fables password reset** for **{username}**\n\n"
+                    f"Your one-use reset code: **`{code}`**\n\n"
+                    f"On the sign-in screen at {GAME_URL}, choose **Log In**, then **Forgot password?**, and enter "
+                    f"your username, this code and a new password. It works once, for {RESET_CODE_TTL_MINUTES} minutes.\n\n"
+                    "Never give this code to anyone: staff will never ask for it. If you didn't ask for a reset, "
+                    "ignore this message: your password hasn't changed."
+                )
+            except discord.Forbidden:
+                await revoke_reset_code(self.bot.pool, ctx.author.id)
+                return await ctx.send("I couldn't DM you. Turn on direct messages and run `$resetpassword` again.")
+            await ctx.send("I sent your password reset code by DM.", delete_after=20)
+        except Exception as e:
+            log.exception("resetpassword failed")
+            await ctx.send(f"An error occurred while processing your request. {e}")
+
     @checks.has_char()
     @commands.command(
         name="rpg",
@@ -240,6 +282,11 @@ class Tiamat(commands.Cog):
         brief="View your linked RPG profile and crown wallet",
     )
     async def rpg(self, ctx) -> None:
+        """Your linked Fables account: crown wallet, Tiamat character and battle record.
+
+        Crowns are the Fables' money, shared by every Fable: homes, decor, seeds, bait and lures in the Fables
+        Library, and inns and shops in The Tiamat Sacrament (battles there don't pay crowns). Convert Fable gold here,
+        one way, at 1,000 gold per crown. Not linked yet? Use `{prefix}link`. Your dragon's card is `{prefix}tdragon`."""
         embed, linked = await self.build_profile_embed(ctx.author.id)
         view = TiamatProfileView(self, ctx.author.id)
         for child in view.children:
@@ -250,9 +297,17 @@ class Tiamat(commands.Cog):
 
     @commands.command(name="Tdragon", aliases=["dragoncard"], brief="Show your Tiamat dragon card, or someone else's")
     async def dragon(self, ctx, *, member: discord.Member = None) -> None:
-        """Show the dragon card for you or `[member]`: form, title, Runes, Soul Gems and story.
+        """Show the dragon card for you or `[member]` from The Tiamat Sacrament.
 
-        Dragons hidden from the Clutch can only be viewed by their owner."""
+        - **Form:** you hatch a Whelp. Inhaling Runes evolves you, and the Runes you favour decide which of 34
+          forms you become, over three stages. Your form also shows as an aura around your dragon in the game.
+        - **Runes inhaled:** how many Earth, Fire, Air and Water Runes you've inhaled, and how many you've sealed.
+        - **Soul Gems:** how many of the seven you hold.
+        - **Title:** earned at story moments; choose which one to wear in the game's Menu > Clutch.
+          Firstborn goes to the first 100 dragons to hatch.
+        - **Companion:** the Tiamat companion you chose with `{prefix}companions`.
+
+        Ticking "Hide me from the Clutch" (Menu > Clutch in the game) means only you can view your card."""
         try:
             member = member or ctx.author
             data = await fetch_dragon_card(self.bot.pool, member.id)
@@ -270,7 +325,7 @@ class Tiamat(commands.Cog):
             await ctx.send(f"An error occurred while processing your request. {e}")
 
     @checks.is_gm()
-    @commands.command(name="tonline", aliases=["rpgonline", "whosonline"], brief="GM: who is online in the RPG and where")
+    @commands.command(name="tonline", aliases=["rpgonline", "whosonline"], hidden=True, brief="GM: who is online in the RPG and where")
     async def tonline(self, ctx) -> None:
         """List everyone connected to the RPG right now: map, tile, what they're doing, level and HP."""
         try:
@@ -283,7 +338,7 @@ class Tiamat(commands.Cog):
             await ctx.send(f"An error occurred while processing your request. {e}")
 
     @checks.is_gm()
-    @commands.command(name="twhere", aliases=["rpgwhere", "findplayer"], brief="GM: where an RPG player is")
+    @commands.command(name="twhere", aliases=["rpgwhere", "findplayer"], hidden=True, brief="GM: where an RPG player is")
     async def twhere(self, ctx, *, who: str) -> None:
         """Show one player: online status, map and tile, activity, level, crowns.
 

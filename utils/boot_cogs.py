@@ -21,8 +21,30 @@ import tomli
 # Always switched on: the cogs that hold the GM tools (this command included), so a bad save
 # can't lock staff out.
 PROTECTED = frozenset({"cogs.game_master", "cogs.reload", "cogs.owner"})
-# Loaded at boot whatever the list says (classes/bot.py adds them).
-ALWAYS_LOADED = frozenset({"cogs.fables", "cogs.factions", "cogs.aiplayer", "cogs.elixirs"})
+# Extra cogs loaded at boot whatever config.toml says, for when config.toml can't be edited: add a cog
+# here and it loads at the next boot. One config.toml already lists is left alone, never loaded twice.
+EXTRA_COGS = (
+    "cogs.fables",       # the Fables (web games) and the Tiamat unlock
+    "cogs.aiplayer",
+    "cogs.elixirs",      # battle elixirs brewed in the Fables Library
+    "cogs.petart",       # readers asking for their pets to be drawn walking in the Library
+    "cogs.tiamat",       # $link, $rpg, $tdragon
+    "cogs.companions",   # Tiamat companions, reward DMs and the Clutch badge
+    "cogs.rebuild",      # rebuilding Draslin after The Tiamat Sacrament
+)
+# Quest campaigns, faction-aware conversations and shops share the Factions service, so it loads
+# ahead of Quests even on older configs.
+FACTIONS, QUESTS = "cogs.factions", "cogs.quests"
+ALWAYS_LOADED = frozenset({*EXTRA_COGS, FACTIONS})
+
+
+def with_extras(extensions) -> list[str]:
+    """config.toml's cogs plus every always-loaded cog it doesn't list, Factions just before Quests."""
+    extensions = list(extensions)
+    if FACTIONS not in extensions:
+        extensions.insert(extensions.index(QUESTS) if QUESTS in extensions else len(extensions), FACTIONS)
+    extensions += [name for name in EXTRA_COGS if name not in extensions]
+    return extensions
 
 _START = re.compile(r"^\s*initial_extensions\s*=\s*\[")
 _ENTRY = re.compile(r'^\s*(#)?\s*"([^"]+)"\s*,?\s*(?:#.*)?$')

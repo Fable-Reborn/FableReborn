@@ -67,7 +67,7 @@ from classes.enums import DonatorRank
 from classes.exceptions import GlobalCooldown
 from classes.http import ProxiedClientSession
 from classes.items import ALL_ITEM_TYPES, Hand, ItemType
-from utils import i18n, paginator, random
+from utils import boot_cogs, i18n, paginator, random
 from utils import misc as rpgtools
 from utils.cache import cache
 from utils.checks import user_is_patron
@@ -229,25 +229,8 @@ class Bot(commands.AutoShardedBot):
             **second_database_creds, min_size=10, max_size=20, command_timeout=60.0
         )
 
-        extensions = list(self.config.bot.initial_extensions)
-        if "cogs.fables" not in extensions:
-            extensions.append("cogs.fables")
-        # Quest campaigns, faction-aware conversations, and shops share the
-        # Factions service. Load it ahead of Quests even on older configs.
-        if "cogs.factions" not in extensions:
-            try:
-                quest_index = extensions.index("cogs.quests")
-            except ValueError:
-                quest_index = len(extensions)
-            extensions.insert(quest_index, "cogs.factions")
-        if "cogs.aiplayer" not in extensions:
-            extensions.append("cogs.aiplayer")
-        # Battle elixirs brewed in the Fables Library.
-        if "cogs.elixirs" not in extensions:
-            extensions.append("cogs.elixirs")
-        # Readers asking for their pets to be drawn walking in the Library.
-        if "cogs.petart" not in extensions:
-            extensions.append("cogs.petart")
+        # config.toml's cogs, plus the extra ones listed in utils/boot_cogs.py (EXTRA_COGS) that it doesn't name.
+        extensions = boot_cogs.with_extras(self.config.bot.initial_extensions)
         for extension in extensions:
             try:
                 await self.load_extension(extension)
