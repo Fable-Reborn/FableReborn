@@ -27,6 +27,7 @@ from discord.ext import commands
 
 from utils import boot_cogs
 from utils.checks import is_gm
+from utils.devbot_scale import DEV_BOT_OPERATORS, scale_argv
 
 
 CONFIG_PATH = Path("config.toml")
@@ -349,6 +350,56 @@ class ReloadCog(commands.Cog):
         chunk_size = 1900
         for i in range(0, len(combined), chunk_size):
             await ctx.send(f"```{combined[i:i + chunk_size]}```")
+
+    # ---- parked dev bot (fable-bot-dev only; never the live fable-bot deployment) ----------------
+
+    @commands.group(name="devbot", invoke_without_command=True, hidden=True)
+    async def devbot(self, ctx):
+        """Start or stop the parked dev bot. NUT and Lunar only."""
+        if ctx.author.id not in DEV_BOT_OPERATORS:
+            return await ctx.send("You are not allowed to run this command.")
+        await ctx.send(
+            "`$devbot start` sets fable-bot-dev to 1 replica. "
+            "`$devbot stop` sets it to 0. Replicas stay 0 or 1. The live bot is left alone."
+        )
+
+    @devbot.command(name="start", hidden=True)
+    async def devbot_start(self, ctx):
+        """Bring the dev bot up (one replica)."""
+        await self._scale_dev_bot(ctx, 1)
+
+    @devbot.command(name="stop", hidden=True)
+    async def devbot_stop(self, ctx):
+        """Park the dev bot (zero replicas)."""
+        await self._scale_dev_bot(ctx, 0)
+
+    async def _scale_dev_bot(self, ctx, replicas: int):
+        if ctx.author.id not in DEV_BOT_OPERATORS:
+            return await ctx.send("You are not allowed to run this command.")
+        try:
+            argv = scale_argv(replicas)
+        except ValueError as error:
+            return await ctx.send(str(error))
+        verb = "Starting" if replicas == 1 else "Stopping"
+        await ctx.send(f"{verb} fable-bot-dev ({replicas} replica). The live bot is not changed.")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            return await ctx.send("The scale command did not finish within 60 seconds.")
+        except Exception as error:
+            return await ctx.send(f"Failed to run the scale command: {type(error).__name__}: {error}")
+        text = (stdout.decode(errors="replace") + "\n" + stderr.decode(errors="replace")).strip()
+        text = text.replace("```", "'''") or "(no output)"
+        if proc.returncode != 0:
+            await ctx.send(f"fable-bot-dev was not changed (exit {proc.returncode}).\n```{text[:1800]}```")
+            return
+        await ctx.send(f"fable-bot-dev is now {replicas} replica.\n```{text[:1800]}```")
+
     # ---- which cogs load at boot (config.toml) ----------------------------------------------------
 
     def _boot_entries(self):
