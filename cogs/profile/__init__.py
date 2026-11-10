@@ -89,33 +89,6 @@ class MentionOrUserId(commands.Converter):
         return discord.Object(id=int(match.group(1) or match.group(2)))
 
 
-def parse_armory_min_damage(raw):
-    """Blank means no damage floor. A number means that damage and higher."""
-    if raw is None:
-        return None
-    text = str(raw).strip()
-    if not text:
-        return None
-    try:
-        value = int(text)
-    except (TypeError, ValueError):
-        raise ValueError("Weapon damage must be a whole number, or left blank.") from None
-    if value < 0 or value > 99999:
-        raise ValueError("Weapon damage must be from 0 to 99999.")
-    return value
-
-
-class ArmoryMinDamage(commands.Converter):
-    async def convert(self, ctx, argument):
-        try:
-            value = parse_armory_min_damage(argument)
-        except ValueError as exc:
-            raise commands.BadArgument(str(exc)) from exc
-        if value is None:
-            raise commands.BadArgument("Weapon damage must be a whole number.")
-        return value
-
-
 class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
     item_type = discord.ui.TextInput(
         label="Item type",
@@ -125,21 +98,10 @@ class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
     )
     lowest = discord.ui.TextInput(label="Minimum total stat", default="0", max_length=4)
     highest = discord.ui.TextInput(label="Maximum total stat", default="201", max_length=4)
-    min_damage = discord.ui.TextInput(
-        label="Minimum weapon damage",
-        placeholder="Blank = any. 95 = 95 and higher",
-        required=False,
-        max_length=5,
-    )
 
     def __init__(self, armory_view: "ArmoryPaginatorView"):
         super().__init__()
         self.armory_view = armory_view
-        self.item_type.default = armory_view.itemtype or "All"
-        self.lowest.default = str(armory_view.lowest)
-        self.highest.default = str(armory_view.highest)
-        if armory_view.min_damage is not None:
-            self.min_damage.default = str(armory_view.min_damage)
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
@@ -151,10 +113,6 @@ class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
             return await interaction.response.send_message(
                 "Use a range between 0 and 201, with maximum at least minimum.", ephemeral=True
             )
-        try:
-            min_damage = parse_armory_min_damage(self.min_damage.value)
-        except ValueError as exc:
-            return await interaction.response.send_message(str(exc), ephemeral=True)
         command = self.armory_view.ctx.bot.get_command("armory")
         await interaction.response.defer()
         await self.armory_view.ctx.invoke(
@@ -162,7 +120,6 @@ class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
             itemtype=str(self.item_type.value).strip() or "All",
             lowest=low,
             highest=high,
-            min_damage=min_damage,
         )
 
 
@@ -323,11 +280,7 @@ class ArmoryPaginatorView(discord.ui.View):
         cog,
         pages: list[list[dict]],
         embeds: list[discord.Embed],
-        timeout: float = 180.0,
-        itemtype: str = "All",
-        lowest: int = 0,
-        highest: int = 201,
-        min_damage: int | None = None,
+        timeout: float = 180.0
     ):
         super().__init__(timeout=timeout)
         self.ctx = ctx
@@ -337,13 +290,8 @@ class ArmoryPaginatorView(discord.ui.View):
         self.current_page = 0
         self.selected_item_id = int(pages[0][0]["id"]) if pages and pages[0] else None
         self.sort_mode = "strength"
-        self.itemtype = itemtype or "All"
-        self.lowest = lowest
-        self.highest = highest
-        self.min_damage = min_damage
         self.message = None
         self.sync_dynamic_components()
-        self._annotate_damage_filter()
 
     def selected_item(self):
         for item in self.pages[self.current_page]:
@@ -377,20 +325,6 @@ class ArmoryPaginatorView(discord.ui.View):
         self.embeds = [self.cog.invembed(self.ctx, page, index, len(self.pages) - 1) for index, page in enumerate(self.pages)]
         self.current_page = 0
         self.selected_item_id = int(self.pages[0][0]["id"]) if self.pages and self.pages[0] else None
-        self._annotate_damage_filter()
-
-    def _annotate_damage_filter(self):
-        if self.min_damage is None:
-            return
-        if self.itemtype and str(self.itemtype).lower() != "all":
-            note = f"{self.itemtype} weapons with damage {self.min_damage}+"
-        else:
-            note = f"Weapons with damage {self.min_damage}+"
-        for embed in self.embeds:
-            footer = embed.footer.text or ""
-            if note in footer:
-                continue
-            embed.set_footer(text=f"{footer} • {note}" if footer else note)
 
     def _is_allowed_user(self, user_id: int) -> bool:
         allowed_user_ids = {int(self.ctx.author.id)}
@@ -1743,55 +1677,6 @@ class Profile(commands.Cog):
         if not item:
             return Decimal("0")
         return cls._decimal_or_zero(item.get("effective_damage", item.get("damage", 0)))
-
-    @classmethod
-    def _shown_item_damage(cls, item) -> Decimal:
-        """The damage figure printed in the armory, rounded the same way."""
-        number = cls._effective_item_damage(item)
-        if number == number.to_integral_value():
-            return number
-        return number.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
-
-    @staticmethod
-    def _armory_type_matches(item, itemtype: str) -> bool:
-        kind = itemtype or "All"
-        if kind == "All":
-            return True
-        if kind == "2h":
-            return item.get("hand") == "both"
-        if kind == "1h":
-            return item.get("hand") != "both"
-        return item.get("type") == kind
-
-    def _filter_armory_items(
-        self,
-        items,
-        *,
-        itemtype: str,
-        lowest: int,
-        highest: int,
-        min_damage: int | None,
-    ):
-        """Keep weapons at the requested damage.
-
-        The gear query always includes equipped items, even when they miss the
-        type or stat range. A damage floor is an extra search, so every item
-        then has to match the type, the total-stat range, and the printed damage.
-        """
-        if min_damage is None:
-            return list(items)
-        floor = Decimal(min_damage)
-        kept = []
-        for item in items:
-            if not self._armory_type_matches(item, itemtype):
-                continue
-            total = self._decimal_or_zero(item.get("damage")) + self._decimal_or_zero(item.get("armor"))
-            if total < lowest or total > highest:
-                continue
-            if self._shown_item_damage(item) < floor:
-                continue
-            kept.append(item)
-        return kept
 
     @classmethod
     def _effective_item_armor(cls, item) -> Decimal:
@@ -5647,13 +5532,11 @@ class Profile(commands.Cog):
             itemtype: str | None = "All",
             lowest: IntFromTo(0, 201) = 0,
             highest: IntFromTo(0, 201) = 201,
-            min_damage: ArmoryMinDamage = None,
     ):
         _(
             """`[itemtype]` - The type of item to show; defaults to all items
             `[lowest]` - The lower boundary of items to show; defaults to 0
             `[highest]` - The upper boundary of items to show; defaults to 101
-            `[min_damage]` - Optional minimum weapon damage; shows that damage and higher
 
             Show your gear items. Items that are in the market will not be shown.
 
@@ -5668,11 +5551,6 @@ class Profile(commands.Cog):
             return await ctx.send(
                 _("Make sure that the `highest` value is greater than `lowest`.")
             )
-        if min_damage is not None:
-            try:
-                min_damage = parse_armory_min_damage(min_damage)
-            except ValueError as exc:
-                return await ctx.send(str(exc))
 
         # Validate itemtype
         if itemtype != "2h":
@@ -5750,19 +5628,6 @@ class Profile(commands.Cog):
             return await ctx.send(_("Your inventory is empty."))
 
         ret = await self._apply_item_progression_to_items(ctx.author.id, ret)
-        ret = self._filter_armory_items(
-            ret,
-            itemtype=itemtype,
-            lowest=lowest,
-            highest=highest,
-            min_damage=min_damage,
-        )
-        if min_damage is not None and not ret:
-            return await ctx.send(
-                _("No weapons with damage {damage} or higher match that filter.").format(
-                    damage=min_damage
-                )
-            )
 
         # Split all items into pages of 5
         allitems = list(chunks(ret, 5))
@@ -5775,16 +5640,7 @@ class Profile(commands.Cog):
             embeds.append(page_embed)
 
         # Pass both raw item pages AND the embeds to our custom paginator
-        view = ArmoryPaginatorView(
-            ctx=ctx,
-            cog=self,
-            pages=allitems,
-            embeds=embeds,
-            itemtype=itemtype,
-            lowest=lowest,
-            highest=highest,
-            min_damage=min_damage,
-        )
+        view = ArmoryPaginatorView(ctx=ctx, cog=self, pages=allitems, embeds=embeds)
         await view.start()
 
     def lootembed(self, ctx, ret, currentpage, maxpage):
