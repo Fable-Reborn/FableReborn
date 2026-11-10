@@ -304,12 +304,86 @@ class GuidebookSectionSelect(discord.ui.Select):
         )
 
     def set_current(self, section_index: int) -> None:
-        for idx, option in enumerate(self.options):
-            option.default = idx == section_index
+        for option in self.options:
+            option.default = option.value == str(section_index)
 
     async def callback(self, interaction: Interaction):
         self.guide_view.section_index = int(self.values[0])
         self.guide_view.page_index = 0
+        await self.guide_view.refresh(interaction=interaction)
+
+
+class GuidebookCategorySelect(discord.ui.Select):
+    def __init__(self, guide_view: "GuidebookView"):
+        self.guide_view = guide_view
+        categories = guide_view._command_categories()[:25]
+        options = []
+        for idx, category in enumerate(categories):
+            description = str(category.get("description") or "Commands in this category")
+            options.append(
+                discord.SelectOption(
+                    label=str(category["label"])[:100],
+                    value=str(idx),
+                    description=description[:100],
+                    default=idx == guide_view.category_index,
+                )
+            )
+        if not options:
+            options.append(discord.SelectOption(label="No categories", value="none"))
+        super().__init__(
+            placeholder="Select a command category",
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=1,
+        )
+
+    async def callback(self, interaction: Interaction):
+        if self.values[0] == "none":
+            await self.guide_view.refresh(interaction=interaction)
+            return
+        self.guide_view.category_index = int(self.values[0])
+        self.guide_view.command_index = 0
+        self.guide_view.command_chunk = 0
+        await self.guide_view.refresh(interaction=interaction)
+
+
+class GuidebookCommandSelect(discord.ui.Select):
+    def __init__(self, guide_view: "GuidebookView"):
+        self.guide_view = guide_view
+        commands = guide_view._current_category_commands()
+        start = guide_view.command_chunk * 25
+        chunk = commands[start : start + 25]
+        options = []
+        for offset, entry in enumerate(chunk):
+            global_index = start + offset
+            options.append(
+                discord.SelectOption(
+                    label=str(entry["qualified"])[:100],
+                    value=str(global_index),
+                    description=str(entry.get("one_liner") or "Read the command help.")[:100],
+                    default=global_index == guide_view.command_index,
+                )
+            )
+        if not options:
+            options.append(discord.SelectOption(label="No commands", value="none"))
+        end = start + len(chunk)
+        placeholder = "Select a command"
+        if len(commands) > 25 and chunk:
+            placeholder = f"Select a command ({start + 1}-{end} of {len(commands)})"
+        super().__init__(
+            placeholder=placeholder[:150],
+            min_values=1,
+            max_values=1,
+            options=options,
+            row=2,
+        )
+
+    async def callback(self, interaction: Interaction):
+        if self.values[0] == "none":
+            await self.guide_view.refresh(interaction=interaction)
+            return
+        self.guide_view.command_index = int(self.values[0])
         await self.guide_view.refresh(interaction=interaction)
 
 
@@ -321,11 +395,16 @@ class GuidebookView(View):
         self.color = color
         self.section_index = 0
         self.page_index = 0
+        self.category_index = 0
+        self.command_index = 0
+        self.command_chunk = 0
         self.message: discord.Message | None = None
         self.section_chunk_size = 25
         self._section_select_chunk_index = -1
 
         self.section_select: GuidebookSectionSelect | None = None
+        self.category_select: GuidebookCategorySelect | None = None
+        self.command_select: GuidebookCommandSelect | None = None
         self._sync_controls()
 
     def _current_section(self) -> dict:
@@ -334,8 +413,117 @@ class GuidebookView(View):
     def _current_pages(self) -> list[dict]:
         return self._current_section()["pages"]
 
+    def _in_commands_section(self) -> bool:
+        return self._current_section().get("kind") == "commands"
+
+    def _command_categories(self) -> list[dict]:
+        if not self._in_commands_section():
+            return []
+        return list(self._current_section().get("categories") or [])
+
+    def _current_category(self) -> dict | None:
+        categories = self._command_categories()
+        if not categories:
+            return None
+        if self.category_index < 0 or self.category_index >= len(categories):
+            self.category_index = 0
+        return categories[self.category_index]
+
+    def _current_category_commands(self) -> list[dict]:
+        category = self._current_category()
+        if not category:
+            return []
+        return list(category.get("commands") or [])
+
+    def _clamp_command_selection(self) -> None:
+        commands = self._current_category_commands()
+        if not commands:
+            self.command_index = 0
+            self.command_chunk = 0
+            return
+        if self.command_index < 0 or self.command_index >= len(commands):
+            self.command_index = 0
+        self.command_chunk = self.command_index // 25
+
+    def _selected_command(self) -> dict | None:
+        self._clamp_command_selection()
+        commands = self._current_category_commands()
+        if not commands:
+            return None
+        return commands[self.command_index]
+
+    def _remove_command_selects(self) -> None:
+        if self.category_select is not None:
+            self.remove_item(self.category_select)
+            self.category_select = None
+        if self.command_select is not None:
+            self.remove_item(self.command_select)
+            self.command_select = None
+
+    def _rebuild_command_selects(self) -> None:
+        self._remove_command_selects()
+        if not self._in_commands_section() or not self._command_categories():
+            return
+        self._clamp_command_selection()
+        self.category_select = GuidebookCategorySelect(self)
+        self.command_select = GuidebookCommandSelect(self)
+        self.add_item(self.category_select)
+        self.add_item(self.command_select)
+
+    def _build_command_embed(self, section: dict) -> discord.Embed:
+        self._clamp_command_selection()
+        category = self._current_category()
+        entry = self._selected_command()
+        section_chunk_start, section_chunk_end = self._current_section_chunk_bounds()
+        if category is None or entry is None:
+            embed = discord.Embed(
+                title=f"{section['emoji']} {section['label']}",
+                description=(
+                    "No public commands were found for this build.\n"
+                    f"Use `{self.ctx.clean_prefix}help <command>` if you already know the name."
+                ),
+                color=self.color,
+            )
+        else:
+            description = entry.get("help_text") or "No detailed help text is available for this command."
+            if len(description) > 2800:
+                description = f"{description[:2797]}..."
+            title = f"{section['emoji']} {entry['qualified']}"
+            if len(title) > 256:
+                title = f"{title[:253]}..."
+            embed = discord.Embed(title=title, description=description, color=self.color)
+            usage = str(entry.get("usage") or entry["qualified"])
+            embed.add_field(name="Usage", value=f"`{usage}`"[:1024], inline=False)
+            aliases = entry.get("aliases") or []
+            if aliases:
+                alias_text = ", ".join(f"`{alias}`" for alias in aliases)
+                if len(alias_text) > 1024:
+                    alias_text = f"{alias_text[:1021]}..."
+                embed.add_field(name="Aliases", value=alias_text, inline=False)
+            embed.add_field(
+                name="How to browse",
+                value=(
+                    "Pick a category, then a command. "
+                    "Prev commands and Next commands move through that category 25 at a time. "
+                    f"This is the same text as `{self.ctx.clean_prefix}help {entry['qualified']}`."
+                ),
+                inline=False,
+            )
+        total = len(self._current_category_commands())
+        category_label = category["label"] if category else "Commands"
+        embed.set_footer(
+            text=(
+                f"Section {self.section_index + 1}/{len(self.sections)} • "
+                f"{category_label} • Command {self.command_index + 1}/{max(total, 1)} • "
+                f"Dropdown {section_chunk_start + 1}-{section_chunk_end}"
+            )
+        )
+        return embed
+
     def _build_embed(self) -> discord.Embed:
         section = self._current_section()
+        if section.get("kind") == "commands":
+            return self._build_command_embed(section)
         pages = self._current_pages()
         page = pages[self.page_index]
         section_chunk_start, section_chunk_end = self._current_section_chunk_bounds()
@@ -381,18 +569,54 @@ class GuidebookView(View):
         self.add_item(self.section_select)
         self._section_select_chunk_index = chunk_index
 
+    def _place_navigation(self, commands_mode: bool) -> None:
+        page_row = 3 if commands_mode else 1
+        nav_row = 4 if commands_mode else 2
+        page_buttons = (self.prev_page_button, self.next_page_button)
+        nav_buttons = (
+            self.prev_section_button,
+            self.prev_index_button,
+            self.next_index_button,
+            self.next_section_button,
+            self.close_button,
+        )
+        desired = {button: page_row for button in page_buttons}
+        desired.update({button: nav_row for button in nav_buttons})
+        if all(button.row == row and button._rendered_row == row for button, row in desired.items()):
+            return
+        for button in desired:
+            self.remove_item(button)
+        for button, row in desired.items():
+            button.row = row
+            self.add_item(button)
+
     def _sync_controls(self) -> None:
+        commands_mode = self._in_commands_section()
+        self._remove_command_selects()
+        self._place_navigation(commands_mode)
         self._rebuild_section_select()
         self.section_select.set_current(self.section_index)
+        self._rebuild_command_selects()
+
         page_count = len(self._current_pages())
         chunk_index = self._current_section_chunk_index()
         max_chunk_index = max(0, math.ceil(len(self.sections) / self.section_chunk_size) - 1)
-        self.prev_page_button.disabled = self.page_index <= 0
-        self.next_page_button.disabled = self.page_index >= page_count - 1
         self.prev_section_button.disabled = self.section_index <= 0
         self.next_section_button.disabled = self.section_index >= len(self.sections) - 1
         self.prev_index_button.disabled = chunk_index <= 0
         self.next_index_button.disabled = chunk_index >= max_chunk_index
+        if commands_mode:
+            total = len(self._current_category_commands())
+            max_command_chunk = max(0, math.ceil(total / 25) - 1) if total else 0
+            self.prev_page_button.label = "Prev commands"
+            self.next_page_button.label = "Next commands"
+            self.prev_page_button.disabled = self.command_chunk <= 0
+            self.next_page_button.disabled = self.command_chunk >= max_command_chunk
+        else:
+            self.prev_page_button.label = "Prev Page"
+            self.next_page_button.label = "Next Page"
+            self.prev_page_button.disabled = self.page_index <= 0
+            self.next_page_button.disabled = self.page_index >= page_count - 1
 
     async def start(self):
         self._sync_controls()
@@ -430,12 +654,26 @@ class GuidebookView(View):
 
     @button(label="Prev Page", style=discord.ButtonStyle.blurple, row=1)
     async def prev_page_button(self, interaction: Interaction, button: Button):
+        if self._in_commands_section():
+            if self.command_chunk > 0:
+                self.command_chunk -= 1
+                self.command_index = self.command_chunk * 25
+            await self.refresh(interaction=interaction)
+            return
         if self.page_index > 0:
             self.page_index -= 1
         await self.refresh(interaction=interaction)
 
     @button(label="Next Page", style=discord.ButtonStyle.blurple, row=1)
     async def next_page_button(self, interaction: Interaction, button: Button):
+        if self._in_commands_section():
+            total = len(self._current_category_commands())
+            max_chunk = max(0, math.ceil(total / 25) - 1) if total else 0
+            if self.command_chunk < max_chunk:
+                self.command_chunk += 1
+                self.command_index = self.command_chunk * 25
+            await self.refresh(interaction=interaction)
+            return
         if self.page_index < len(self._current_pages()) - 1:
             self.page_index += 1
         await self.refresh(interaction=interaction)
@@ -447,7 +685,7 @@ class GuidebookView(View):
             self.page_index = 0
         await self.refresh(interaction=interaction)
 
-    @button(label="Prev Index", style=discord.ButtonStyle.secondary, row=2)
+    @button(label="Previous sections", style=discord.ButtonStyle.secondary, row=2)
     async def prev_index_button(self, interaction: Interaction, button: Button):
         chunk_index = self._current_section_chunk_index()
         if chunk_index > 0:
@@ -455,7 +693,7 @@ class GuidebookView(View):
             self.page_index = 0
         await self.refresh(interaction=interaction)
 
-    @button(label="Next Index", style=discord.ButtonStyle.secondary, row=2)
+    @button(label="More sections", style=discord.ButtonStyle.secondary, row=2)
     async def next_index_button(self, interaction: Interaction, button: Button):
         chunk_index = self._current_section_chunk_index()
         next_start = (chunk_index + 1) * self.section_chunk_size
@@ -562,12 +800,11 @@ class Help(commands.Cog):
                 seen.add(qualified)
 
                 usage = f"{prefix}{qualified} {command.signature}".strip()
-                if len(usage) > 90:
-                    usage = f"{usage[:87]}..."
+                if len(usage) > 900:
+                    usage = f"{usage[:897]}..."
 
-                brief = str(command.brief or "No brief description.").replace("\n", " ").strip()
-                if len(brief) > 90:
-                    brief = f"{brief[:87]}..."
+                one_liner = self._command_one_liner(command)
+                help_text = self._command_help_text(command, prefix)
                 doc_summary, argument_notes = self._extract_command_doc_parts(command)
 
                 cog_name = command.cog_name or "General"
@@ -576,7 +813,10 @@ class Help(commands.Cog):
                         "command": command,
                         "qualified": qualified,
                         "usage": usage,
-                        "brief": brief,
+                        "brief": one_liner,
+                        "one_liner": one_liner,
+                        "help_text": help_text,
+                        "aliases": [str(alias) for alias in command.aliases],
                         "doc_summary": doc_summary,
                         "argument_notes": argument_notes,
                     }
@@ -603,7 +843,7 @@ class Help(commands.Cog):
             "Tournament",
             "Ranks",
             "AmuletCrafting",
-            "Scheduler",
+            "Scheduling",
             "Server",
             "Locale",
             "Images",
@@ -621,57 +861,57 @@ class Help(commands.Cog):
 
         return commands_by_cog, ordered_cogs
 
-    def _build_command_atlas_pages(self, prefix: str) -> list[dict]:
-        commands_by_cog, ordered_cogs = self._collect_public_command_metadata(prefix)
+    @staticmethod
+    def _command_one_liner(command: commands.Command) -> str:
+        brief = str(command.brief or "").replace("\n", " ").strip()
+        if brief.lower() in {"", "no brief description.", "no brief help available"}:
+            brief = ""
+        source = brief
+        if not source:
+            raw = inspect.getdoc(command.callback) or command.help or ""
+            paragraphs = []
+            current = []
+            for raw_line in raw.splitlines():
+                line = raw_line.strip()
+                if not line:
+                    if current:
+                        paragraphs.append(" ".join(current).strip())
+                        current = []
+                    continue
+                current.append(line)
+            if current:
+                paragraphs.append(" ".join(current).strip())
+            for paragraph in paragraphs:
+                if paragraph.startswith(("`<", "`[", "<", "[")):
+                    continue
+                source = paragraph
+                break
+        if not source:
+            source = "Read the command help."
+        source = " ".join(source.replace("`", "'").split())
+        if len(source) > 100:
+            source = f"{source[:97].rstrip()}..."
+        return source
 
-        pages = []
-        for cog_name in ordered_cogs:
-            lines = sorted(
-                [
-                    f"• `{entry['usage']}` - {entry['brief']}"
-                    for entry in commands_by_cog[cog_name]
-                ],
-                key=lambda line: line.lower(),
-            )
-            total_chunks = math.ceil(len(lines) / 4) if lines else 1
-            for page_idx, line_chunk in enumerate(chunks(lines, 4), start=1):
-                pages.append(
-                    {
-                        "title": f"{cog_name} Commands ({page_idx}/{total_chunks})",
-                        "description": (
-                            f"Public commands from **{cog_name}**.\n"
-                            f"Use `{prefix}help <command>` for full syntax and argument details."
-                        ),
-                        "fields": [
-                            {
-                                "name": "Command List",
-                                "value": "\n".join(line_chunk),
-                                "inline": False,
-                            }
-                        ],
-                    }
-                )
+    @staticmethod
+    def _command_help_text(command: commands.Command, prefix: str) -> str:
+        raw = inspect.getdoc(command.callback) or command.help or ""
+        text = raw.strip().replace("{prefix}", prefix)
+        if not text:
+            text = "No detailed help text is available for this command."
+        if len(text) > 2800:
+            text = f"{text[:2797].rstrip()}..."
+        return text
 
-        if not pages:
-            pages.append(
-                {
-                    "title": "Command Atlas",
-                    "description": "No public commands were discovered for this build.",
-                    "fields": [],
-                }
-            )
-        return pages
-
-    def _build_command_group_indexes(
-        self, prefix: str, commands_by_cog: dict[str, list[dict]], ordered_cogs: list[str]
-    ) -> list[dict]:
-        category_map = {
+    def _command_category_map(self) -> dict:
+        return {
             "Starter & Progression": {
                 "description": "Character creation, leveling, baseline progression, and recurring rewards.",
                 "cogs": [
                     "Profile",
                     "Races",
                     "Classes",
+                    "Specializations",
                     "Adventure",
                     "Gods",
                     "Crates",
@@ -696,19 +936,25 @@ class Help(commands.Cog):
                     "ElysiaTrials",
                     "HorrorRaid",
                     "Greg",
-                    "SlaySpire",
+                    "SlayTheSpire",
+                    "Gauntlet",
+                    "Hunt",
+                    "Bounties",
+                    "Relics",
+                    "Rift",
                 ],
             },
             "Economy & Social": {
-                "description": "Trading, buy orders, marriage/family, rankings, gifting, and account utilities.",
+                "description": "Trading, buy orders, marriage, rankings, gifting, and account utilities.",
                 "cogs": [
                     "Trading",
                     "BuyOrders",
                     "Transaction",
                     "Marriage",
                     "Ranks",
+                    "Feats",
                     "GiftForward",
-                    "Scheduler",
+                    "Scheduling",
                     "Server",
                     "Locale",
                     "ProfileCustomization",
@@ -719,13 +965,13 @@ class Help(commands.Cog):
                 ],
             },
             "Games & Side Modes": {
-                "description": "Casino, board/card games, party games, and other side activities.",
+                "description": "Casino, board and card games, party games, and other side activities.",
                 "cogs": [
                     "Gambling",
-                    "DragonSlots",
+                    "Slots",
                     "Russian",
                     "RRBeta",
-                    "ShotgunRoulette",
+                    "Shotgunroulette",
                     "Poker",
                     "Chess",
                     "Battleships",
@@ -735,23 +981,35 @@ class Help(commands.Cog):
                     "SinglePlayerWerewolf",
                     "NewWerewolf",
                     "HungerGames",
-                    "CAH",
+                    "CardsAgainstHumanity",
                     "MurderHouse",
-                    "Lotto",
+                    "Lottery",
+                    "SnowballFight",
+                ],
+            },
+            "Stories & Extra Systems": {
+                "description": "Fables, companions, elixirs, and the other live systems outside the early loop.",
+                "cogs": [
+                    "Fables",
+                    "Companions",
+                    "Elixirs",
+                    "Tiamat",
+                    "Starforge",
+                    "SoulforgeFrontiers",
                 ],
             },
             "Events & Special Systems": {
-                "description": "Seasonal content, special events, and late-game or experimental systems.",
+                "description": "Seasonal content, special events, and late-game systems.",
                 "cogs": [
                     "Halloween",
-                    "Wintersday",
+                    "Christmas",
                     "LunarNewYear",
                     "Easter",
-                    "Eastermanager",
+                    "EasterManager",
                     "Valentine",
-                    "PlagueEvent",
+                    "PlagueOfTheUndying",
                     "GlobalEvents",
-                    "Warmap",
+                    "WarMap",
                     "Achievements",
                     "Soulforge",
                     "SoulforgeExtension",
@@ -765,138 +1023,45 @@ class Help(commands.Cog):
             },
         }
 
-        def _format_cog_entry(cog_name: str) -> str:
-            entries = commands_by_cog.get(cog_name, [])
-            if not entries:
-                return ""
-            sample_commands = ", ".join(
-                f"`{prefix}{entry['qualified']}`" for entry in entries[:4]
-            )
-            extra_count = len(entries) - min(len(entries), 4)
-            if extra_count > 0:
-                sample_commands = f"{sample_commands}, +{extra_count} more"
-            return (
-                f"• **{cog_name}** ({len(entries)} commands)\n"
-                f"  Examples: {sample_commands}"
-            )
-
-        pages = []
-        used = set()
-        for category_name, config in category_map.items():
-            category_entries = []
-            for cog_name in config["cogs"]:
-                line = _format_cog_entry(cog_name)
-                if line:
-                    category_entries.append(line)
-                    used.add(cog_name)
-            if not category_entries:
-                continue
-            for page_idx, line_chunk in enumerate(chunks(category_entries, 6), start=1):
-                total_chunks = math.ceil(len(category_entries) / 6)
-                pages.append(
-                    {
-                        "title": f"{category_name} ({page_idx}/{total_chunks})",
-                        "description": config["description"],
-                        "fields": [
-                            {
-                                "name": "Indexed Command Groups",
-                                "value": "\n".join(line_chunk),
-                                "inline": False,
-                            }
-                        ],
-                    }
-                )
-
-        uncategorized = [name for name in ordered_cogs if name not in used]
-        if uncategorized:
-            uncategorized_entries = []
-            for cog_name in uncategorized:
-                line = _format_cog_entry(cog_name)
-                if line:
-                    uncategorized_entries.append(line)
-            for page_idx, line_chunk in enumerate(chunks(uncategorized_entries, 6), start=1):
-                total_chunks = math.ceil(len(uncategorized_entries) / 6)
-                pages.append(
-                    {
-                        "title": f"Additional Command Groups ({page_idx}/{total_chunks})",
-                        "description": (
-                            "Public command groups discovered from the bot that did not fit one of the main handbook buckets."
-                        ),
-                        "fields": [
-                            {
-                                "name": "Indexed Command Groups",
-                                "value": "\n".join(line_chunk),
-                                "inline": False,
-                            }
-                        ],
-                    }
-                )
-
-        if not pages:
-            pages.append(
-                {
-                    "title": "Command Group Index",
-                    "description": "No public command groups were discovered for this build.",
-                    "fields": [],
-                }
-            )
-        return pages
-
-    def _build_command_writeup_pages(
-        self, prefix: str, commands_by_cog: dict[str, list[dict]], ordered_cogs: list[str]
+    def _build_command_categories(
+        self, commands_by_cog: dict[str, list[dict]], ordered_cogs: list[str]
     ) -> list[dict]:
-        pages = []
-
-        for cog_name in ordered_cogs:
-            entries = sorted(
-                commands_by_cog.get(cog_name, []),
-                key=lambda entry: entry["qualified"].lower(),
-            )
+        used = set()
+        categories = []
+        for category_name, config in self._command_category_map().items():
+            entries = []
+            for cog_name in config["cogs"]:
+                cog_entries = commands_by_cog.get(cog_name, [])
+                if not cog_entries:
+                    continue
+                entries.extend(cog_entries)
+                used.add(cog_name)
             if not entries:
                 continue
-
-            total_chunks = math.ceil(len(entries) / 2)
-            for page_idx, chunk_entries in enumerate(chunks(entries, 2), start=1):
-                fields = []
-                for entry in chunk_entries:
-                    lines = [
-                        f"Usage: `{entry['usage']}`",
-                        entry["doc_summary"],
-                    ]
-                    if entry.get("argument_notes"):
-                        lines.append(f"Args: {entry['argument_notes']}")
-                    value = "\n".join(lines)
-                    if len(value) > 1000:
-                        value = f"{value[:997]}..."
-                    fields.append(
-                        {
-                            "name": entry["qualified"],
-                            "value": value,
-                            "inline": False,
-                        }
-                    )
-
-                pages.append(
-                    {
-                        "title": f"{cog_name} Writeups ({page_idx}/{total_chunks})",
-                        "description": (
-                            f"Doc-based handbook notes for public commands in **{cog_name}**. "
-                            f"These summaries are derived from the command help text and docstrings."
-                        ),
-                        "fields": fields,
-                    }
-                )
-
-        if not pages:
-            pages.append(
+            entries.sort(key=lambda entry: entry["qualified"].lower())
+            categories.append(
                 {
-                    "title": "Command Writeups",
-                    "description": "No public command documentation was discovered for this build.",
-                    "fields": [],
+                    "label": category_name,
+                    "description": config["description"],
+                    "commands": entries,
                 }
             )
 
-        return pages
+        extras = []
+        for cog_name in ordered_cogs:
+            if cog_name in used:
+                continue
+            extras.extend(commands_by_cog.get(cog_name, []))
+        if extras:
+            extras.sort(key=lambda entry: entry["qualified"].lower())
+            categories.append(
+                {
+                    "label": "Additional",
+                    "description": "Public commands that do not sit in one of the main categories.",
+                    "commands": extras,
+                }
+            )
+        return categories
 
     @staticmethod
     def _find_command_entry(
@@ -1499,9 +1664,9 @@ class Help(commands.Cog):
             "xp_curve_multiplier": 2.5,
             "skill_point_interval": 10,
             "level_stat_bonus_pct": 1.0,
-            "battle_daily_xp_cap": 12000,
-            "battle_xp_base": 80,
-            "battle_xp_per_tier": 25,
+            "battle_daily_xp_cap": 24000,
+            "battle_xp_base": 160,
+            "battle_xp_per_tier": 50,
             "trust_tiers": [
                 {"threshold": 0, "name": "Distrustful", "bonus": -10, "emoji": "😠"},
                 {"threshold": 21, "name": "Cautious", "bonus": 0, "emoji": "😐"},
@@ -1729,6 +1894,16 @@ class Help(commands.Cog):
                             ),
                             "inline": False,
                         },
+                        {
+                            "name": "Looking Up a Command",
+                            "value": (
+                                "Open **Commands** in the dropdown. Pick a category, then a command.\n"
+                                "The entry is the same text as help for that command.\n"
+                                "Page ahead here for systems that are easy to miss. "
+                                "**More sections** opens the next dropdown page when there are more than 25 topics."
+                            ),
+                            "inline": False,
+                        },
                     ],
                 },
                 {
@@ -1867,9 +2042,7 @@ class Help(commands.Cog):
                                 [
                                     "Soulforge & Splice",
                                     "Seasonal & Event Systems",
-                                    "Command Group Indexes",
-                                    "Command Writeups",
-                                    "Command Atlas",
+                                    "Commands",
                                 ]
                             ),
                             "inline": False,
@@ -1878,7 +2051,44 @@ class Help(commands.Cog):
                             "name": "Navigation Note",
                             "value": (
                                 "Section numbers in this index match the dropdown order. "
-                                "Jump directly to any section without paging through the whole handbook."
+                                "Open **Commands**, pick a category, then a command to read what it does."
+                            ),
+                            "inline": False,
+                        },
+                    ],
+                },
+                {
+                    "title": "Also in the Game",
+                    "description": (
+                        "These systems are live, and they are easy to miss if you only follow the early-game path. "
+                        "Open **Commands** for the full help text."
+                    ),
+                    "fields": [
+                        {
+                            "name": "Character and Story",
+                            "value": (
+                                f"• `{prefix}race` includes **Dragonkin** (+2 attack, +2 defense, same split as Human)\n"
+                                f"• `{prefix}spec` specializations for a class line\n"
+                                f"• `{prefix}companions` companions unlocked through the Fables\n"
+                                f"• `{prefix}fables` the story library\n"
+                                f"• `{prefix}elixirs` battle elixirs brewed in the Library\n"
+                                f"• `{prefix}rpg` linked Fables profile and crowns (`{prefix}tiamat`, `{prefix}link`, `{prefix}tdragon`)\n"
+                                f"• `{prefix}propose` marriage"
+                            ),
+                            "inline": False,
+                        },
+                        {
+                            "name": "More Ways to Play",
+                            "value": (
+                                f"• `{prefix}jurytower` Jury Tower, separate from the main battle tower\n"
+                                f"• `{prefix}gauntlet` gauntlet runs\n"
+                                f"• `{prefix}hunt` hunts\n"
+                                f"• `{prefix}bounties` the bounty board\n"
+                                f"• `{prefix}feats` feat tracking\n"
+                                f"• `{prefix}relics` the relic codex\n"
+                                f"• `{prefix}rift` the rift\n"
+                                f"• `{prefix}starforge` starforge\n"
+                                f"• `{prefix}frontier` Soulforge Frontiers"
                             ),
                             "inline": False,
                         },
@@ -1892,15 +2102,8 @@ class Help(commands.Cog):
             self._humanize_class_line(name) for name in sorted(ALL_CLASSES_TYPES.keys())
         )
         commands_by_cog, ordered_cogs = self._collect_public_command_metadata(prefix)
-        command_atlas_pages = self._build_command_atlas_pages(prefix)
-        command_group_index_pages = self._build_command_group_indexes(
-            prefix, commands_by_cog, ordered_cogs
-        )
-        command_writeup_pages = self._build_command_writeup_pages(
-            prefix, commands_by_cog, ordered_cogs
-        )
+        command_categories = self._build_command_categories(commands_by_cog, ordered_cogs)
         total_public_commands = sum(len(entries) for entries in commands_by_cog.values())
-        total_public_cogs = len(commands_by_cog)
 
         god_names = "Configured by your server admins."
         gods = getattr(self.bot, "gods", None)
@@ -2539,6 +2742,7 @@ class Help(commands.Cog):
                                         "• Orc: +4 DEF, +0 ATK\n"
                                         "• Dwarf: +3 DEF, +1 ATK\n"
                                         "• Human: +2 DEF, +2 ATK\n"
+                                        "• Dragonkin: +2 DEF, +2 ATK\n"
                                         "• Elf: +1 DEF, +3 ATK\n"
                                         "• Jikill: +0 DEF, +4 ATK\n"
                                         "• Shadeborn: +5 DEF, -1 ATK\n"
@@ -3447,20 +3651,23 @@ class Help(commands.Cog):
                     ],
                 },
                 {
-                    "label": "Command Group Indexes",
+                    "label": "Commands",
                     "summary": (
-                        f"Audited index of {total_public_commands} public commands across {total_public_cogs} command groups."
+                        f"Pick a category, then a command. {total_public_commands} public commands."
                     ),
-                    "emoji": "🗂️",
-                    "pages": command_group_index_pages,
-                },
-                {
-                    "label": "Command Writeups",
-                    "summary": (
-                        "Generated handbook pages based on the actual command help text and locale_doc docstrings."
-                    ),
-                    "emoji": "📝",
-                    "pages": command_writeup_pages,
+                    "emoji": "📚",
+                    "kind": "commands",
+                    "categories": command_categories,
+                    "pages": [
+                        {
+                            "title": "How to Look Up a Command",
+                            "description": (
+                                "Use the category menu, then the command menu. "
+                                f"The text matches `{prefix}help <command>`."
+                            ),
+                            "fields": [],
+                        }
+                    ],
                 },
                 {
                     "label": "Troubleshooting",
@@ -3495,12 +3702,6 @@ class Help(commands.Cog):
                             ],
                         }
                     ],
-                },
-                {
-                    "label": "Command Atlas",
-                    "summary": "Dynamic index of all public commands grouped by module.",
-                    "emoji": "📚",
-                    "pages": command_atlas_pages,
                 },
             ]
         )
@@ -3547,7 +3748,10 @@ class Help(commands.Cog):
             """Open an in-depth guidebook with dropdown navigation and pagination.
 
             Covers getting started, progression loops, combat, elements, classes, gods,
-            pets, economy/trading, group content, and a dynamic command atlas.
+            pets, economy/trading, and group content.
+
+            Open Commands in the dropdown, pick a category, then pick a command.
+            That entry shows the same help text as `{prefix}help`.
 
             Aliases such as `{prefix}booklet` and `{prefix}gettingstarted` open the same guide."""
         )
