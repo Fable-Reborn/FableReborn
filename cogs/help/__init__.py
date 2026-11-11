@@ -909,6 +909,7 @@ class Help(commands.Cog):
                 "description": "Character creation, leveling, baseline progression, and recurring rewards.",
                 "cogs": [
                     "Profile",
+                    "StatCalc",
                     "Races",
                     "Classes",
                     "Specializations",
@@ -2710,6 +2711,7 @@ class Help(commands.Cog):
                         {
                             "title": "Build Optimization",
                             "description": (
+                                f"• `{prefix}statcalc` slides weapon damage, multipliers, and amulet bonuses\n"
                                 f"• `{prefix}amulet help`\n"
                                 f"• `{prefix}amulet resources`\n"
                                 f"• `{prefix}amulet craft/equip/unequip`\n"
