@@ -55,18 +55,27 @@ class TestStatMath(unittest.TestCase):
         self.assertEqual(result.defense_multiplier, Decimal("1.3"))
         self.assertEqual(result.raid_attack, Decimal("125") * Decimal("2.6") + Decimal(100))
 
-    def test_one_attack_point_is_worth_gear_times_point_rate(self):
+    def test_card_shows_the_weapon_and_what_one_damage_adds(self):
         sheet = _blade()
-        text = statcalc.explain(sheet, "right_damage")
-        self.assertIn("1 attack point → **+25** raid attack", text)
-        self.assertIn("1 more right-weapon damage → **+1.20** raid attack", text)
-        self.assertIn("1 more star on the right weapon → **+4** raid attack", text)
-        self.assertIn("1 amulet attack → **+1** raid attack", text)
-        self.assertIn("★5 +20%", text)
-        self.assertIn("+ 5 class fit", text)
-        self.assertIn("**Raid attack 135**", text)
-        self.assertIn("0.20", text)
-        self.assertLess(len(text), 4096)
+        text = statcalc.card(sheet, "right_damage")
+        self.assertIn("**Attack** 135", text)
+        self.assertIn("★5", text)
+        self.assertIn("+5", text)
+        self.assertIn("+1 damage adds +1.20 attack", text)
+        self.assertIn("Amulet +10 atk", text)
+        self.assertLess(len(text), 1200)
+        self.assertNotIn("What multiplies what", text)
+
+    def test_example_card_only_edits_weapons_and_rs(self):
+        sheet = statcalc.example_sheet()
+        self.assertEqual(
+            [key for key, _label in statcalc.knobs(sheet)],
+            ["right_damage", "left_armor", "profile_atk", "profile_def"],
+        )
+        text = statcalc.card(sheet, "profile_atk")
+        self.assertIn("Elf", text)
+        self.assertIn("One $rs attack upgrade", text)
+        self.assertLess(len(text), 1200)
 
     def test_health_ignores_the_attack_multiplier(self):
         sheet = statcalc.example_sheet()
@@ -84,8 +93,9 @@ class TestStatMath(unittest.TestCase):
         self.assertEqual(result.gear_attack, Decimal(-1))
         self.assertEqual(result.gear_defense, Decimal(5))
         self.assertEqual(result.raid_attack, Decimal(-1))
-        text = statcalc.explain(sheet, "race")
-        self.assertIn("The profile card shows 0 here.", text)
+        text = statcalc.card(sheet, "right_damage")
+        self.assertIn("**Attack** -1", text)
+        self.assertIn("Shadeborn", text)
 
     def test_zero_gear_leaves_the_amulet(self):
         sheet = statcalc.Sheet(amulet_atk=Decimal(50), stat_atk=10)
@@ -113,9 +123,8 @@ class TestStatMath(unittest.TestCase):
         start = _blade()
         moved = copy.copy(start)
         statcalc.move(moved, "amulet_atk", 5)
-        text = statcalc.explain(moved, "amulet_atk", baseline=start)
-        self.assertIn("**Since you opened this**", text)
-        self.assertIn("135 → 140 (+5)", text)
+        text = statcalc.card(moved, "profile_atk", baseline=start)
+        self.assertIn("Was 135 attack", text)
 
     def test_crafted_amulet_preset(self):
         sheet = statcalc.Sheet()
@@ -232,9 +241,9 @@ class TestEquippedGear(unittest.TestCase):
             items=[{"type": "Bow", "hand": "both", "damage": 100}],
         )
         self.assertEqual(statcalc.compute(sheet).gear_attack, Decimal(110))
-        text = statcalc.explain(sheet, "right_damage")
-        self.assertIn("counted once", text)
-        self.assertLess(len(text), 4096)
+        text = statcalc.card(sheet, "right_damage")
+        self.assertIn("two-handed", text)
+        self.assertLess(len(text), 1200)
 
 
 class TestCogSurface(unittest.TestCase):
@@ -252,14 +261,15 @@ class TestCogSurface(unittest.TestCase):
                 target_id=1,
                 hero_name="Example",
                 sheet=statcalc.example_sheet(),
-                prefix="$",
             )
-            self.assertLessEqual(len(view.embed().description), 4096)
-            self.assertEqual(len(view.field_select.options), 12)
-            self.assertEqual(len(view.amulet_select.options), 21)
+            self.assertLessEqual(len(view.embed().description), 1200)
+            self.assertEqual(
+                [option.label for option in view.pick.options],
+                ["Longsword damage", "Shield armor", "$rs attack", "$rs defense"],
+            )
             buttons = [child for child in view.children if isinstance(child, discord.ui.Button)]
-            self.assertEqual(len(buttons), 15)
-            self.assertIn("+1", [button.label for button in buttons])
+            self.assertEqual(len(buttons), 7)
+            self.assertEqual([button.label for button in buttons[:4]], ["-10", "-1", "+1", "+10"])
             view.stop()
 
         asyncio.run(build())
@@ -270,7 +280,7 @@ class TestCogSurface(unittest.TestCase):
         command = StatCalc.statcalc
         self.assertEqual(command.name, "statcalc")
         self.assertIn("scalc", command.aliases)
-        self.assertIn("Amulet attack and defense are added after it.", command.help)
+        self.assertIn("$rs", command.help)
         self.assertIn("{prefix}statcalc", command.help)
 
 

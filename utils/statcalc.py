@@ -32,7 +32,6 @@ from classes.classes import Mage, Paragon
 from classes.classes import from_string as class_from_string
 from classes.endgame import (
     STARFORGE_MAX_STARS,
-    STARFORGE_STAT_PCT_PER_STAR,
     apply_item_progression_bonus,
     soulbound_bonus_pct_for_level,
     soulbound_rank_for_level,
@@ -185,12 +184,8 @@ def profile_round(number) -> int:
     return int(round(float(number)))
 
 
-def exact(number) -> str:
-    shown = fmt(number)
-    rounded = f"{profile_round(number):,}"
-    if shown == rounded:
-        return shown
-    return f"{shown} (profile card {rounded})"
+def whole(number) -> str:
+    return f"{profile_round(number):,}"
 
 
 def clean(text, limit: int = 32, fallback: str = "") -> str:
@@ -816,209 +811,155 @@ def preset_choices() -> list[tuple[str, str, str]]:
     return choices
 
 
-def _pct_sources(stars, soul) -> str:
-    parts = []
-    if int(stars):
-        parts.append(f"★{int(stars)} +{fmt_pct(starforge_bonus_pct(int(stars)))}")
-    if int(soul):
-        parts.append(f"soulbound +{fmt_pct(soulbound_bonus_pct_for_level(int(soul)))}")
-    return ", ".join(parts)
+def _hand_shown(sheet: Sheet, side: str) -> bool:
+    name = getattr(sheet, f"{side}_name")
+    return name not in {"", "Empty"} or D(getattr(sheet, f"{side}_damage")) != 0 or D(getattr(sheet, f"{side}_armor")) != 0
 
 
-def _side_line(slot: str, name: str, raw, stars, soul, fit, side: str) -> str:
-    fit_damage, fit_armor, _label = FITS[int(fit)]
-    flat = fit_damage if side == "damage" else fit_armor
-    pct = starforge_bonus_pct(int(stars)) + soulbound_bonus_pct_for_level(int(soul))
-    total = D(raw) * (Decimal(1) + pct) + flat
-    if D(raw) == 0 and flat == 0:
-        return f"{slot} · {name}: 0 {side}"
-    expr = fmt(raw)
-    if pct:
-        expr += f" × {fmt_mult(Decimal(1) + pct)} ({_pct_sources(stars, soul)})"
-    if flat:
-        expr += f" + {fmt(flat)} class fit"
-    return f"{slot} · {name}: {expr} = **{fmt(total)}**"
+def _hand_knob(sheet: Sheet, side: str) -> tuple[str, str]:
+    """The one number on this hand a player would type: damage, or armor when that is all it has."""
+    name = clean(getattr(sheet, f"{side}_name"), 40, side.title())
+    damage = D(getattr(sheet, f"{side}_damage"))
+    armor = D(getattr(sheet, f"{side}_armor"))
+    if damage > 0 or armor == 0:
+        return f"{side}_damage", f"{name} damage"[:100]
+    return f"{side}_armor", f"{name} armor"[:100]
 
 
-def _slider_block(sheet: Sheet, field: Field) -> str:
-    if sheet.origin == "loaded":
-        origin = f"Loaded from {clean(sheet.hero_name, 32, 'Hero')}'s equipped gear."
-    elif sheet.origin == "missing":
-        origin = f"No character for {clean(sheet.hero_name, 32, 'them')}. These are example numbers."
-    else:
-        origin = "Example hero, so the buttons work before you have gear. Load my hero fills your weapons."
-    title = field.label
-    if field.key.startswith("right"):
-        title = f"{field.label} · {sheet.right_name}"
-    elif field.key.startswith("left"):
-        title = f"{field.label} · {sheet.left_name}"
-    if field.kind == "race":
-        names = [name for name, _, _ in RACES]
-        index = names.index(sheet.race) if sheet.race in names else 0
-        slider = bar(index, 0, len(names) - 1)
-    elif field.kind == "fit":
-        slider = bar(getattr(sheet, field.key), 0, 3)
-    else:
-        value = D(getattr(sheet, field.key))
-        high = field.bar_cap if value <= field.bar_cap else value
-        slider = bar(value, field.minimum, high)
-    return "\n".join((
-        origin,
-        f"**{title}**  {shown_value(sheet, field.key)}",
-        f"`{slider}`",
-        field.blurb,
-        "The bar is the slider. The buttons move it. Type number sets it exactly.",
-    ))
+def knobs(sheet: Sheet) -> list[tuple[str, str]]:
+    """(field, menu label) for weapon damage and the two $rs multipliers."""
+    found = [_hand_knob(sheet, side) for side in ("right", "left") if _hand_shown(sheet, side)]
+    if not found:
+        found.append(("right_damage", "Weapon damage"))
+    found.append(("profile_atk", "$rs attack"))
+    found.append(("profile_def", "$rs defense"))
+    return found
 
 
-def _multiplier_line(sheet: Sheet, result: Result, kind: str) -> str:
-    if kind == "attack":
-        profile = result.profile_attack
-        points = sheet.stat_atk
-        point_name = "attack points"
-        point_total = result.point_attack
-        multiplier = result.attack_multiplier
-    else:
-        profile = result.profile_defense
-        points = sheet.stat_def
-        point_name = "defense points"
-        point_total = result.point_defense
-        multiplier = result.defense_multiplier
-    return (
-        f"Multiplier **×{fmt_mult(multiplier)}**, added up from "
-        f"{fmt_mult(profile)} profile + "
-        f"{fmt(points)} {point_name} × {fmt_mult(STAT_ATTACK_DEFENSE_PER_POINT)} (= {fmt_mult(point_total)}) + "
-        f"raid hall {fmt(sheet.city)} × {fmt_mult(CITY_STEP)} (= {fmt_mult(result.city_bonus)})"
-    )
+def knob_steps(key: str) -> tuple[Decimal, Decimal]:
+    """Small step, then the larger step. $rs moves by one upgrade (0.10)."""
+    if FIELDS[key].kind == "mult":
+        return Decimal("0.1"), Decimal("1")
+    return Decimal(1), Decimal(10)
 
 
-def _attack_block(sheet: Sheet, result: Result) -> str:
-    lines = [
-        "**Attack**",
-        _side_line("Right", sheet.right_name, sheet.right_damage, sheet.right_stars, sheet.right_soul, sheet.right_fit, "damage"),
-    ]
-    if sheet.right_two_handed:
-        lines.append("This weapon is two-handed, so those stats are counted once.")
-    lines.extend((
-        _side_line("Left", sheet.left_name, sheet.left_damage, sheet.left_stars, sheet.left_soul, sheet.left_fit, "damage"),
-        f"Other gear **{fmt(sheet.other_damage)}** (its stars and class fit are already inside)",
-        f"{sheet.race} **{signed(race_bonus(sheet.race)[0])}** attack, **{signed(race_bonus(sheet.race)[1])}** armor",
-        f"Class grade **{signed(sheet.class_damage)}** attack, **{signed(sheet.class_armor)}** armor",
-        f"**Gear attack {fmt(result.gear_attack)}**",
-        _multiplier_line(sheet, result, "attack"),
-        f"{fmt(result.gear_attack)} × {fmt_mult(result.attack_multiplier)} = **{fmt(result.multiplied_attack)}**",
-        f"Amulet **{signed(result.amulet_attack)}** is added onto that.",
-        f"**Raid attack {exact(result.raid_attack)}**",
-    ))
-    if result.gear_attack == 0:
-        lines.append("Gear attack is 0, so this multiplier leaves raid attack equal to the amulet.")
-    if result.raid_attack < 0:
-        lines.append("The profile card shows 0 here.")
-    return "\n".join(lines)
+def _fit_tag(fit: int) -> str:
+    damage, armor, _label = FITS[int(fit)]
+    if damage:
+        return f"+{fmt(damage)}"
+    if armor:
+        return f"+{fmt(armor)} shield"
+    return ""
 
 
-def _defense_block(sheet: Sheet, result: Result) -> str:
-    lines = [
-        "**Defense**",
-        _side_line("Right", sheet.right_name, sheet.right_armor, sheet.right_stars, sheet.right_soul, sheet.right_fit, "armor"),
-        _side_line("Left", sheet.left_name, sheet.left_armor, sheet.left_stars, sheet.left_soul, sheet.left_fit, "armor"),
-        f"Other gear **{fmt(sheet.other_armor)}**",
-        f"**Gear defense {fmt(result.gear_defense)}**",
-        _multiplier_line(sheet, result, "defense"),
-        f"{fmt(result.gear_defense)} × {fmt_mult(result.defense_multiplier)} = **{fmt(result.multiplied_defense)}**",
-        f"Amulet **{signed(result.amulet_defense)}** is added onto that.",
-        f"**Raid defense {exact(result.raid_defense)}**",
-    ]
-    if result.raid_defense < 0:
-        lines.append("The profile card shows 0 here.")
-    return "\n".join(lines)
+def _weapon_line(sheet: Sheet, side: str) -> str | None:
+    if not _hand_shown(sheet, side):
+        return None
+    name = clean(getattr(sheet, f"{side}_name"), 24, side.title())
+    raw_damage = D(getattr(sheet, f"{side}_damage"))
+    raw_armor = D(getattr(sheet, f"{side}_armor"))
+    stars = int(getattr(sheet, f"{side}_stars"))
+    soul = int(getattr(sheet, f"{side}_soul"))
+    fit = int(getattr(sheet, f"{side}_fit"))
+    dealt, blocked, _pct = _contribute(raw_damage, raw_armor, stars, soul, fit)
+    parts = [f"**{name}**", f"{fmt(raw_damage)} dmg" if raw_damage else "", f"{fmt(raw_armor)} armor" if raw_armor else ""]
+    if stars:
+        parts.append(f"★{stars}")
+    if soul:
+        parts.append(f"soul {soul}")
+    tag = _fit_tag(fit)
+    if tag:
+        parts.append(tag)
+    if side == "right" and sheet.right_two_handed:
+        parts.append("two-handed")
+    parts = [part for part in parts if part]
+    line = " · ".join(parts)
+    outcome = []
+    fit_damage, fit_armor, _label = FITS[fit]
+    if raw_damage or fit_damage:
+        outcome.append(f"{fmt(dealt)} dmg")
+    if raw_armor or fit_armor:
+        outcome.append(f"{fmt(blocked)} armor")
+    changed = bool(stars or soul or tag or (raw_damage and dealt != raw_damage) or (raw_armor and blocked != raw_armor))
+    if changed and outcome:
+        line += " → " + ", ".join(outcome)
+    return line
 
 
-def _health_block(sheet: Sheet, result: Result, prefix: str) -> str:
-    return "\n".join((
-        "**Health**",
-        "Health is a sum. Each step is added to the others.",
-        (
-            f"{BASE_HP} base + {fmt(result.profile_hp)} profile + "
-            f"level {fmt(sheet.level)} × {HP_PER_LEVEL} (= {fmt(result.level_hp)}) + "
-            f"{fmt(sheet.stat_hp)} health points × {STAT_HEALTH_PER_POINT} (= {fmt(result.stat_hp_bonus)}) + "
-            f"{fmt(result.amulet_hp)} amulet"
-        ),
-        f"**Health {exact(result.health)}**",
-        (
-            f"A purchased health upgrade adds +{HP_PER_PURCHASE} profile HP. "
-            f"The Health Multiplier on `{prefix}raidstats` is the price ladder for that purchase."
-        ),
-    ))
-
-
-def _worth_block(sheet: Sheet, result: Result, active: str) -> str:
-    side = "left" if active.startswith("left") else "right"
-    if side == "left":
-        raw, stars, pct = sheet.left_damage, sheet.left_stars, result.left_pct
-    else:
-        raw, stars, pct = sheet.right_damage, sheet.right_stars, result.right_pct
-    per_damage = (Decimal(1) + pct) * result.attack_multiplier
-    per_star = D(raw) * STARFORGE_STAT_PCT_PER_STAR * result.attack_multiplier
-    lines = [
-        "**What one more is worth**",
-        f"1 attack point → **{signed(result.gear_attack * STAT_ATTACK_DEFENSE_PER_POINT)}** raid attack",
-        f"1 defense point → **{signed(result.gear_defense * STAT_ATTACK_DEFENSE_PER_POINT)}** raid defense",
-        f"1 health point → **+{STAT_HEALTH_PER_POINT}** health",
-        f"1 paid attack upgrade (+0.10) → **{signed(result.gear_attack * PAID_STEP)}** raid attack",
-        f"1 paid defense upgrade (+0.10) → **{signed(result.gear_defense * PAID_STEP)}** raid defense",
-        f"1 paid health upgrade → **+{HP_PER_PURCHASE}** health",
-        f"1 more {side}-weapon damage → **{signed(per_damage)}** raid attack",
-    ]
-    if int(stars) >= STARFORGE_MAX_STARS:
-        lines.append(f"The {side} weapon is at {STARFORGE_MAX_STARS} stars, the cap.")
-    elif D(raw) == 0:
+def _modifier_lines(sheet: Sheet) -> list[str]:
+    lines = []
+    race_damage, race_armor = race_bonus(sheet.race)
+    if race_damage or race_armor:
+        lines.append(f"{sheet.race} {signed(race_damage)} atk, {signed(race_armor)} def")
+    if sheet.class_damage or sheet.class_armor:
+        lines.append(f"Class grade {signed(sheet.class_damage)} atk, {signed(sheet.class_armor)} def")
+    points = []
+    if sheet.stat_atk:
+        points.append(f"{fmt(sheet.stat_atk)} atk pts")
+    if sheet.stat_def:
+        points.append(f"{fmt(sheet.stat_def)} def pts")
+    if sheet.stat_hp:
+        points.append(f"{fmt(sheet.stat_hp)} hp pts")
+    if points:
+        lines.append(", ".join(points))
+    if sheet.city:
+        lines.append(f"Raid hall {fmt(sheet.city)}")
+    if D(sheet.other_damage) or D(sheet.other_armor):
+        lines.append(f"Other gear {fmt(sheet.other_damage)} dmg, {fmt(sheet.other_armor)} armor")
+    if D(sheet.amulet_atk) or D(sheet.amulet_def) or D(sheet.amulet_hp):
         lines.append(
-            f"1 more star on the {side} weapon → **+0** raid attack, because stars percent-multiply listed damage."
+            f"Amulet {signed(sheet.amulet_atk)} atk, {signed(sheet.amulet_def)} def, {signed(sheet.amulet_hp)} hp"
         )
-    else:
-        lines.append(f"1 more star on the {side} weapon → **{signed(per_star)}** raid attack")
-    lines.append("1 amulet attack → **+1** raid attack")
-    return "\n".join(lines)
+    return lines
 
 
-def _since_block(current: Result, previous: Result) -> str:
-    if (
-        current.raid_attack == previous.raid_attack
-        and current.raid_defense == previous.raid_defense
-        and current.health == previous.health
-    ):
-        return ""
-    return "\n".join((
-        "**Since you opened this**",
-        f"Attack {fmt(previous.raid_attack)} → {fmt(current.raid_attack)} ({signed(current.raid_attack - previous.raid_attack)})",
-        f"Defense {fmt(previous.raid_defense)} → {fmt(current.raid_defense)} ({signed(current.raid_defense - previous.raid_defense)})",
-        f"Health {fmt(previous.health)} → {fmt(current.health)} ({signed(current.health - previous.health)})",
-    ))
+def _hint(sheet: Sheet, result: Result, active: str) -> str:
+    if active in {"right_damage", "left_damage"}:
+        pct = result.right_pct if active.startswith("right") else result.left_pct
+        worth = (Decimal(1) + pct) * result.attack_multiplier
+        return f"+1 damage adds {signed(worth)} attack"
+    if active in {"right_armor", "left_armor"}:
+        pct = result.right_pct if active.startswith("right") else result.left_pct
+        worth = (Decimal(1) + pct) * result.defense_multiplier
+        return f"+1 armor adds {signed(worth)} defense"
+    if active == "profile_atk":
+        return f"One $rs attack upgrade (+0.10) adds {signed(result.gear_attack * PAID_STEP)} attack"
+    if active == "profile_def":
+        return f"One $rs defense upgrade (+0.10) adds {signed(result.gear_defense * PAID_STEP)} defense"
+    return ""
 
 
-_ORDER = "\n".join((
-    "**What multiplies what**",
-    "1. Star percent and soulbound percent are added together, then that percent multiplies the weapon.",
-    "2. Class fit, race, and class grade are added after the star percent.",
-    "3. Profile multiplier, stat points, and raid hall levels are added into one multiplier.",
-    "4. That multiplier is applied to all of the gear.",
-    "5. Amulet attack and defense are added onto the result.",
-    "Defense follows the same five steps with armor. Health is a sum.",
-))
-
-
-def explain(sheet: Sheet, active: str = "right_damage", baseline: Sheet | None = None, prefix: str = "$") -> str:
+def card(sheet: Sheet, active: str = "right_damage", baseline: Sheet | None = None) -> str:
+    """Short phone-sized card: totals, the weapons, and the modifiers already equipped."""
     result = compute(sheet)
-    field = FIELDS.get(active) or FIELDS["right_damage"]
-    parts = [
-        _slider_block(sheet, field),
-        _ORDER,
-        _attack_block(sheet, result),
-        _defense_block(sheet, result),
-        _health_block(sheet, result, prefix),
-        _worth_block(sheet, result, field.key),
-    ]
+    lines = []
+    if sheet.origin == "example":
+        lines.append("Example gear. **My gear** loads yours.")
+    elif sheet.origin == "missing":
+        lines.append(f"No character for {clean(sheet.hero_name, 32, 'them')}. Example numbers.")
+    lines.append(f"**Attack** {whole(result.raid_attack)}")
+    lines.append(f"**Defense** {whole(result.raid_defense)}")
+    lines.append(f"**Health** {whole(result.health)}")
+    hint = _hint(sheet, result, active)
+    if hint:
+        lines.append(hint)
     if baseline is not None:
-        parts.append(_since_block(result, compute(baseline)))
-    return "\n\n".join(part for part in parts if part)
+        previous = compute(baseline)
+        if (
+            previous.raid_attack != result.raid_attack
+            or previous.raid_defense != result.raid_defense
+            or previous.health != result.health
+        ):
+            lines.append(
+                f"Was {whole(previous.raid_attack)} attack, {whole(previous.raid_defense)} defense, {whole(previous.health)} hp"
+            )
+    lines.append("")
+    lines.append("**Weapons**")
+    weapon_lines = [line for side in ("right", "left") if (line := _weapon_line(sheet, side))]
+    lines.extend(weapon_lines or ["Nothing equipped"])
+    lines.append("")
+    lines.append("**On you**")
+    lines.extend(_modifier_lines(sheet) or ["No extra modifiers"])
+    lines.append("")
+    lines.append(f"**$rs** ×{fmt_mult(sheet.profile_atk)} attack · ×{fmt_mult(sheet.profile_def)} defense")
+    return "\n".join(lines)

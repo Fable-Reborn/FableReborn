@@ -2711,7 +2711,7 @@ class Help(commands.Cog):
                         {
                             "title": "Build Optimization",
                             "description": (
-                                f"• `{prefix}statcalc` slides weapon damage, multipliers, and amulet bonuses\n"
+                                f"• `{prefix}statcalc` tries a weapon's damage and your $rs upgrades\n"
                                 f"• `{prefix}amulet help`\n"
                                 f"• `{prefix}amulet resources`\n"
                                 f"• `{prefix}amulet craft/equip/unequip`\n"

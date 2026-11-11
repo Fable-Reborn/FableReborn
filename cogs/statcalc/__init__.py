@@ -1,8 +1,7 @@
-"""A slider for raid attack, raid defense, and health.
+"""A short raid-stat card.
 
-Discord has no slider component, so the bar in the embed is the slider and the
-buttons under it move the selected number. The math lives in utils/statcalc.py
-and follows get_raidstats plus battle health.
+Shows the modifiers already on a player's gear. The buttons change a weapon's
+damage (or a shield's armor) and the $rs attack and defense upgrades.
 """
 from __future__ import annotations
 
@@ -22,11 +21,11 @@ log = logging.getLogger(__name__)
 
 class SetValueModal(discord.ui.Modal):
     def __init__(self, view: "StatCalcView"):
-        field = statcalc.FIELDS[view.field]
-        super().__init__(title=f"Set {field.label}"[:45])
+        label = dict(statcalc.knobs(view.sheet)).get(view.field, "Value")
+        super().__init__(title=f"Set {label}"[:45])
         self.view = view
         self.entry = discord.ui.TextInput(
-            label=field.label[:45],
+            label=label[:45],
             default=statcalc.editable_value(view.sheet, view.field)[:400],
             max_length=20,
             required=True,
@@ -46,7 +45,7 @@ class SetValueModal(discord.ui.Modal):
 
 
 class StatCalcView(discord.ui.View):
-    def __init__(self, cog, author_id: int, target_id: int, hero_name: str, sheet: statcalc.Sheet, prefix: str):
+    def __init__(self, cog, author_id: int, target_id: int, hero_name: str, sheet: statcalc.Sheet):
         super().__init__(timeout=600)
         self.cog = cog
         self.author_id = author_id
@@ -54,73 +53,51 @@ class StatCalcView(discord.ui.View):
         self.hero_name = hero_name
         self.sheet = sheet
         self.baseline = copy.copy(sheet)
-        self.prefix = prefix
-        self.page = "weapons"
-        self.field = "right_damage"
-        if sheet.right_damage == 0 and sheet.right_armor == 0 and (sheet.left_damage or sheet.left_armor):
-            self.field = "left_damage"
+        self.field = statcalc.knobs(sheet)[0][0]
         self.message: discord.Message | None = None
-        self.field_select = discord.ui.Select(
-            placeholder="Choose what the slider moves",
+        self.pick = discord.ui.Select(
+            placeholder="Weapon or $rs",
             min_values=1,
             max_values=1,
-            options=[discord.SelectOption(label="Right weapon damage", value="right_damage")],
+            options=[discord.SelectOption(label="Weapon damage", value="right_damage")],
             row=0,
         )
-        self.field_select.callback = self.on_field
-        self.amulet_select = discord.ui.Select(
-            placeholder="Drop in a crafted amulet",
-            min_values=1,
-            max_values=1,
-            options=[discord.SelectOption(label="No amulet", value="clear")],
-            row=4,
-        )
-        self.amulet_select.callback = self.on_amulet
-        self.add_item(self.field_select)
-        self.add_item(self.amulet_select)
+        self.pick.callback = self.on_pick
+        self.add_item(self.pick)
         self.sync()
 
     def embed(self) -> discord.Embed:
-        text = statcalc.explain(self.sheet, self.field, self.baseline, self.prefix)
-        if len(text) > 4096:
-            text = text[:4093].rstrip() + "..."
-        embed = discord.Embed(title="Stat calculator", description=text, colour=0xC4A35A)
-        embed.set_author(name=statcalc.clean(self.sheet.hero_name, 64, "Hero"))
-        embed.set_footer(
-            text="Matches raid attack, raid defense, and battle health. Skills, pets, and luck are left out. Sliders last 10 minutes."
+        embed = discord.Embed(
+            title="Stat calculator",
+            description=statcalc.card(self.sheet, self.field, self.baseline),
+            colour=0xC4A35A,
         )
+        embed.set_footer(text="Changes nothing on your character. My gear reloads what you have equipped.")
         return embed
 
     def sync(self) -> None:
-        self.down_large.label, self.down_large.disabled = statcalc.control_state(self.sheet, self.field, 2, -1)
-        self.down_small.label, self.down_small.disabled = statcalc.control_state(self.sheet, self.field, 1, -1)
-        self.down_tiny.label, self.down_tiny.disabled = statcalc.control_state(self.sheet, self.field, 0, -1)
-        self.up_tiny.label, self.up_tiny.disabled = statcalc.control_state(self.sheet, self.field, 0, 1)
-        self.up_small.label, self.up_small.disabled = statcalc.control_state(self.sheet, self.field, 1, 1)
-        self.down_huge.label, self.down_huge.disabled = statcalc.control_state(self.sheet, self.field, 3, -1)
-        self.up_huge.label, self.up_huge.disabled = statcalc.control_state(self.sheet, self.field, 3, 1)
-        self.page_button.label = "Hero stats" if self.page == "weapons" else "Weapons"
-        self.load_button.label = "Load my hero" if self.target_id == self.author_id else "Reload hero"
         options = []
-        for key in statcalc.FIELD_KEYS[self.page]:
-            field = statcalc.FIELDS[key]
+        for key, label in statcalc.knobs(self.sheet):
             options.append(discord.SelectOption(
-                label=field.label[:100],
+                label=label[:100],
                 value=key,
-                description=statcalc.shown_value(self.sheet, key)[:100],
+                description=statcalc.editable_value(self.sheet, key)[:100],
                 default=key == self.field,
             ))
-        self.field_select.options = options
-        chosen = statcalc.matching_preset(self.sheet)
-        amulet_options = []
-        for value, label, description in statcalc.preset_choices():
-            amulet_options.append(discord.SelectOption(
-                label=label[:100],
-                value=value,
-                description=description[:100],
-                default=value == chosen,
-            ))
-        self.amulet_select.options = amulet_options
+        if self.field not in {key for key, _label in statcalc.knobs(self.sheet)}:
+            self.field = options[0].value
+            options[0].default = True
+        self.pick.options = options
+        small, big = statcalc.knob_steps(self.field)
+        self._set_step(self.down_big, big, -1)
+        self._set_step(self.down_small, small, -1)
+        self._set_step(self.up_small, small, 1)
+        self._set_step(self.up_big, big, 1)
+        self.my_gear.label = "My gear" if self.target_id == self.author_id else "Reload"
+
+    def _set_step(self, button: discord.ui.Button, amount, sign: int) -> None:
+        button.label = statcalc.step_label(amount, "-" if sign < 0 else "+")
+        button.disabled = not statcalc.can_move(self.sheet, self.field, amount * sign)
 
     async def refresh(self, interaction: discord.Interaction) -> None:
         self.sync()
@@ -129,7 +106,7 @@ class StatCalcView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author_id:
             await interaction.response.send_message(
-                "These sliders belong to the person who opened the calculator.",
+                "This calculator belongs to the person who opened it.",
                 ephemeral=True,
             )
             return False
@@ -145,125 +122,62 @@ class StatCalcView(discord.ui.View):
         except discord.HTTPException:
             pass
 
-    async def on_field(self, interaction: discord.Interaction):
-        chosen = self.field_select.values or (interaction.data or {}).get("values") or []
-        if not chosen or chosen[0] not in statcalc.FIELDS:
-            await interaction.response.defer()
-            return
-        self.field = chosen[0]
-        self.page = statcalc.FIELDS[self.field].page
-        await self.refresh(interaction)
-
-    async def on_amulet(self, interaction: discord.Interaction):
-        chosen = self.amulet_select.values or (interaction.data or {}).get("values") or []
+    async def on_pick(self, interaction: discord.Interaction):
+        chosen = self.pick.values or (interaction.data or {}).get("values") or []
         if not chosen:
             await interaction.response.defer()
             return
-        statcalc.apply_preset(self.sheet, chosen[0])
-        self.page = "hero"
-        self.field = "amulet_atk"
+        self.field = chosen[0]
         await self.refresh(interaction)
 
-    async def _nudge(self, interaction: discord.Interaction, index: int, sign: int):
-        field = statcalc.FIELDS[self.field]
-        statcalc.move(self.sheet, self.field, field.steps[index] * sign)
+    async def _nudge(self, interaction: discord.Interaction, which: str, sign: int):
+        small, big = statcalc.knob_steps(self.field)
+        amount = small if which == "small" else big
+        statcalc.move(self.sheet, self.field, amount * sign)
         await self.refresh(interaction)
-
-    @discord.ui.button(label="-100", style=discord.ButtonStyle.secondary, row=1)
-    async def down_large(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._nudge(interaction, 2, -1)
 
     @discord.ui.button(label="-10", style=discord.ButtonStyle.secondary, row=1)
-    async def down_small(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._nudge(interaction, 1, -1)
+    async def down_big(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._nudge(interaction, "big", -1)
 
     @discord.ui.button(label="-1", style=discord.ButtonStyle.secondary, row=1)
-    async def down_tiny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._nudge(interaction, 0, -1)
+    async def down_small(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._nudge(interaction, "small", -1)
 
     @discord.ui.button(label="+1", style=discord.ButtonStyle.primary, row=1)
-    async def up_tiny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._nudge(interaction, 0, 1)
+    async def up_small(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._nudge(interaction, "small", 1)
 
     @discord.ui.button(label="+10", style=discord.ButtonStyle.primary, row=1)
-    async def up_small(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._nudge(interaction, 1, 1)
+    async def up_big(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._nudge(interaction, "big", 1)
 
-    @discord.ui.button(label="-1k", style=discord.ButtonStyle.secondary, row=2)
-    async def down_huge(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._nudge(interaction, 3, -1)
-
-    @discord.ui.button(label="Type number", style=discord.ButtonStyle.primary, row=2)
+    @discord.ui.button(label="Type", style=discord.ButtonStyle.primary, row=1)
     async def type_number(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(SetValueModal(self))
 
-    @discord.ui.button(label="+1k", style=discord.ButtonStyle.primary, row=2)
-    async def up_huge(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._nudge(interaction, 3, 1)
-
-    @discord.ui.button(label="Undo", style=discord.ButtonStyle.secondary, row=2)
-    async def undo_field(self, interaction: discord.Interaction, button: discord.ui.Button):
-        statcalc.restore_field(self.sheet, self.baseline, self.field)
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Hero stats", style=discord.ButtonStyle.secondary, row=2)
-    async def page_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page = "hero" if self.page == "weapons" else "weapons"
-        if self.field not in statcalc.FIELD_KEYS[self.page]:
-            self.field = statcalc.FIELD_KEYS[self.page][0]
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Load my hero", style=discord.ButtonStyle.success, row=3)
-    async def load_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="My gear", style=discord.ButtonStyle.success, row=2)
+    async def my_gear(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         try:
             sheet = await self.cog.load_sheet(self.target_id, self.hero_name)
         except Exception:
             log.exception("statcalc load failed for %s", self.target_id)
-            await interaction.followup.send(
-                "Couldn't read that hero. The sliders stay where they are.",
-                ephemeral=True,
-            )
+            await interaction.followup.send("Couldn't read that hero.", ephemeral=True)
             return
         if sheet is None:
-            await interaction.followup.send(
-                "No character on that account yet. The example stays up.",
-                ephemeral=True,
-            )
+            await interaction.followup.send("No character on that account yet.", ephemeral=True)
             return
         self.sheet = sheet
         self.baseline = copy.copy(sheet)
-        self.page = "weapons"
-        self.field = "right_damage"
-        if sheet.right_damage == 0 and sheet.right_armor == 0 and (sheet.left_damage or sheet.left_armor):
-            self.field = "left_damage"
-        await self.refresh_deferred(interaction)
-
-    async def refresh_deferred(self, interaction: discord.Interaction) -> None:
+        self.field = statcalc.knobs(sheet)[0][0]
         self.sync()
         await interaction.edit_original_response(embed=self.embed(), view=self)
 
-    @discord.ui.button(label="Reset", style=discord.ButtonStyle.danger, row=3)
+    @discord.ui.button(label="Reset", style=discord.ButtonStyle.secondary, row=2)
     async def reset_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.sheet = copy.copy(self.baseline)
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Right dmg", style=discord.ButtonStyle.secondary, row=3)
-    async def jump_right(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page = "weapons"
-        self.field = "right_damage"
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Atk points", style=discord.ButtonStyle.secondary, row=3)
-    async def jump_points(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page = "hero"
-        self.field = "stat_atk"
-        await self.refresh(interaction)
-
-    @discord.ui.button(label="Amulet", style=discord.ButtonStyle.secondary, row=3)
-    async def jump_amulet(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.page = "hero"
-        self.field = "amulet_atk"
+        self.field = statcalc.knobs(self.sheet)[0][0]
         await self.refresh(interaction)
 
 
@@ -369,30 +283,20 @@ class StatCalc(commands.Cog):
     @commands.command(
         name="statcalc",
         aliases=["scalc", "statslider"],
-        brief=_("See what multiplies your raid stats"),
+        brief=_("Try weapon damage and $rs upgrades"),
     )
     @commands.cooldown(1, 10, commands.BucketType.user)
     @locale_doc
     async def statcalc(self, ctx, player: discord.User = None):
         _(
-            """Open a raid-stat calculator and move the numbers yourself.
+            """See your raid totals with a different weapon damage or $rs upgrade.
 
-            The bar in the message is the slider. The buttons move the selected
-            value, and Type number sets a weapon's damage exactly.
+            The card lists the modifiers already on the equipped gear. The menu
+            picks a weapon's damage or your $rs attack and defense. The buttons
+            move that number, and Type sets it exactly.
 
-            Stars and soulbound multiply that weapon. Class fit, race, and class
-            grade are added on. Profile multiplier, attack points, and the raid
-            hall are added into one multiplier, and that multiplier is applied to
-            all of the gear. Amulet attack and defense are added after it.
-            Health is a sum: 200, plus profile HP, plus 15 per level, plus 200 per
-            health point, plus the amulet.
-
-            `{prefix}statcalc` starts from your equipped gear.
-            `{prefix}statcalc @someone` starts from theirs. Only the person who
-            opened it can move the sliders.
-
-            Skills, pets, and luck are left out. This matches raid attack, raid
-            defense, and battle health.
+            `{prefix}statcalc` uses your gear.
+            `{prefix}statcalc @someone` uses theirs.
             """
         )
         target = player or ctx.author
@@ -408,7 +312,6 @@ class StatCalc(commands.Cog):
             target_id=target.id,
             hero_name=target.display_name,
             sheet=sheet,
-            prefix=ctx.clean_prefix,
         )
         message = await ctx.send(embed=view.embed(), view=view)
         view.message = message
