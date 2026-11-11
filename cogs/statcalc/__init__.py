@@ -6,6 +6,7 @@ damage (or a shield's armor) and the $rs attack and defense upgrades.
 from __future__ import annotations
 
 import copy
+import importlib
 import logging
 
 import discord
@@ -17,6 +18,15 @@ from utils import statcalc
 from utils.i18n import _, locale_doc
 
 log = logging.getLogger(__name__)
+
+
+def _math():
+    """Reload the math module. `$reload statcalc` only reloads this cog, so the
+    already-imported utils.statcalc would otherwise stay on the old copy."""
+    return importlib.reload(statcalc)
+
+
+_math()
 
 
 def _row_value(row, key: str, default=None):
@@ -87,7 +97,7 @@ class StatCalcView(discord.ui.View):
         if self.notice:
             text = f"{self.notice}\n{text}"
         embed = discord.Embed(title="Stat calculator", description=text[:4096], colour=0xC4A35A)
-        embed.set_footer(text="Changes nothing on your character. My gear reloads what you have equipped.")
+        embed.set_footer(text="Planning only. This does not change your gear, gold, or stats.")
         return embed
 
     def sync(self) -> None:
@@ -181,6 +191,7 @@ class StatCalcView(discord.ui.View):
 
     @discord.ui.button(label="My gear", style=discord.ButtonStyle.success, row=2)
     async def my_gear(self, interaction: discord.Interaction, button: discord.ui.Button):
+        _math()
         await interaction.response.defer()
         try:
             sheet = await self.cog.load_sheet(self.target_id, self.hero_name)
@@ -337,6 +348,7 @@ class StatCalc(commands.Cog):
                 await ctx.send(text[:1900])
 
     async def _fill_statcalc(self, ctx, pending, player):
+        _math()
         target = player or ctx.author
         notice = ""
         try:

@@ -249,6 +249,21 @@ class TestEquippedGear(unittest.TestCase):
 
 
 class TestCogSurface(unittest.TestCase):
+    def test_the_calculator_only_reads(self):
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        sources = [
+            root / "cogs" / "statcalc" / "__init__.py",
+            root / "utils" / "statcalc.py",
+        ]
+        sql = re.compile(r"\b(UPDATE|INSERT|DELETE)\s+(INTO\b|FROM\b|SET\b|PROFILE\b|ALLITEMS\b|INVENTORY\b|AMULETS\b)", re.I)
+        writes = re.compile(r"\.(execute|executemany)\s*\(", re.I)
+        for path in sources:
+            source = path.read_text(encoding="utf-8")
+            self.assertIsNone(sql.search(source), path.name)
+            self.assertIsNone(writes.search(source), path.name)
     def test_view_fits_in_one_message(self):
         import asyncio
 
