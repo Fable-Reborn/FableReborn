@@ -755,6 +755,8 @@ def apply_text(sheet: Sheet, key: str, text: str) -> str | None:
             return "Use 0, 5, 10, or shield."
         setattr(sheet, key, indexes[token])
         return None
+    if key in {"profile_atk", "profile_def"}:
+        return _apply_full_rs(sheet, key, raw)
     if field.kind == "mult":
         raw = raw.lower().strip("x")
     try:
@@ -770,6 +772,35 @@ def apply_text(sheet: Sheet, key: str, text: str) -> str | None:
         number = int(number)
     setattr(sheet, key, number)
     return None
+
+
+def _apply_full_rs(sheet: Sheet, key: str, raw: str) -> str | None:
+    """The typed number is the multiplier `$rs` shows, including stat points and the raid hall."""
+    raw = raw.lower().strip().lstrip("x").rstrip("x")
+    try:
+        number = D(raw)
+    except (InvalidOperation, ValueError):
+        return "Enter a number."
+    if not number.is_finite():
+        return "Enter a finite number."
+    number = number.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    points = sheet.stat_atk if key == "profile_atk" else sheet.stat_def
+    extra = D(points) * STAT_ATTACK_DEFENSE_PER_POINT + D(sheet.city) * CITY_STEP
+    field = FIELDS[key]
+    setattr(sheet, key, clamp(number - extra, field.minimum, field.maximum))
+    return None
+
+
+def full_multiplier(sheet: Sheet, key: str) -> Decimal:
+    """The attack or defense multiplier `$rs` shows: profile upgrade + stat points + raid hall."""
+    points = sheet.stat_atk if key == "profile_atk" else sheet.stat_def
+    return D(getattr(sheet, key)) + D(points) * STAT_ATTACK_DEFENSE_PER_POINT + D(sheet.city) * CITY_STEP
+
+
+def knob_text(sheet: Sheet, key: str) -> str:
+    if key in {"profile_atk", "profile_def"}:
+        return fmt_mult(full_multiplier(sheet, key))
+    return editable_value(sheet, key)
 
 
 def apply_preset(sheet: Sheet, token: str) -> None:
@@ -937,9 +968,9 @@ def card(sheet: Sheet, active: str = "right_damage", baseline: Sheet | None = No
         lines.append("Example gear. **My gear** loads yours.")
     elif sheet.origin == "missing":
         lines.append(f"No character for {clean(sheet.hero_name, 32, 'them')}. Example numbers.")
-    lines.append(f"**Attack** {whole(result.raid_attack)}")
-    lines.append(f"**Defense** {whole(result.raid_defense)}")
-    lines.append(f"**Health** {whole(result.health)}")
+    lines.append(f"**Attack** {fmt(result.raid_attack)}")
+    lines.append(f"**Defense** {fmt(result.raid_defense)}")
+    lines.append(f"**Health** {fmt(result.health)}")
     hint = _hint(sheet, result, active)
     if hint:
         lines.append(hint)
@@ -951,7 +982,7 @@ def card(sheet: Sheet, active: str = "right_damage", baseline: Sheet | None = No
             or previous.health != result.health
         ):
             lines.append(
-                f"Was {whole(previous.raid_attack)} attack, {whole(previous.raid_defense)} defense, {whole(previous.health)} hp"
+                f"Was {fmt(previous.raid_attack)} attack, {fmt(previous.raid_defense)} defense, {fmt(previous.health)} hp"
             )
     lines.append("")
     lines.append("**Weapons**")
@@ -961,5 +992,5 @@ def card(sheet: Sheet, active: str = "right_damage", baseline: Sheet | None = No
     lines.append("**On you**")
     lines.extend(_modifier_lines(sheet) or ["No extra modifiers"])
     lines.append("")
-    lines.append(f"**$rs** ×{fmt_mult(sheet.profile_atk)} attack · ×{fmt_mult(sheet.profile_def)} defense")
+    lines.append(f"**$rs** ×{fmt_mult(result.attack_multiplier)} attack · ×{fmt_mult(result.defense_multiplier)} defense")
     return "\n".join(lines)

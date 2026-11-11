@@ -19,6 +19,21 @@ from utils.i18n import _, locale_doc
 log = logging.getLogger(__name__)
 
 
+def _row_value(row, key: str, default=None):
+    try:
+        value = row[key]
+    except (KeyError, IndexError, TypeError):
+        return default
+    return default if value is None else value
+
+
+def _row_id(row) -> int:
+    try:
+        return int(row["id"])
+    except (KeyError, TypeError, ValueError):
+        return 0
+
+
 class SetValueModal(discord.ui.Modal):
     def __init__(self, view: "StatCalcView"):
         label = dict(statcalc.knobs(view.sheet)).get(view.field, "Value")
@@ -26,8 +41,8 @@ class SetValueModal(discord.ui.Modal):
         self.view = view
         self.entry = discord.ui.TextInput(
             label=label[:45],
-            default=statcalc.editable_value(view.sheet, view.field)[:400],
-            max_length=20,
+            default=statcalc.knob_text(view.sheet, view.field)[:400],
+            max_length=32,
             required=True,
         )
         self.add_item(self.entry)
@@ -45,7 +60,7 @@ class SetValueModal(discord.ui.Modal):
 
 
 class StatCalcView(discord.ui.View):
-    def __init__(self, cog, author_id: int, target_id: int, hero_name: str, sheet: statcalc.Sheet):
+    def __init__(self, cog, author_id: int, target_id: int, hero_name: str, sheet: statcalc.Sheet, notice: str = ""):
         super().__init__(timeout=600)
         self.cog = cog
         self.author_id = author_id
@@ -53,6 +68,7 @@ class StatCalcView(discord.ui.View):
         self.hero_name = hero_name
         self.sheet = sheet
         self.baseline = copy.copy(sheet)
+        self.notice = notice
         self.field = statcalc.knobs(sheet)[0][0]
         self.message: discord.Message | None = None
         self.pick = discord.ui.Select(
@@ -67,11 +83,10 @@ class StatCalcView(discord.ui.View):
         self.sync()
 
     def embed(self) -> discord.Embed:
-        embed = discord.Embed(
-            title="Stat calculator",
-            description=statcalc.card(self.sheet, self.field, self.baseline),
-            colour=0xC4A35A,
-        )
+        text = statcalc.card(self.sheet, self.field, self.baseline)
+        if self.notice:
+            text = f"{self.notice}\n{text}"
+        embed = discord.Embed(title="Stat calculator", description=text[:4096], colour=0xC4A35A)
         embed.set_footer(text="Changes nothing on your character. My gear reloads what you have equipped.")
         return embed
 
@@ -81,7 +96,7 @@ class StatCalcView(discord.ui.View):
             options.append(discord.SelectOption(
                 label=label[:100],
                 value=key,
-                description=statcalc.editable_value(self.sheet, key)[:100],
+                description=statcalc.knob_text(self.sheet, key)[:100],
                 default=key == self.field,
             ))
         if self.field not in {key for key, _label in statcalc.knobs(self.sheet)}:
@@ -131,10 +146,18 @@ class StatCalcView(discord.ui.View):
         await self.refresh(interaction)
 
     async def _nudge(self, interaction: discord.Interaction, which: str, sign: int):
-        small, big = statcalc.knob_steps(self.field)
-        amount = small if which == "small" else big
-        statcalc.move(self.sheet, self.field, amount * sign)
-        await self.refresh(interaction)
+        try:
+            small, big = statcalc.knob_steps(self.field)
+            amount = small if which == "small" else big
+            statcalc.move(self.sheet, self.field, amount * sign)
+            await self.refresh(interaction)
+        except Exception as exc:
+            log.exception("statcalc update failed")
+            message = f"Couldn't update that. {type(exc).__name__}: {exc}"
+            if interaction.response.is_done():
+                await interaction.followup.send(message[:180], ephemeral=True)
+            else:
+                await interaction.response.send_message(message[:180], ephemeral=True)
 
     @discord.ui.button(label="-10", style=discord.ButtonStyle.secondary, row=1)
     async def down_big(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -249,18 +272,14 @@ class StatCalc(commands.Cog):
             classes = [classes]
         prepared = []
         for item in items:
-            try:
-                item_id = int(item["id"])
-            except (KeyError, TypeError, ValueError):
-                item_id = 0
             prepared.append({
-                "name": item["name"] if "name" in item else "",
-                "type": item["type"] if "type" in item else "",
-                "hand": item["hand"] if "hand" in item else "any",
-                "damage": item["damage"] if "damage" in item else 0,
-                "armor": item["armor"] if "armor" in item else 0,
-                "stars": star_map.get(item_id, 0),
-                "soul": soul_level if item_id == soul_item else 0,
+                "name": _row_value(item, "name", ""),
+                "type": _row_value(item, "type", ""),
+                "hand": _row_value(item, "hand", "any"),
+                "damage": _row_value(item, "damage", 0),
+                "armor": _row_value(item, "armor", 0),
+                "stars": star_map.get(_row_id(item), 0),
+                "soul": soul_level if _row_id(item) == soul_item else 0,
             })
         return statcalc.sheet_from_equipped(
             hero_name=hero_name,
@@ -300,7 +319,13 @@ class StatCalc(commands.Cog):
             """
         )
         target = player or ctx.author
-        sheet = await self.load_sheet(target.id, target.display_name)
+        notice = ""
+        try:
+            sheet = await self.load_sheet(target.id, target.display_name)
+        except Exception as exc:
+            log.exception("statcalc failed for %s", target.id)
+            sheet = None
+            notice = f"Couldn't read that gear ({type(exc).__name__}). Showing an example."
         if sheet is None:
             sheet = statcalc.example_sheet()
             if player is not None:
@@ -312,6 +337,7 @@ class StatCalc(commands.Cog):
             target_id=target.id,
             hero_name=target.display_name,
             sheet=sheet,
+            notice=notice,
         )
         message = await ctx.send(embed=view.embed(), view=view)
         view.message = message

@@ -73,9 +73,11 @@ class TestStatMath(unittest.TestCase):
             ["right_damage", "left_armor", "profile_atk", "profile_def"],
         )
         text = statcalc.card(sheet, "profile_atk")
-        self.assertIn("Elf", text)
-        self.assertIn("One $rs attack upgrade", text)
+        self.assertIn("×2.10", text)
+        self.assertIn("**Attack** 589.74", text)
         self.assertLess(len(text), 1200)
+        self.assertIsNone(statcalc.apply_text(sheet, "profile_atk", "3.10"))
+        self.assertEqual(statcalc.full_multiplier(sheet, "profile_atk"), Decimal("3.10"))
 
     def test_health_ignores_the_attack_multiplier(self):
         sheet = statcalc.example_sheet()
