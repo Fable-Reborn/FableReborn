@@ -318,17 +318,36 @@ class StatCalc(commands.Cog):
             `{prefix}statcalc @someone` uses theirs.
             """
         )
+        # Answer before any database or card work. A later crash used to leave
+        # the chat empty, because the bot's error handler does not reply.
+        try:
+            pending = await ctx.send("Stat calculator…")
+        except discord.HTTPException as exc:
+            log.exception("statcalc could not send")
+            return await ctx.send(f"Stat calculator could not post here ({exc.status}).")
+
+        try:
+            await self._fill_statcalc(ctx, pending, player)
+        except Exception as exc:
+            log.exception("statcalc failed")
+            text = f"Stat calculator failed: {type(exc).__name__}: {exc}"
+            try:
+                await pending.edit(content=text[:1900], embed=None, view=None)
+            except discord.HTTPException:
+                await ctx.send(text[:1900])
+
+    async def _fill_statcalc(self, ctx, pending, player):
         target = player or ctx.author
         notice = ""
         try:
             sheet = await self.load_sheet(target.id, target.display_name)
         except Exception as exc:
-            log.exception("statcalc failed for %s", target.id)
+            log.exception("statcalc load failed for %s", target.id)
             sheet = None
             notice = f"Couldn't read that gear ({type(exc).__name__}). Showing an example."
         if sheet is None:
             sheet = statcalc.example_sheet()
-            if player is not None:
+            if player is not None or notice:
                 sheet.origin = "missing"
                 sheet.hero_name = statcalc.clean(target.display_name, 32, "Hero")
         view = StatCalcView(
@@ -339,8 +358,24 @@ class StatCalc(commands.Cog):
             sheet=sheet,
             notice=notice,
         )
-        message = await ctx.send(embed=view.embed(), view=view)
-        view.message = message
+        embed = view.embed()
+        try:
+            await pending.edit(content=None, embed=embed, view=view)
+        except discord.HTTPException:
+            log.exception("statcalc card was rejected")
+            await pending.edit(content=embed.description[:1900], embed=None, view=None)
+            return
+        view.message = pending
+
+    @statcalc.error
+    async def statcalc_error(self, ctx, error):
+        original = getattr(error, "original", error)
+        log.exception("statcalc command error", exc_info=original)
+        text = f"Stat calculator failed: {type(original).__name__}: {original}"
+        try:
+            await ctx.send(text[:1900])
+        except discord.HTTPException:
+            log.exception("statcalc error reply failed")
 
 
 async def setup(bot):

@@ -155,7 +155,13 @@ def clamp(value: Decimal, low: Decimal, high: Decimal) -> Decimal:
 
 
 def fmt(number) -> str:
-    quantized = D(number).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    try:
+        value = D(number)
+        if not value.is_finite():
+            return "0"
+        quantized = value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError, ArithmeticError):
+        return "0"
     text = f"{quantized:,.2f}"
     if text.endswith(".00"):
         return text[:-3]
