@@ -37,12 +37,12 @@ class GearBattleMechanicsTests(ElementProcTestCase):
 
     def test_turn_based_modes_share_the_armor_resolver(self):
         for filename, needle in RESOLVER_BATTLES.items():
-            source = (TYPES / filename).read_text()
+            source = (TYPES / filename).read_text(encoding="utf-8")
             self.assertIn(needle, source, filename)
-        self.assertIn("RaidBattle.process_turn", (TYPES / "city_war.py").read_text())
-        self.assertIn("class OmnithroneSealBattle(PvEBattle)", (TYPES / "omnithrone.py").read_text())
-        self.assertIn("class GauntletBattle(TeamBattle)", (TYPES / "gauntlet.py").read_text())
-        self.assertIn("class FreeForAllBattle(TeamBattle)", (TYPES / "ffa.py").read_text())
+        self.assertIn("RaidBattle.process_turn", (TYPES / "city_war.py").read_text(encoding="utf-8"))
+        self.assertIn("class OmnithroneSealBattle(PvEBattle)", (TYPES / "omnithrone.py").read_text(encoding="utf-8"))
+        self.assertIn("class GauntletBattle(TeamBattle)", (TYPES / "gauntlet.py").read_text(encoding="utf-8"))
+        self.assertIn("class FreeForAllBattle(TeamBattle)", (TYPES / "ffa.py").read_text(encoding="utf-8"))
 
     def test_sunder_lowers_armor_before_the_hit_and_the_reflection_base(self):
         attacker = self.player(1, damage=5000, armor=100, gear_penetration=Decimal("0.55"))
@@ -92,10 +92,10 @@ class GearBattleMechanicsTests(ElementProcTestCase):
         self.assertEqual(150, health + health)
 
     def test_modes_that_keep_their_own_math_do_not_call_the_resolver(self):
-        pvp = (TYPES / "pvp.py").read_text()
-        brawl = (TYPES / "brawl.py").read_text()
-        adventure = (ROOT / "cogs" / "adventure" / "__init__.py").read_text()
-        raid = (ROOT / "cogs" / "raid" / "__init__.py").read_text()
+        pvp = (TYPES / "pvp.py").read_text(encoding="utf-8")
+        brawl = (TYPES / "brawl.py").read_text(encoding="utf-8")
+        adventure = (ROOT / "cogs" / "adventure" / "__init__.py").read_text(encoding="utf-8")
+        raid = (ROOT / "cogs" / "raid" / "__init__.py").read_text(encoding="utf-8")
         self.assertNotIn("resolve_pet_attack_outcome(", pvp)
         self.assertNotIn("resolve_pet_attack_outcome(", brawl)
         self.assertNotIn("include_equipment=True", adventure)

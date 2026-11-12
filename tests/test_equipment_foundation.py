@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from decimal import Decimal
 from pathlib import Path
@@ -447,9 +448,10 @@ class ArmoryCardTests(unittest.TestCase):
         self.assertEqual([(176, 120, 255)], colors)
 
     def test_preview_image_can_be_written(self):
-        path = Path("/tmp/fable-armory-preview.png")
-        path.write_bytes(render_armory(preview_loadout(), title="Armory preview"))
-        self.assertGreater(path.stat().st_size, 1000)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "fable-armory-preview.png"
+            path.write_bytes(render_armory(preview_loadout(), title="Armory preview"))
+            self.assertGreater(path.stat().st_size, 1000)
 
 
 class ForgeTests(unittest.TestCase):

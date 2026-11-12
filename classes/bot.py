@@ -233,7 +233,7 @@ class Bot(commands.AutoShardedBot):
 
         # config.toml's cogs, plus the extra ones listed in utils/boot_cogs.py (EXTRA_COGS) that it doesn't name.
         extensions = boot_cogs.with_extras(self.config.bot.initial_extensions)
-        # Armory commands stay inert unless the connected database is FableDev.
+        # The armory stays closed until a GM runs `$gear switch on`.
         if "cogs.equipment" not in extensions:
             extensions.append("cogs.equipment")
         for extension in extensions:
