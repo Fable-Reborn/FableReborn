@@ -5576,6 +5576,17 @@ class Raid(commands.Cog):
 
                     async with self.bot.pool.acquire() as conn:
                         dmg, defff = await self.bot.get_raidstats(target_player, conn=conn)
+                        armor_hp = 0
+                        if getattr(self.bot, "equipment_combat_enabled", False):
+                            try:
+                                from classes.equipment.repository import equipped_vitality
+
+                                armor_hp = await equipped_vitality(conn, target_player.id)
+                            except Exception:
+                                armor_hp = 0
+                    health_line = f"**Player's Health:** {int(hp)}"
+                    if armor_hp:
+                        health_line += f" (+{int(armor_hp)} from armor in turn-based battles)"
 
                     # Sanitize atk and deff to prevent negative multipliers
                     atk = max(float(atk), 0)
@@ -5591,9 +5602,9 @@ class Raid(commands.Cog):
                             f"**Upgrading:** ${int(hpprice)}\n\n"  # Removed decimal
                             f"**Defense Multiplier:** x{deff}\n"
                             f"**Upgrading:** ${int(deffp)}\n\n"  # Removed decimal
-                            f"**Player's Damage:** {dmg}\n"
-                            f"**Player's Defense:** {defff}\n"
-                            f"**Player's Health:** {hp}"
+                            f"**Player's Damage:** {self._format_raid_number(dmg)}\n"
+                            f"**Player's Defense:** {self._format_raid_number(defff)}\n"
+                            f"{health_line}"
                         ),
                         color=0x00ff00,  # You can change the color code as needed
                     )
@@ -5815,9 +5826,9 @@ class Raid(commands.Cog):
                 embed.add_field(
                     name="📈 **Player's Stats**",
                     value=(
-                        f"**Damage:** {data['dmg']}\n"
-                        f"**Defense:** {data['defff']}\n"
-                        f"**Health:** {data['hp']}"
+                        f"**Damage:** {Raid._format_raid_number(data['dmg'])}\n"
+                        f"**Defense:** {Raid._format_raid_number(data['defff'])}\n"
+                        f"**Health:** {int(data['hp'])}"
                     ),
                     inline=False
                 )

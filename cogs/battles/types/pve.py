@@ -760,6 +760,34 @@ class PvEBattle(Battle):
                     victory_message += pet_line
                 elif pet_battle_result.get("reason") == "daily_cap_reached":
                     victory_message += "\n🐾 **Pet XP:** Daily battle XP cap already reached today."
+
+            if getattr(self.ctx.bot, "equipment_combat_enabled", False):
+                player = next(
+                    (
+                        combatant
+                        for combatant in self.player_team.combatants
+                        if not getattr(combatant, "is_pet", False)
+                        and hasattr(getattr(combatant, "user", None), "id")
+                    ),
+                    None,
+                )
+                monster = self.monster_team.combatants[0] if self.monster_team.combatants else None
+                if player is not None and monster is not None:
+                    try:
+                        from classes.equipment.attunement import attunement_message
+                        from classes.equipment.repository import attune_worn
+
+                        async with self.ctx.bot.pool.acquire() as conn:
+                            decision = await attune_worn(
+                                conn,
+                                player.user.id,
+                                getattr(monster, "max_hp", 0),
+                                getattr(player, "max_hp", 0),
+                            )
+                        for item in (decision or {}).get("pieces") or ([] if not decision else [decision]):
+                            victory_message += "\n" + attunement_message(item)
+                    except Exception:
+                        pass
             
             await self.send_with_retry(content=victory_message)
             

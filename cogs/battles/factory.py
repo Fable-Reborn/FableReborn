@@ -991,6 +991,13 @@ class BattleFactory:
             amulet = await conn.fetchrow('SELECT hp FROM amulets WHERE user_id=$1 AND equipped=true', player.id)
             if amulet:
                 total_health += amulet['hp']
+
+            if getattr(ctx.bot, "equipment_combat_enabled", False):
+                try:
+                    from classes.equipment.repository import equipped_vitality
+                    total_health += await equipped_vitality(conn, player.id)
+                except Exception:
+                    pass
             
             # Get damage and armor
             dmg, deff = await ctx.bot.get_raidstats(player, conn=conn)
@@ -1105,6 +1112,16 @@ class BattleFactory:
             )
             # Library elixirs the player drank (still working): HP, damage and shields now, the rest in battle.
             elixirs.apply_to_combatant(combatant, await elixirs.load_effects(conn, player.id))
+            if getattr(ctx.bot, "equipment_combat_enabled", False):
+                try:
+                    from classes.equipment.repository import equipped_offense
+
+                    penetration, chance, bypass = await equipped_offense(conn, player.id)
+                    combatant.gear_penetration = penetration
+                    combatant.gear_breakthrough_chance = chance
+                    combatant.gear_breakthrough_bypass = bypass
+                except Exception:
+                    pass
             return combatant
 
     async def _load_element_proc_state(self, conn, user_id, equipped_items):

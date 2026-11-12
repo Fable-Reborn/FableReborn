@@ -629,7 +629,6 @@ class RaidBattle(Battle):
                             'UPDATE profile SET "pvpwins"="pvpwins"+1 WHERE "user"=$1;',
                             winner_id,
                         )
-                    
                     # Handle money rewards if there's money involved
                     if self.money > 0:
                         for winner_id in winner_ids:

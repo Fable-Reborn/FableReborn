@@ -36,6 +36,7 @@ class UnlockRule:
             "money": f"Hold ${self.target:,} on your character",
             "pet_count": f"Own {self.target} pet{'s' if self.target != 1 else ''}",
             "pet_trust": f"Have a pet with {self.target}% trust",
+            "temper": f"Temper a piece of armor to +{self.target} at Thorne's Anvil",
         }[self.stat]
 
     def met(self, facts):
@@ -231,6 +232,7 @@ RULES = {
     "good": UnlockRule("free"),
     "forest": UnlockRule("free"),
     "frost": UnlockRule("free"),
+    "thornesanvil": UnlockRule("temper", 7),
     **{key: drop.unlock for key, drop in COLLECTIBLE_THEMES.items()},
     **{theme.key: UnlockRule("event", flag=theme.unlock_flag) for theme in EVENT_THEMES},
     **FABLE_RULES,
@@ -382,22 +384,28 @@ async def _claim_locked(conn, user_id):
         fable_unlocks = [row["unlock_key"] for row in await conn.fetch(
             'SELECT unlock_key FROM tiamat_unlocks WHERE user_id = $1;', user_id)]
     facts["fable_unlocks"] = frozenset(fable_unlocks)
+    # The equipment_items table belongs to the Equipment cog and may not exist yet.
+    facts["temper"] = 0
+    if await conn.fetchval("SELECT to_regclass('equipment_items') IS NOT NULL;"):
+        facts["temper"] = await conn.fetchval(
+            'SELECT COALESCE(MAX(refinement), 0) FROM equipment_items WHERE owner_id = $1;', user_id,
+        )
     rows = await conn.fetch('SELECT theme_key FROM profile_theme_unlocks WHERE user_id = $1;', user_id)
     owned = {row["theme_key"] for row in rows if row["theme_key"] in THEMES} | {"classic"}
     # Only auto-claim free (starter) themes; collectible themes come from drops.
     new = tuple(key for key, rule in RULES.items() if key not in owned and key not in COLLECTIBLE_THEMES and rule.met(facts))
-    starters = [key for key in new if RULES[key].stat not in ("event", "story", "unlock")]
+    starters = [key for key in new if RULES[key].stat not in ("event", "story", "unlock", "temper")]
     if starters:
         await conn.executemany(
             'INSERT INTO profile_theme_unlocks (user_id, theme_key) VALUES ($1, $2) ON CONFLICT (user_id, theme_key) DO NOTHING;',
             [(user_id, key) for key in starters],
         )
-    sources = {"event": "event-flag", "story": "story", "unlock": "fable"}
+    sources = {"event": "event-flag", "story": "story", "unlock": "fable", "temper": "forge"}
     flagged = [key for key in new if RULES[key].stat in sources]
     if flagged:
         await conn.executemany(
             'INSERT INTO profile_theme_unlocks (user_id, theme_key, source) VALUES ($1, $2, $3) ON CONFLICT (user_id, theme_key) DO NOTHING;',
-            [(user_id, key, f"{sources[RULES[key].stat]}:{RULES[key].flag}") for key in flagged],
+            [(user_id, key, f"{sources[RULES[key].stat]}:{RULES[key].flag or RULES[key].target}") for key in flagged],
         )
     owned.update(new)
     current = resolve_theme(profile["prpg_theme"])

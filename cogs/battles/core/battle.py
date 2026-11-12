@@ -35,6 +35,7 @@ from .ascension import AscensionCombat
 from classes import breathcaller, dragonkin, penitent
 from utils import elixirs
 from ..extensions.element_procs import ElementProcExtension
+from classes.equipment.offense import resolve_effective_armor
 from classes.warrior import (
     WARRIOR_MOMENTUM_CAP,
     WARRIOR_SPLASH_RATIO,
@@ -451,6 +452,12 @@ class Battle(AscensionCombat, ABC):
 
         return combatant
     
+    def _hp_bars_are_text_only(self) -> bool:
+        """Development battles use the block bar. The emoji tiles do not render there."""
+        database = getattr(getattr(getattr(self, "ctx", None), "bot", None), "config", None)
+        database = getattr(getattr(database, "database", None), "postgres_name", "")
+        return str(database) == "FableDev"
+
     def is_friendly_combatant(self, combatant):
         """Return whether a combatant belongs to the viewer-friendly side."""
         return getattr(combatant, "_battle_team_index", None) in self.friendly_team_indices
@@ -513,6 +520,11 @@ class Battle(AscensionCombat, ABC):
         # bar is never an option there no matter what the viewer picked.
         if self.HP_BAR_FORCE_TEAM_COLORS and style == self.HP_BAR_STYLE_NORMAL:
             style = self.HP_BAR_STYLE_TEAM
+
+        # The colored tiles are custom emoji. On the development bot those
+        # emoji are not available, so Discord prints the names as text.
+        if self._hp_bars_are_text_only():
+            style = self.HP_BAR_STYLE_NORMAL
 
         if style == self.HP_BAR_STYLE_NORMAL:
             safe_length = max(1, int(length or 20))
@@ -2356,6 +2368,21 @@ class Battle(AscensionCombat, ABC):
         bypass_defenses = getattr(defender, "bypass_defenses", False)
         ignore_all = getattr(defender, "ignore_all_defenses", False)
         partial_true_damage = Decimal(str(getattr(defender, "partial_true_damage", 0)))
+        armor_resolution = None
+        skips_armor = ignore_all or true_damage or ignore_armor or bypass_defenses
+        if raw_damage > 0 and not skips_armor:
+            armor_resolution = resolve_effective_armor(
+                raw_damage,
+                defender_armor,
+                getattr(attacker, "gear_penetration", 0),
+                getattr(attacker, "gear_breakthrough_chance", 0),
+                getattr(attacker, "gear_breakthrough_bypass", 0),
+                random,
+            )
+            defender_armor = armor_resolution.armor
+            if armor_resolution.breakthrough:
+                attacker_name = getattr(attacker, "name", None) or "The attack"
+                skill_messages.append(f"{attacker_name} breaks through the armor.")
 
         if raw_damage <= 0:
             final_damage = partial_true_damage
@@ -2424,6 +2451,7 @@ class Battle(AscensionCombat, ABC):
                 "raw_damage_after_mods": raw_damage_after_mods,
                 "ignore_reflection_this_hit": ignore_reflection_this_hit,
                 "partial_true_damage": partial_true_damage,
+                "breakthrough": bool(armor_resolution and armor_resolution.breakthrough),
             },
         )
 

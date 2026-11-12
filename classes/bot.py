@@ -63,6 +63,8 @@ from classes.endgame import (
     apply_item_progression_bonus,
     soulbound_level_from_xp,
 )
+from classes.equipment.repository import equipped_combat_bonus
+from classes.equipment.stats import apply_component_bonus
 from classes.enums import DonatorRank
 from classes.exceptions import GlobalCooldown
 from classes.http import ProxiedClientSession
@@ -231,6 +233,9 @@ class Bot(commands.AutoShardedBot):
 
         # config.toml's cogs, plus the extra ones listed in utils/boot_cogs.py (EXTRA_COGS) that it doesn't name.
         extensions = boot_cogs.with_extras(self.config.bot.initial_extensions)
+        # Armory commands stay inert unless the connected database is FableDev.
+        if "cogs.equipment" not in extensions:
+            extensions.append("cogs.equipment")
         for extension in extensions:
             try:
                 await self.load_extension(extension)
@@ -341,7 +346,7 @@ class Bot(commands.AutoShardedBot):
             if god is not None and god != user_god:
                 raise ValueError()
         damage, armor = await self.get_damage_armor_for(
-            v, classes=classes, race=race, conn=conn
+            v, classes=classes, race=race, conn=conn, include_equipment=True
         )
         profile_attack_multiplier = atkmultiply
         profile_defense_multiplier = defmultiply
@@ -448,7 +453,7 @@ class Bot(commands.AutoShardedBot):
             if god is not None and god != user_god:
                 raise ValueError()
         damage, armor = await self.get_damage_armor_for(
-            v, classes=classes, race=race, conn=conn
+            v, classes=classes, race=race, conn=conn, include_equipment=True
         )
         if buildings := await self.get_city_buildings(guild, conn=conn):
             atkmultiply += buildings["raid_building"] * Decimal("0.1")
@@ -1390,7 +1395,7 @@ class Bot(commands.AutoShardedBot):
         return effective_tier
 
     async def get_damage_armor_for(
-        self, user, items=None, classes=None, race=None, conn=None
+        self, user, items=None, classes=None, race=None, conn=None, include_equipment=False
     ):
         user = self._coerce_user_id(user)
         if conn is None:
@@ -1457,11 +1462,25 @@ class Bot(commands.AutoShardedBot):
                 soulbound_item_id = None
                 soulbound_level = 0
 
+        gear_pct = Decimal("0")
+        gear_armor = Decimal("0")
+        if include_equipment and getattr(self, "equipment_combat_enabled", False):
+            try:
+                gear_pct, gear_armor = await equipped_combat_bonus(conn, user)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Equipment bonus skipped for user %s", user
+                )
+                gear_pct = Decimal("0")
+                gear_armor = Decimal("0")
+
         if local:
             await self.pool.release(conn)
 
-        damage = 0
+        weapon_damage = 0
         armor = 0
+        bonus_damage = 0
+        bonus_armor = 0
 
         classes = [i for c in classes if (i := class_from_string(c))]
         is_paragon = any(c.in_class_line(Paragon) for c in classes)
@@ -1490,61 +1509,68 @@ class Bot(commands.AutoShardedBot):
                 stars=star_map.get(item_id, 0),
                 soulbound_level=item_soulbound_level,
             )
-            damage += item_damage
+            weapon_damage += item_damage
             armor += item_armor
 
             type_ = ItemType.from_string(item["type"])
             if type_ == ItemType.Spear and (is_paragon or is_beastmaster):
-                damage += 5
+                bonus_damage += 5
             elif (type_ == ItemType.Dagger or type_ == ItemType.Knife) and (
                 is_thief or is_bard
             ):
-                damage += 5
+                bonus_damage += 5
             elif type_ == ItemType.Sword and (is_warrior or is_penitent):
-                damage += 5
+                bonus_damage += 5
             elif type_ == ItemType.Bow and is_ranger:
-                damage += 10
+                bonus_damage += 10
             elif type_ == ItemType.Wand and is_caster:
-                damage += 5
+                bonus_damage += 5
             elif type_ == ItemType.Axe and is_raider:
-                damage += 5
+                bonus_damage += 5
             elif type_ == ItemType.Hammer and is_paladin:
-                damage += 5
+                bonus_damage += 5
             elif type_ == ItemType.Scythe and is_reaper:
-                damage += 10
+                bonus_damage += 10
             elif type_ == ItemType.Mace and is_santas_helper:
-                damage += 5
+                bonus_damage += 5
             elif type_ == ItemType.Shield and is_tank:
-                armor += 7
+                bonus_armor += 7
 
         lines = [class_.get_class_line() for class_ in classes]
         grades = [class_.class_grade() for class_ in classes]
         for line, grade in zip(lines, grades):
             if line == Mage:
-                damage += grade
+                bonus_damage += grade
             if line == Paragon:
-                damage += grade
-                armor += grade
+                bonus_damage += grade
+                bonus_armor += grade
         if race in ("Human", "Dragonkin"):
-            damage += 2
-            armor += 2
+            bonus_damage += 2
+            bonus_armor += 2
         elif race == "Dwarf":
-            damage += 1
-            armor += 3
+            bonus_damage += 1
+            bonus_armor += 3
         elif race == "Elf":
-            damage += 3
-            armor += 1
+            bonus_damage += 3
+            bonus_armor += 1
         elif race == "Orc":
-            armor += 4
+            bonus_armor += 4
         elif race == "Jikill":
-            damage += 4
+            bonus_damage += 4
         elif race == "Djinn":
-            damage += 5
-            armor += -1
+            bonus_damage += 5
+            bonus_armor += -1
         elif race == "Shadeborn":
-            damage += -1
-            armor += 5
-        return damage, armor
+            bonus_damage += -1
+            bonus_armor += 5
+        return apply_component_bonus(
+            weapon_damage,
+            armor,
+            bonus_damage,
+            bonus_armor,
+            gear_pct,
+            gear_armor,
+        )
 
     async def log_transaction(self, ctx, from_, to, subject, data, conn=None):
         """Logs a transaction."""

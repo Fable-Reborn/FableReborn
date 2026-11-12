@@ -196,7 +196,7 @@ class SubcommandMenu(View):
             value="\n".join(
                 [
                     f"{self.group_emoji if isinstance(c, commands.Group) else self.command_emoji}"
-                    f" `{self.ctx.clean_prefix}{c.qualified_name}` - {_(c.brief)}"
+                    f" `{self.ctx.clean_prefix}{c.qualified_name}` - {_(c.brief) if c.brief else _('No brief help available')}"
                     for c in cmds
                 ]
             ),
@@ -229,12 +229,15 @@ class SubcommandMenu(View):
         else:
             self.message = await ctx.send(embed=e)
 
-    async def update(self) -> None:
+    async def update(self, interaction: discord.Interaction | None = None) -> None:
         start = (self.page - 1) * self.per_page
         end = self.page * self.per_page
         items = self.cmds[start:end]
         e = self.embed(items)
-        await self.message.edit(embed=e)
+        if interaction is not None and not interaction.response.is_done():
+            await interaction.response.edit_message(embed=e, view=self)
+        else:
+            await self.message.edit(embed=e)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if self.ctx.author.id == interaction.user.id:
@@ -255,7 +258,9 @@ class SubcommandMenu(View):
     async def on_previous_page(self, interaction: Interaction, button: Button) -> None:
         if self.page != 1:
             self.page -= 1
-            await self.update()
+            await self.update(interaction)
+        else:
+            await interaction.response.defer()
 
     @button(
         label="Stop",
@@ -263,6 +268,7 @@ class SubcommandMenu(View):
         emoji="\N{BLACK SQUARE FOR STOP}\ufe0f",
     )
     async def on_stop(self, interaction: Interaction, button: Button) -> None:
+        await interaction.response.defer()
         self.cleanup()
         self.stop()
 
@@ -272,9 +278,11 @@ class SubcommandMenu(View):
         emoji="\N{BLACK RIGHT-POINTING TRIANGLE}\ufe0f",
     )
     async def on_next_page(self, interaction: Interaction, button: Button) -> None:
-        if len(self.cmds) >= (self.page * self.per_page):
+        if len(self.cmds) > (self.page * self.per_page):
             self.page += 1
-            await self.update()
+            await self.update(interaction)
+        else:
+            await interaction.response.defer()
 
 
 class GuidebookSectionSelect(discord.ui.Select):
@@ -3620,6 +3628,64 @@ class Help(commands.Cog):
                     ],
                 },
                 {
+                    "label": "Armor & Gear",
+                    "summary": "Armor, smithing goods, crafting, refinement, and the gear shop.",
+                    "emoji": "🛡️",
+                    "pages": [
+                        {
+                            "title": "Wearing and browsing",
+                            "description": "Helm, cuirass, greaves, and sabatons are separate from weapons. Equipping a piece does not bind it.",
+                            "fields": [
+                                {
+                                    "name": "Commands",
+                                    "value": (
+                                        f"• `{prefix}gear` shows the armor you are wearing\n"
+                                        f"• `{prefix}armory` then **Gear** lists the pieces you own\n"
+                                        f"• `{prefix}gear info <id>` opens one piece\n"
+                                        f"• `{prefix}gear equip <id>` and `{prefix}gear unequip`"
+                                    ),
+                                    "inline": False,
+                                }
+                            ],
+                        },
+                        {
+                            "title": "Materials and crafting",
+                            "description": "Each armor line has rough, worked, and relic goods. You can only craft patterns you have discovered.",
+                            "fields": [
+                                {
+                                    "name": "Commands",
+                                    "value": (
+                                        f"• `{prefix}gear materials`\n"
+                                        f"• `{prefix}gear available` shows ready, close, and short recipes\n"
+                                        f"• `{prefix}gear craft <rarity> <line> [slot]` forges a known pattern\n"
+                                        f"• `{prefix}gear salvage <id>` returns fewer materials than crafting cost\n"
+                                        f"• `{prefix}forge` refines quality, tempers stars, and inscribes enchantments on worn armor. The first time binds it\n"
+                                        f"• `{prefix}forge trade <amount> <material> <line>` swaps goods between lines, 3 for 1"
+                                    ),
+                                    "inline": False,
+                                }
+                            ],
+                        },
+                        {
+                            "title": "Trading",
+                            "description": "Bound pieces and fully rolled discoveries cannot be given, traded, or listed.",
+                            "fields": [
+                                {
+                                    "name": "Commands",
+                                    "value": (
+                                        f"• `{prefix}gear give <user> <id>`\n"
+                                        f"• `{prefix}gear pay <user> <amount> <material>`\n"
+                                        f"• `{prefix}trade add gear <id>`\n"
+                                        f"• `{prefix}trade add armory <amount> <material>`\n"
+                                        f"• `{prefix}gear shop`, `{prefix}gear sell`, `{prefix}gear buy`"
+                                    ),
+                                    "inline": False,
+                                }
+                            ],
+                        },
+                    ],
+                },
+                {
                     "label": "Glossary & Economy Map",
                     "summary": "What each major resource does and where it feeds into progression.",
                     "emoji": "📖",
@@ -4253,9 +4319,11 @@ class IdleHelp(commands.HelpCommand):
                 f" {command.signature}"
             ),
             colour=self.context.bot.config.game.primary_colour,
-            description=_(command.help).format(prefix=self.context.clean_prefix)
-            if command.help
-            else _("No help available"),
+            description=(
+                _(command.help).format(prefix=self.context.clean_prefix)
+                if command.help
+                else _("No help available")
+            ),
         )
         e.set_author(
             name=self.context.bot.user,
@@ -4282,6 +4350,12 @@ class IdleHelp(commands.HelpCommand):
                     _("You do not have access to this command!")
                 )
 
+        try:
+            description = _(group.help or "").format(prefix=self.context.clean_prefix)
+        except Exception:
+            description = group.help or _("No help available")
+        visible = [command for command in group.commands if not command.hidden]
+        visible.sort(key=lambda command: command.name)
         menu = SubcommandMenu(
             title=(
                 f"[{group.cog.qualified_name.upper()}] {group.qualified_name}"
@@ -4289,10 +4363,8 @@ class IdleHelp(commands.HelpCommand):
             ),
             bot=self.context.bot,
             color=self.context.bot.config.game.primary_colour,
-            description=_(group.help).format(prefix=self.context.clean_prefix)
-            if group.help
-            else _("No help available"),
-            cmds=[c for c in group.commands if not c.hidden],
+            description=description or _("No help available"),
+            cmds=visible,
         )
         await menu.start(self.context)
 

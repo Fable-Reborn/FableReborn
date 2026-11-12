@@ -93,7 +93,7 @@ class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
     item_type = discord.ui.TextInput(
         label="Item type",
         default="All",
-        placeholder="All, 1h, 2h, Sword, Shield...",
+        placeholder="All, Armor, Helm, Cuirass, Greaves, Sabatons, Sword...",
         max_length=30,
     )
     lowest = discord.ui.TextInput(label="Minimum total stat", default="0", max_length=4)
@@ -153,20 +153,35 @@ class ArmoryItemSelect(discord.ui.Select):
                 status.append("Equipped")
             if item.get("locked"):
                 status.append("Locked")
-            stat = float(item.get("damage", 0) or 0) + float(item.get("armor", 0) or 0)
+            if item.get("bound"):
+                status.append("Bound")
+            key = item.get("armory_key") or f"weapon:{item['id']}"
+            if item.get("armory_kind") == "armor":
+                enchantments = item.get("enchantments") or "No enchantment"
+                description = (
+                    f"{item.get('type', 'Armor')} • {item.get('rarity', 'Common')} • "
+                    f"{item.get('element', 'Armor')} • {enchantments} • Quality {item.get('value', 0)}"
+                )
+            else:
+                stat = float(item.get("sort_stat", 0) or 0)
+                if not stat:
+                    stat = float(item.get("damage", 0) or 0) + float(item.get("armor", 0) or 0)
+                description = f"{item.get('type', 'Item')} • Stat {stat:g}"
+            if status:
+                description += f" • {', '.join(status)}"
             options.append(
                 discord.SelectOption(
                     label=f"{item['name']} (ID {item['id']})"[:100],
-                    value=str(item["id"]),
-                    description=f"{item.get('type', 'Item')} • Stat {stat:g}" + (f" • {', '.join(status)}" if status else ""),
-                    default=int(item["id"]) == armory_view.selected_item_id,
+                    value=key,
+                    description=description[:100],
+                    default=key == armory_view.selected_item_id,
                 )
             )
         super().__init__(placeholder="Select an item for actions", options=options, row=2)
         self.armory_view = armory_view
 
     async def callback(self, interaction):
-        self.armory_view.selected_item_id = int(self.values[0])
+        self.armory_view.selected_item_id = self.values[0]
         self.armory_view.sync_dynamic_components()
         await interaction.response.edit_message(
             embed=self.armory_view.embeds[self.armory_view.current_page],
@@ -179,18 +194,24 @@ class ArmoryActionSelect(discord.ui.Select):
         item = armory_view.selected_item()
         equipped = bool(item and item.get("equipped"))
         locked = bool(item and item.get("locked"))
-        options = [
-            discord.SelectOption(label="Unequip" if equipped else "Equip", value="unequip" if equipped else "equip", emoji="⚔️"),
-            discord.SelectOption(label="Unlock" if locked else "Lock", value="unlock" if locked else "lock", emoji="🔒"),
-            discord.SelectOption(label="Compare with Equipped", value="compare", emoji="📊"),
-            discord.SelectOption(
-                label="Sell to Merchant",
-                value="merchant",
-                emoji="💰",
-                description="Requires confirmation before the item is destroyed",
-            ),
-            discord.SelectOption(label="List on Player Market", value="market", emoji="🏷️"),
-        ]
+        if item and item.get("armory_kind") == "armor":
+            options = [
+                discord.SelectOption(label="Unequip" if equipped else "Equip", value="unequip" if equipped else "equip", emoji="⚔️"),
+                discord.SelectOption(label="Compare with Equipped", value="compare", emoji="📊"),
+            ]
+        else:
+            options = [
+                discord.SelectOption(label="Unequip" if equipped else "Equip", value="unequip" if equipped else "equip", emoji="⚔️"),
+                discord.SelectOption(label="Unlock" if locked else "Lock", value="unlock" if locked else "lock", emoji="🔒"),
+                discord.SelectOption(label="Compare with Equipped", value="compare", emoji="📊"),
+                discord.SelectOption(
+                    label="Sell to Merchant",
+                    value="merchant",
+                    emoji="💰",
+                    description="Requires confirmation before the item is destroyed",
+                ),
+                discord.SelectOption(label="List on Player Market", value="market", emoji="🏷️"),
+            ]
         super().__init__(
             placeholder="Choose an action for the selected item",
             options=options,
@@ -206,6 +227,8 @@ class ArmoryActionSelect(discord.ui.Select):
             return await interaction.response.send_message("Select an item first.", ephemeral=True)
         action = self.values[0]
         item_id = int(item["id"])
+        if item.get("armory_kind") == "armor":
+            return await view.handle_armor_action(interaction, item, action)
         if action == "market":
             return await interaction.response.send_modal(ArmoryMarketModal(view, item_id))
         if action == "compare":
@@ -280,22 +303,40 @@ class ArmoryPaginatorView(discord.ui.View):
         cog,
         pages: list[list[dict]],
         embeds: list[discord.Embed],
-        timeout: float = 180.0
+        timeout: float = 180.0,
+        catalog: str = "weapons",
+        lowest: int = 0,
+        highest: int = 201,
     ):
         super().__init__(timeout=timeout)
         self.ctx = ctx
         self.cog = cog
         self.pages = pages  # Each element is a list of items for that page
         self.embeds = embeds
+        self.catalog = catalog
+        self.embed_title = (
+            _("{user}'s armor").format(user=ctx.disp) if catalog == "armor" else None
+        )
+        self.lowest = lowest
+        self.highest = highest
+        self.cached_pages = {catalog: pages}
+        self.cached_embeds = {catalog: embeds}
         self.current_page = 0
-        self.selected_item_id = int(pages[0][0]["id"]) if pages and pages[0] else None
+        self.selected_item_id = (
+            pages[0][0].get("armory_key") or f"weapon:{pages[0][0]['id']}"
+        ) if pages and pages[0] else None
         self.sort_mode = "strength"
         self.message = None
+        if not getattr(ctx.bot, "equipment_combat_enabled", False):
+            self.remove_item(self.gear_tab)
+        else:
+            self._style_gear_button()
         self.sync_dynamic_components()
 
     def selected_item(self):
         for item in self.pages[self.current_page]:
-            if int(item["id"]) == self.selected_item_id:
+            key = item.get("armory_key") or f"weapon:{item['id']}"
+            if key == self.selected_item_id:
                 return item
         return None
 
@@ -305,7 +346,8 @@ class ArmoryPaginatorView(discord.ui.View):
                 self.remove_item(child)
         if self.pages and self.pages[self.current_page]:
             if self.selected_item() is None:
-                self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+                first = self.pages[self.current_page][0]
+                self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
             self.add_item(ArmoryItemSelect(self))
             self.add_item(ArmoryActionSelect(self))
             self.add_item(ArmorySortSelect(self))
@@ -320,11 +362,86 @@ class ArmoryPaginatorView(discord.ui.View):
         elif mode == "newest":
             items.sort(key=lambda item: -int(item["id"]))
         else:
-            items.sort(key=lambda item: (-(float(item.get("damage", 0) or 0) + float(item.get("armor", 0) or 0)), -int(item["id"])))
+            items.sort(key=lambda item: (
+                -float(item.get("sort_stat", (item.get("damage", 0) or 0) + (item.get("armor", 0) or 0)) or 0),
+                -int(item["id"]),
+            ))
         self.pages = list(chunks(items, 5))
-        self.embeds = [self.cog.invembed(self.ctx, page, index, len(self.pages) - 1) for index, page in enumerate(self.pages)]
+        self.embeds = [
+            self.cog.invembed(self.ctx, page, index, len(self.pages) - 1, title=self.embed_title)
+            for index, page in enumerate(self.pages)
+        ]
         self.current_page = 0
-        self.selected_item_id = int(self.pages[0][0]["id"]) if self.pages and self.pages[0] else None
+        first = self.pages[0][0] if self.pages and self.pages[0] else None
+        self.selected_item_id = (first.get("armory_key") or f"weapon:{first['id']}") if first else None
+
+    async def handle_armor_action(self, interaction, item, action):
+        from classes.equipment.repository import equip_item, unequip_item
+
+        item_id = int(item["id"])
+        if action == "compare":
+            async with self.ctx.bot.pool.acquire() as conn:
+                equipped = await conn.fetchrow(
+                    """
+                    SELECT i.*
+                      FROM equipment_loadout l
+                      JOIN equipment_items i ON i.id = l.equipment_id
+                     WHERE l.user_id = $1
+                       AND l.slot = $3
+                       AND i.owner_id = l.user_id
+                       AND i.id <> $2
+                    """,
+                    self.ctx.author.id,
+                    item_id,
+                    item.get("slot") or "chest",
+                )
+            embed = discord.Embed(title=f"Compare: {item['name']}", color=discord.Color.blurple())
+            embed.add_field(name="Selected", value=self.cog._armor_stat_block(item), inline=False)
+            if equipped:
+                from classes.equipment.definitions import MODIFIERS
+
+                modifier_rows = await self.ctx.bot.pool.fetch(
+                    """
+                    SELECT modifier_id
+                      FROM equipment_modifiers
+                     WHERE equipment_id = $1
+                     ORDER BY id
+                    """,
+                    int(equipped["id"]),
+                )
+                equipped_row = self.cog._armory_armor_row(dict(equipped))
+                labels = [
+                    MODIFIERS[row["modifier_id"]]["name"]
+                    if row["modifier_id"] in MODIFIERS
+                    else str(row["modifier_id"]).replace("_", " ").title()
+                    for row in modifier_rows
+                ]
+                equipped_row["enchantments"] = ", ".join(labels) if labels else "None"
+                embed.add_field(
+                    name=f"Equipped: {equipped['name']}",
+                    value=self.cog._armor_stat_block(equipped_row),
+                    inline=False,
+                )
+            else:
+                embed.add_field(name="Equipped", value="Nothing is worn in that slot.", inline=False)
+            return await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        await interaction.response.defer()
+        async with self.ctx.bot.pool.acquire() as conn:
+            if action == "equip":
+                status, worn = await equip_item(conn, self.ctx.author.id, item_id)
+                if status == "missing":
+                    message = "You do not own that piece of armor."
+                elif status == "already":
+                    message = "That piece is already worn."
+                elif status == "closed":
+                    message = "That armor slot is not open yet."
+                else:
+                    message = f"You wear **{worn['name']}**. Equipping does not bind it."
+            else:
+                status, removed = await unequip_item(conn, self.ctx.author.id, item_id)
+                message = "Nothing came off." if status == "missing" else f"You put away piece `{removed}`."
+        await interaction.followup.send(message)
 
     def _is_allowed_user(self, user_id: int) -> bool:
         allowed_user_ids = {int(self.ctx.author.id)}
@@ -363,7 +480,8 @@ class ArmoryPaginatorView(discord.ui.View):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         self.current_page = 0
-        self.selected_item_id = int(self.pages[0][0]["id"])
+        first = self.pages[0][0]
+        self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
         self.sync_dynamic_components()
         await interaction.response.edit_message(
             embed=self.embeds[self.current_page], view=self
@@ -377,7 +495,8 @@ class ArmoryPaginatorView(discord.ui.View):
             return
         if self.current_page > 0:
             self.current_page -= 1
-            self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+            first = self.pages[self.current_page][0]
+            self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
             self.sync_dynamic_components()
             await interaction.response.edit_message(
                 embed=self.embeds[self.current_page], view=self
@@ -406,7 +525,8 @@ class ArmoryPaginatorView(discord.ui.View):
             return
         if self.current_page < len(self.embeds) - 1:
             self.current_page += 1
-            self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+            first = self.pages[self.current_page][0]
+            self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
             self.sync_dynamic_components()
             await interaction.response.edit_message(
                 embed=self.embeds[self.current_page], view=self
@@ -423,7 +543,8 @@ class ArmoryPaginatorView(discord.ui.View):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         self.current_page = len(self.embeds) - 1
-        self.selected_item_id = int(self.pages[self.current_page][0]["id"])
+        first = self.pages[self.current_page][0]
+        self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
         self.sync_dynamic_components()
         await interaction.response.edit_message(
             embed=self.embeds[self.current_page], view=self
@@ -438,8 +559,10 @@ class ArmoryPaginatorView(discord.ui.View):
             await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
             return
         current_items = self.pages[self.current_page]  # raw DB rows for this page
-        # Extract IDs and join them with commas
-        item_ids = [str(item["id"]) for item in current_items]
+        item_ids = [
+            f"armor {item['id']}" if item.get("armory_kind") == "armor" else str(item["id"])
+            for item in current_items
+        ]
         joined_ids = ", ".join(item_ids)
 
         await interaction.response.send_message(joined_ids, ephemeral=True)
@@ -457,6 +580,59 @@ class ArmoryPaginatorView(discord.ui.View):
     async def loadouts_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
         await self.ctx.invoke(self.ctx.bot.get_command("preset"))
+
+    @discord.ui.button(label="Gear", style=discord.ButtonStyle.secondary, row=1)
+    async def gear_tab(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Switch the armory embed between weapons and armor."""
+        if not self._is_allowed_user(interaction.user.id):
+            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            return
+        target = "weapons" if self.catalog == "armor" else "armor"
+        if target not in self.cached_pages:
+            if target == "armor":
+                rows = await self.cog._fetch_armory_armor(
+                    self.ctx.author.id, self.lowest, self.highest
+                )
+                empty = "You do not have any armor yet."
+                title = _("{user}'s armor").format(user=self.ctx.disp)
+            else:
+                rows = await self.cog._fetch_armory_weapons(
+                    self.ctx.author.id, "All", self.lowest, self.highest
+                )
+                empty = "Your weapon inventory is empty."
+                title = None
+            self.embed_title = title
+            if not rows:
+                return await interaction.response.send_message(empty, ephemeral=True)
+            pages = list(chunks(rows, 5))
+            embeds = [
+                self.cog.invembed(self.ctx, page, index, len(pages) - 1, title=title)
+                for index, page in enumerate(pages)
+            ]
+            self.cached_pages[target] = pages
+            self.cached_embeds[target] = embeds
+        self.catalog = target
+        self.embed_title = (
+            _("{user}'s armor").format(user=self.ctx.disp) if target == "armor" else None
+        )
+        self.pages = self.cached_pages[target]
+        self.embeds = self.cached_embeds[target]
+        self.current_page = 0
+        first = self.pages[0][0]
+        self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
+        self._style_gear_button()
+        self.sync_dynamic_components()
+        await interaction.response.edit_message(
+            embed=self.embeds[self.current_page], view=self
+        )
+
+    def _style_gear_button(self):
+        if self.catalog == "armor":
+            self.gear_tab.label = "Weapons"
+            self.gear_tab.style = discord.ButtonStyle.blurple
+        else:
+            self.gear_tab.label = "Gear"
+            self.gear_tab.style = discord.ButtonStyle.secondary
 
 
 INVENTORY_HOME = "__home__"
@@ -4634,12 +4810,140 @@ class Profile(commands.Cog):
                 )
             )
 
-    def invembed(self, ctx, ret, currentpage, maxpage):
+    def _armory_item_name(self, item) -> str:
+        marks = []
+        if item.get("bound"):
+            marks.append("(bound)")
+        if item.get("equipped"):
+            marks.append("(**Equipped**)")
+        suffix = f" {' '.join(marks)}" if marks else ""
+        return f"{item['name']}{suffix}"
+
+    def _armor_stat_block(self, item) -> str:
+        from classes.equipment.attunement import ATTUNEMENT_CAP
+        from classes.equipment.definitions import quality_band
+
+        blessing = self._format_stat_value(float(item.get("offense_value") or 0) * 100)
+        ward = self._format_stat_value(item.get("defense_value"))
+        quality = int(item.get("value") or 0)
+        band = quality_band(quality)
+        refinement = int(item.get("refinement") or 0)
+        return (
+            f"Damage: `{blessing}%`\n"
+            f"Armor: `{ward}`\n"
+            f"Rarity: {item.get('rarity') or 'Common'}\n"
+            f"Quality: {band} {quality}\n"
+            f"Temper: +{refinement}\n"
+            f"Attunement: {int(item.get('attunement') or 0)}/{ATTUNEMENT_CAP}\n"
+            f"Enchantments: {item.get('enchantments') or 'None'}"
+        )
+
+    def _armory_armor_value(self, item) -> str:
+        from classes.equipment.attunement import ATTUNEMENT_CAP
+        from classes.equipment.definitions import quality_band
+
+        blessing = self._format_stat_value(float(item.get("offense_value") or 0) * 100)
+        ward = self._format_stat_value(item.get("defense_value"))
+        quality = int(item.get("value") or 0)
+        band = quality_band(quality)
+        refinement = int(item.get("refinement") or 0)
+        discovery = "\nSignature: *Bound discovery*" if item.get("fully_rolled") else ""
+        piece = item.get("type") or "Armor"
+        slot = item.get("slot") or item.get("hand") or "chest"
+        return (
+            f"ID: `{item['id']}`, Element: `{item.get('element')}` "
+            f"Type: `{piece}` (uses {slot} slot) Rarity: `{item.get('rarity') or 'Common'}` "
+            f"with Damage: `{blessing}%` "
+            f"Armor: `{ward}` Temper: `+{refinement}` "
+            f"Attunement: `{int(item.get('attunement') or 0)}/{ATTUNEMENT_CAP}`. "
+            f"Quality: `{quality}` ({band})\n"
+            f"Enchantments: `{item.get('enchantments') or 'None'}`{discovery}"
+        )
+
+    def _armory_armor_row(self, item) -> dict:
+        from classes.equipment.definitions import SLOT_NOUN
+
+        offense = float(item.get("offense_value") or 0)
+        defense = float(item.get("defense_value") or 0)
+        slot = str(item.get("slot") or "chest")
+        return {
+            "armory_kind": "armor",
+            "armory_key": f"armor:{item['id']}",
+            "id": int(item["id"]),
+            "name": item["name"],
+            "equipped": bool(item.get("equipped")),
+            "locked": False,
+            "bound": bool(item.get("bound")),
+            "fully_rolled": bool(item.get("fully_rolled")),
+            "element": str(item.get("archetype") or "").title(),
+            "rarity": str(item.get("rarity") or "common").title(),
+            "type": SLOT_NOUN.get(slot, slot.title()),
+            "slot": slot,
+            "hand": slot,
+            "offense_value": offense,
+            "defense_value": defense,
+            "refinement": int(item.get("refinement") or 0),
+            "attunement": int(item.get("attunement") or 0),
+            "value": int(item.get("quality") or 0),
+            "sort_stat": defense + offense * 100,
+            "signature": None,
+        }
+
+    async def _fetch_armory_armor(self, user_id: int, lowest: int, highest: int, slot: str | None = None) -> list[dict]:
+        if not getattr(self.bot, "equipment_combat_enabled", False):
+            return []
+        rows = await self.bot.pool.fetch(
+            """
+            SELECT i.*, (l.equipment_id IS NOT NULL) AS equipped
+              FROM equipment_items i
+              LEFT JOIN equipment_loadout l ON l.equipment_id = i.id
+             WHERE i.owner_id = $1
+               AND ($2::text IS NULL OR i.slot = $2)
+             ORDER BY equipped DESC, i.quality DESC, i.id DESC
+            """,
+            user_id,
+            slot,
+        )
+        from classes.equipment.definitions import MODIFIERS
+
+        modifier_rows = []
+        if rows:
+            modifier_rows = await self.bot.pool.fetch(
+                """
+                SELECT equipment_id, modifier_id
+                  FROM equipment_modifiers
+                 WHERE equipment_id = ANY($1::bigint[])
+                 ORDER BY id
+                """,
+                [int(row["id"]) for row in rows],
+            )
+        names_by_id = {}
+        for modifier in modifier_rows:
+            spec = MODIFIERS.get(str(modifier["modifier_id"]))
+            label = spec["name"] if spec else str(modifier["modifier_id"]).replace("_", " ").title()
+            names_by_id.setdefault(int(modifier["equipment_id"]), []).append(label)
+        visible = []
+        for row in rows:
+            item = self._armory_armor_row(dict(row))
+            names = names_by_id.get(item["id"], [])
+            item["enchantments"] = ", ".join(names) if names else "None"
+            if item["equipped"] or lowest <= item["sort_stat"] <= highest:
+                visible.append(item)
+        return visible
+
+    def invembed(self, ctx, ret, currentpage, maxpage, title=None):
         result = discord.Embed(
-            title=_("{user}'s inventory includes").format(user=ctx.disp),
+            title=title or _("{user}'s inventory includes").format(user=ctx.disp),
             colour=discord.Colour.blurple(),
         )
         for weapon in ret:
+            if weapon.get("armory_kind") == "armor":
+                result.add_field(
+                    name=self._armory_item_name(weapon),
+                    value=self._armory_armor_value(weapon),
+                    inline=False,
+                )
+                continue
             if weapon["equipped"]:
                 eq = _("(**Equipped**)")
             else:
@@ -5534,7 +5838,7 @@ class Profile(commands.Cog):
             highest: IntFromTo(0, 201) = 201,
     ):
         _(
-            """`[itemtype]` - The type of item to show; defaults to all items
+            """`[itemtype]` - The type of item to show; defaults to all items. Armor filters are `armor`, `helm`, `cuirass`, `greaves`, and `sabatons`
             `[lowest]` - The lower boundary of items to show; defaults to 0
             `[highest]` - The upper boundary of items to show; defaults to 101
 
@@ -5552,20 +5856,76 @@ class Profile(commands.Cog):
                 _("Make sure that the `highest` value is greater than `lowest`.")
             )
 
+        requested_key = (itemtype or "All").strip().lower()
+        from classes.equipment.definitions import resolve_slot
+
+        armor_slot = resolve_slot(requested_key)
+        armor_only = requested_key == "armor" or armor_slot is not None
+        if armor_only:
+            itemtype = "Armor"
+        elif requested_key == "2h":
+            itemtype = "2h"
+        elif requested_key == "1h":
+            itemtype = "1h"
+        else:
+            itemtype = "All" if requested_key == "all" else requested_key.title()
+
         # Validate itemtype
-        if itemtype != "2h":
+        if itemtype not in {"2h", "1h", "Armor"}:
             if itemtype != "1h":
-                itemtype = itemtype.title()
                 itemtype_cls = ItemType.from_string(itemtype)
                 if itemtype != "All" and itemtype_cls is None:
                     return await ctx.send(
                         _(
-                            "Please select a valid item type or `all`, `1h`, `2h`. Available types:"
+                            "Please select a valid item type or `all`, `armor`, `helm`, `cuirass`, `greaves`, `sabatons`, `1h`, `2h`. Available weapon types:"
                             " `{all_types}`"
                         ).format(all_types=", ".join([t.name for t in ALL_ITEM_TYPES]))
                     )
 
         # Perform the database query
+        if itemtype == "Armor":
+            ret = await self._fetch_armory_armor(ctx.author.id, lowest, highest, armor_slot)
+            catalog = "armor"
+            if armor_slot:
+                from classes.equipment.definitions import SLOT_NOUN
+
+                piece = SLOT_NOUN[armor_slot].lower()
+                embed_title = _("{user}'s {piece}").format(user=ctx.disp, piece=piece)
+            else:
+                embed_title = _("{user}'s armor").format(user=ctx.disp)
+        else:
+            ret = await self._fetch_armory_weapons(ctx.author.id, itemtype, lowest, highest)
+            catalog = "weapons"
+            embed_title = None
+
+        if not ret:
+            if armor_slot:
+                from classes.equipment.definitions import SLOT_NOUN
+
+                return await ctx.send(f"You have no {SLOT_NOUN[armor_slot].lower()} in that range.")
+            return await ctx.send(_("Your inventory is empty."))
+
+        # Split all items into pages of 5
+        allitems = list(chunks(ret, 5))
+        maxpage = len(allitems) - 1
+
+        embeds = [
+            self.invembed(ctx, chunk, idx, maxpage, title=embed_title)
+            for idx, chunk in enumerate(allitems)
+        ]
+
+        view = ArmoryPaginatorView(
+            ctx=ctx,
+            cog=self,
+            pages=allitems,
+            embeds=embeds,
+            catalog=catalog,
+            lowest=lowest,
+            highest=highest,
+        )
+        await view.start()
+
+    async def _fetch_armory_weapons(self, user_id: int, itemtype: str, lowest: int, highest: int):
         if itemtype == "All":
             ret = await self.bot.pool.fetch(
                 "SELECT ai.*, i.equipped, i.locked "
@@ -5574,7 +5934,7 @@ class Profile(commands.Cog):
                 "JOIN inventory i ON (ai.id=i.item) "
                 'WHERE p."user"=$1 AND ((ai."damage"+ai."armor" BETWEEN $2 AND $3) OR i."equipped") '
                 'ORDER BY i."equipped" DESC, i.locked DESC, ai."damage"+ai."armor" DESC;',
-                ctx.author.id,
+                user_id,
                 lowest,
                 highest,
             )
@@ -5588,7 +5948,7 @@ class Profile(commands.Cog):
                 'WHERE p."user"=$1 AND ((ai."damage"+ai."armor" BETWEEN $2 AND $3 AND ai."hand"=$4) '
                 'OR i."equipped") '
                 'ORDER BY i."equipped" DESC, i.locked DESC, ai."damage"+ai."armor" DESC;',
-                ctx.author.id,
+                user_id,
                 lowest,
                 highest,
                 twohand,
@@ -5603,7 +5963,7 @@ class Profile(commands.Cog):
                 'WHERE p."user"=$1 AND ((ai."damage"+ai."armor" BETWEEN $2 AND $3 AND ai."hand"!=$4) '
                 'OR i."equipped") '
                 'ORDER BY i."equipped" DESC, i.locked DESC, ai."damage"+ai."armor" DESC;',
-                ctx.author.id,
+                user_id,
                 lowest,
                 highest,
                 twohand,
@@ -5618,30 +5978,22 @@ class Profile(commands.Cog):
                 'WHERE p."user"=$1 AND ((ai."damage"+ai."armor" BETWEEN $2 AND $3 AND ai."type"=$4) '
                 'OR i."equipped") '
                 'ORDER BY i."equipped" DESC, i.locked DESC, ai."damage"+ai."armor" DESC;',
-                ctx.author.id,
+                user_id,
                 lowest,
                 highest,
                 itemtype,
             )
 
         if not ret:
-            return await ctx.send(_("Your inventory is empty."))
-
-        ret = await self._apply_item_progression_to_items(ctx.author.id, ret)
-
-        # Split all items into pages of 5
-        allitems = list(chunks(ret, 5))
-        maxpage = len(allitems) - 1
-
-        # Build an embed for each chunk
-        embeds = []
-        for idx, chunk in enumerate(allitems):
-            page_embed = self.invembed(ctx, chunk, idx, maxpage)
-            embeds.append(page_embed)
-
-        # Pass both raw item pages AND the embeds to our custom paginator
-        view = ArmoryPaginatorView(ctx=ctx, cog=self, pages=allitems, embeds=embeds)
-        await view.start()
+            return []
+        ret = await self._apply_item_progression_to_items(user_id, ret)
+        for item in ret:
+            item["armory_kind"] = "weapon"
+            item["armory_key"] = f"weapon:{item['id']}"
+            item["sort_stat"] = float(
+                self._effective_item_damage(item) + self._effective_item_armor(item)
+            )
+        return ret
 
     def lootembed(self, ctx, ret, currentpage, maxpage):
         result = discord.Embed(
