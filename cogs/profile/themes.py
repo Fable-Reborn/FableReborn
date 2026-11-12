@@ -43,6 +43,8 @@ class ProfileTheme:
             return (1660, 940)
         if self.rarity == "Fable":
             return FABLE_SIZE
+        if self.layout == "wishlight":
+            return WISHLIGHT_SIZE
         return TRANSCENDENT_SIZE if self.rarity == "Transcendent" else (1660, 1460)
 
     @property
@@ -445,7 +447,10 @@ for _key, _rarity, _motif in (
     THEMES[_key] = replace(THEMES[_key], rarity=_rarity, motif=_motif)
 
 MOTIFS = ("diamond", "star", "rift", "sun", "gear", "claw", "leaf", "wave", "petal",
-          "bubble", "lantern", "wing", "crown", "quill", "spire")
+          "bubble", "lantern", "wing", "crown", "quill", "spire", "wishlight")
+# Layouts an event theme may ask for. "standard" is the banner over the stat panels;
+# "wishlight" is the birthday wish theme's own card (render_wishlight) and nothing else's.
+EVENT_LAYOUTS = ("standard", "wishlight")
 
 
 def _mix(color, target, amount):
@@ -457,7 +462,7 @@ def _mix(color, target, amount):
 
 def event_theme(key, name, *, accent, event, epithet="", description="", emoji="🎉",
                 motif="star", title_lines=(), secondary=None, background=None,
-                panel=None, text=None, muted=None, profile_flag=None):
+                panel=None, text=None, muted=None, profile_flag=None, layout="standard"):
     """Build an event-only theme. Only key, name, accent and event are required;
     the rest of the palette is derived from the accent colour.
 
@@ -472,6 +477,8 @@ def event_theme(key, name, *, accent, event, epithet="", description="", emoji="
             raise ValueError(f"Event theme {key!r}: {field} must look like '#f2a65a', got {value!r}.")
     if motif not in MOTIFS:
         raise ValueError(f"Event theme {key!r}: motif must be one of {', '.join(MOTIFS)}.")
+    if layout not in EVENT_LAYOUTS:
+        raise ValueError(f"Event theme {key!r}: layout must be one of {', '.join(EVENT_LAYOUTS)}.")
     if not name or len(name) > 60:
         raise ValueError(f"Event theme {key!r}: name must be 1-60 characters.")
     if not event:
@@ -490,7 +497,7 @@ def event_theme(key, name, *, accent, event, epithet="", description="", emoji="
         text or _mix(accent, "#ffffff", .85),
         muted or _mix(accent, "#c4c4c4", .55),
         emoji, "Events", "Event", motif, tuple(title_lines), event=event,
-        unlock_flag=profile_flag or "",
+        unlock_flag=profile_flag or "", layout=layout,
     )
 
 
@@ -578,6 +585,20 @@ EVENT_THEMES = (
         title_lines=("BONECOURT", "REVEL"),
         epithet="THE MUSIC OUTLIVED THE GUESTS.",
         description="SEASONAL / RARE / CHRONICLE 52",
+    ),
+
+    # The thank-you for a birthday wish (cogs/wish), only ever given by `$wish redeem`.
+    # It has a card of its own, drawn by render_wishlight: no banner and no stat panels.
+    event_theme(
+        "wishlight", "Wishlight",
+        accent="#f6cd7c",
+        event="Birthday Wishes 2026",
+        emoji="🏮",
+        motif="wishlight",
+        layout="wishlight",
+        epithet="ONE LANTERN FOR EVERY WISH.",
+        description="A night of wish lanterns over a still lake, kept by those who sent a birthday wish across the realm.",
+        secondary="#b9788f", background="#130d2a", panel="#231843", text="#fbf1e0", muted="#cbbfdc",
     ),
 
     # Database-flag example: everyone who unlocked the Halloween class
@@ -679,6 +700,13 @@ def draw_ornament(draw, x, y, radius, theme):
         draw.line((x, y-r*.5, x, y+r*.5), fill=ink, width=1)
         draw.line((x-r*.35, y-r*.6, x+r*.35, y-r*.6), fill=ink, width=2)
         draw.line((x, y+r*.55, x, y+r), fill=ink, width=2)
+    elif motif == "wishlight":
+        # a paper sky lantern: domed top, tapered sides, its flame, and a spark rising from it
+        draw.arc((x-r*.62, y-r*.7, x+r*.62, y+r*.4), 180, 360, fill=ink, width=2)
+        draw.line([(x-r*.62, y-r*.15), (x-r*.36, y+r*.72), (x+r*.36, y+r*.72), (x+r*.62, y-r*.15)], fill=ink, width=2)
+        draw.ellipse((x-r*.16, y+r*.12, x+r*.16, y+r*.5), fill=ink)
+        draw.line((x, y-r*1.18, x, y-r*.9), fill=ink, width=1)
+        draw.line((x-r*.14, y-r*1.04, x+r*.14, y-r*1.04), fill=ink, width=1)
     elif motif == "wing":
         for sign in (-1, 1):
             draw.polygon([(x, y), (x+sign*r, y-r*.75),
@@ -2453,6 +2481,324 @@ def render_fable(theme, data):
 
     text(640, 1620, data["mission"], 22, theme.text, 1040)
     text(1950, 1624, f'ID {data["user_id"]}', 15, theme.muted, 260, right=True)
+    return canvas
+
+
+# ===========================================================================
+#  WISHLIGHT  -  the birthday wish theme's own card
+# ===========================================================================
+# Not a banner over stat panels, and not a folio: the whole card is one night scene.
+# The hero's portrait rides in a great sky lantern with their level written on its
+# paper; power, health, attack and defense are each written on a lantern of their
+# own; experience is a string of lights; and the records float on the lake as four
+# paper water lanterns, written in ink.
+WISHLIGHT_SIZE = (2000, 2000)
+_WISH_INK, _WISH_INK_SOFT, _WISH_INK_RED = (58, 26, 14), (122, 72, 44), (158, 52, 34)
+_WISH_FOIL = ((255, 250, 232), (255, 228, 172), (250, 198, 126), (238, 142, 122), (250, 206, 152), (255, 244, 214))
+_WISH_GLOW = (255, 150, 96)
+_WISH_HERO = (1000, 440, 600)                 # the hero's lantern: centre x, centre y, height
+_WISH_WINDOW = (1000, 362, 236)               # the portrait window in it: centre x, centre y, diameter
+# power, health, attack, defense: centre x, centre y, height, caption under it
+_WISH_STATS = ((290, 410, 280, "COMBAT POWER"), (612, 566, 250, "VITALITY"),
+               (1388, 566, 250, "OFFENSE"), (1710, 410, 280, "WARD"))
+_WISH_STAT_NAMES = ("POWER", "HEALTH", "ATTACK", "DEFENSE")
+# Four water lanterns, each riding a little higher or lower than its neighbour.
+_WISH_RAFTS = tuple((84 + i*472, 1300 + dy, 500 + i*472, 1780 + dy) for i, dy in enumerate((0, 30, 8, 36)))
+_WISH_RAFT_TITLES = ("I   /   ARMAMENT", "II   /   ALLEGIANCE", "III   /   LEGACY", "IV   /   COMPANION")
+
+
+@lru_cache(maxsize=8)
+def _sky_lantern(h, ratio):
+    """A lit paper sky lantern h pixels tall and h*ratio wide, drawn double size and filtered down."""
+    w, s = round(h * ratio), 2
+    bw, bh = w * s, h * s
+    mask = Image.new("L", (bw, bh))
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, bw - 1, bh * .74), fill=255)
+    draw.polygon([(bw * .02, bh * .37), (bw * .98, bh * .37), (bw * .78, bh * .94), (bw * .22, bh * .94)], fill=255)
+    ys = np.linspace(0, 1, bh, dtype=np.float32)[:, None]
+    xs = np.linspace(-1, 1, bw, dtype=np.float32)[None, :]
+    stops = np.array([[214, 84, 52], [247, 158, 90], [255, 230, 156]], dtype=np.float32)
+    t = ys[:, 0] ** 1.1
+    body = np.stack([np.interp(t, [0, .5, 1], stops[:, c]) for c in range(3)], axis=1)[:, None, :]
+    body = np.repeat(body, bw, axis=1)
+    core = np.clip(1 - (xs ** 2 * 1.5 + ((ys - .86) / .5) ** 2), 0, 1)[..., None]
+    body += core ** 1.3 * np.array([26, 40, 84], dtype=np.float32)     # the flame, seen through the paper
+    body *= (1 - .24 * np.abs(xs) ** 2.4)[..., None]                    # the paper curving away at the sides
+    paper = Image.fromarray(np.clip(body, 0, 255).astype(np.uint8), "RGB")
+    draw = ImageDraw.Draw(paper, "RGBA")   # blends, so the ribs are a tint in the paper, not a line across it
+    for rib, alpha in ((-.56, 70), (-.2, 22), (.2, 22), (.56, 70)):   # the inner ribs barely show: numbers are written there
+        draw.line((bw / 2 + rib * bw * .94, bh * .05, bw / 2 + rib * bw * .6, bh * .93), fill=(150, 60, 36, alpha), width=max(1, bh // 170))
+    draw.rounded_rectangle((bw * .22, bh * .915, bw * .78, bh * .955), radius=bh * .012, fill=(92, 42, 28, 255))
+    paper = paper.convert("RGBA")
+    paper.putalpha(mask)
+    return paper.resize((w, h), Image.Resampling.LANCZOS)
+
+
+def _float_sky_lantern(canvas, cx, cy, h, ratio, glow):
+    _light(canvas, (cx - h * 1.3, cy - h * 1.1, cx + h * 1.3, cy + h * 1.4), (255, 150, 72), glow)
+    _light(canvas, (cx - h * .7, cy - h * .5, cx + h * .7, cy + h * .85), (255, 196, 110), glow * .7)
+    sprite = _sky_lantern(h, ratio)
+    canvas.paste(sprite, (round(cx - sprite.width / 2), round(cy - h / 2)), sprite)
+
+
+def _wishlight_plain():
+    """The night without its painting: a dusk sky over dark water, so the card always draws."""
+    w, h = WISHLIGHT_SIZE
+    horizon = round(h * .595)
+    stops = ((8, 8, 30), (34, 18, 80), (112, 54, 110), (214, 122, 110))
+    canvas = Image.new("RGB", (w, h), (12, 9, 34))
+    draw = ImageDraw.Draw(canvas)
+    for y in range(horizon):
+        draw.line((0, y, w, y), fill=_lerp(stops, y / horizon))
+    for y in range(horizon, h):
+        draw.line((0, y, w, y), fill=_lerp(((60, 34, 78), (12, 9, 34)), (y - horizon) / 260))
+    return canvas
+
+
+def _water_lantern(canvas, box, title):
+    """A paper lantern floating on the lake: lit paper in a dark wooden frame, with its light on the water."""
+    x1, y1, x2, y2 = box
+    w, h = x2 - x1, y2 - y1
+    _light(canvas, (x1 - 190, y1 - 170, x2 + 190, y2 + 190), (255, 140, 70), .5)
+    ys = np.linspace(0, 1, h, dtype=np.float32)
+    xs = np.linspace(-1, 1, w, dtype=np.float32)[None, :]
+    stops = np.array([[244, 206, 150], [253, 228, 176], [240, 174, 102]], dtype=np.float32)
+    paper = np.stack([np.interp(ys, [0, .5, 1], stops[:, c]) for c in range(3)], axis=1)[:, None, :]
+    # a candle inside: brightest low in the middle, the paper dimming toward its frame
+    candle = np.clip(1 - (xs ** 2 * 1.1 + ((ys[:, None] - .6) / .8) ** 2), 0, 1)
+    paper = np.repeat(paper, w, axis=1) * (.86 + .16 * candle)[..., None]
+    sheet = Image.fromarray(np.clip(paper, 0, 255).astype(np.uint8), "RGB")
+    mask = Image.new("L", (w, h))
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=8, fill=255)
+    canvas.paste(sheet, (x1, y1), mask)
+    # the lantern mirrored in the water, fading as it sinks
+    depth = 150
+    mirror = sheet.crop((0, h - depth, w, h)).transpose(Image.Transpose.FLIP_TOP_BOTTOM).filter(ImageFilter.GaussianBlur(5))
+    fade = Image.new("L", (w, depth))
+    fade.putdata([round(170 * (1 - y / depth) ** 1.5) for y in range(depth) for _ in range(w)])
+    canvas.paste(mirror, (x1, y2 + 20), fade)
+    draw = ImageDraw.Draw(canvas)
+    wood, grain = (60, 30, 24), (112, 62, 42)
+    draw.rounded_rectangle((x1 - 12, y1 - 16, x2 + 12, y1 + 8), radius=6, fill=wood)
+    draw.line((x1 - 6, y1 - 12, x2 + 6, y1 - 12), fill=grain, width=2)
+    draw.rectangle((x1, y1 + 8, x1 + 7, y2), fill=wood)
+    draw.rectangle((x2 - 7, y1 + 8, x2, y2), fill=wood)
+    draw.rounded_rectangle((x1 - 24, y2 - 6, x2 + 24, y2 + 20), radius=11, fill=wood)
+    draw.line((x1 - 16, y2 - 1, x2 + 16, y2 - 1), fill=grain, width=2)
+    for i in range(3):   # the water parting round it
+        draw.line((x1 - 44 - i * 16, y2 + 26 + i * 9, x2 + 44 + i * 16, y2 + 26 + i * 9), fill=_lerp(((214, 150, 120), (60, 40, 84)), i / 2), width=1)
+    draw.text((x1 + 30, y1 + 30), title, font=theme_font(18, "heading"), fill=_WISH_INK_RED)
+    draw.line((x1 + 30, y1 + 62, x2 - 30, y1 + 62), fill=(204, 134, 92), width=1)
+
+
+@lru_cache(maxsize=1)
+def _wishlight_base():
+    """Everything that is the same on every Wishlight card, never anything of a player's. Callers copy it."""
+    theme = THEMES["wishlight"]
+    w, h = WISHLIGHT_SIZE
+    try:
+        with Image.open(ASSET_ROOT / "wishlight.png") as source:
+            canvas = ImageOps.fit(source.convert("RGB"), (w, h), method=Image.Resampling.LANCZOS)
+    except (OSError, ValueError):
+        canvas = _wishlight_plain()
+    # Dusk gathers where the name is written, so it reads against the bright horizon.
+    shade = Image.new("L", (w // 4, h // 4))
+    ImageDraw.Draw(shade).ellipse((60, 185, 440, 268), fill=150)
+    shade = shade.filter(ImageFilter.GaussianBlur(16)).resize((w, h), Image.Resampling.BICUBIC)
+    canvas.paste((14, 9, 34), (0, 0), shade)
+
+    cx, cy, tall = _WISH_HERO
+    _float_sky_lantern(canvas, cx, cy, tall, .74, .95)
+    for x, y, size, _caption in _WISH_STATS:
+        _float_sky_lantern(canvas, x, y, size, .9, .7)
+    draw = ImageDraw.Draw(canvas)
+    wx, wy, wd = _WISH_WINDOW
+    for radius, colour, width in ((wd/2 + 13, (92, 42, 28), 5), (wd/2 + 6, (255, 236, 190), 3)):
+        draw.ellipse((wx - radius, wy - radius, wx + radius, wy + radius), outline=colour, width=width)
+    draw.ellipse((wx - wd/2, wy - wd/2, wx + wd/2, wy + wd/2), fill=(70, 34, 26))
+    centred = lambda x, y, value, font, fill: draw.text((x - font.getlength(value) / 2, y), value, font=font, fill=fill)
+    centred(cx, 506, "LEVEL", theme_font(18, "heading"), _WISH_INK_SOFT)
+    for (x, y, size, caption), name in zip(_WISH_STATS, _WISH_STAT_NAMES):
+        centred(x, y - size * .215, name, theme_font(15, "heading"), _WISH_INK_SOFT)
+        centred(x, y + size / 2 + 14, caption, theme_font(17, "heading"), theme.accent)
+
+    draw.text((84, 58), "F A B L E   /   R E B O R N", font=theme_font(22, "heading"), fill=theme.accent)
+    draw.line((84, 104, 300, 104), fill=theme.accent, width=2)
+    _foil_text(canvas, 1916 - theme_font(40, "title").getlength("WISHLIGHT"), 44, "WISHLIGHT", theme_font(40, "title"), _WISH_FOIL, _WISH_GLOW, .7)
+    edition = f"EVENT EDITION   /   {theme.event.upper()}"
+    draw = ImageDraw.Draw(canvas)
+    draw.text((1916 - theme_font(16, "heading").getlength(edition), 104), edition, font=theme_font(16, "heading"), fill=theme.muted)
+
+    for box, title in zip(_WISH_RAFTS, _WISH_RAFT_TITLES):
+        _water_lantern(canvas, box, title)
+    draw = ImageDraw.Draw(canvas)
+    draw.text((1916 - theme_font(17, "heading").getlength(theme.epithet), 1948), theme.epithet,
+              font=theme_font(17, "heading"), fill=theme.accent)
+    return canvas
+
+
+def render_wishlight(theme, data):
+    """Draw the Wishlight card from resolved data: one lantern-lit night, never cropped standard panels."""
+    canvas = _wishlight_base().copy()
+    draw = ImageDraw.Draw(canvas)
+
+    def fit(value, size, role, width, floor=None):
+        """value in a font that fits width: shrunk as far as floor (two thirds of size unless given), then cut."""
+        value = str(value or "")
+        font = theme_font(size, role)
+        if width:
+            floor = floor or max(15, round(size * .66))
+            while font.getlength(value) > width and size > floor:
+                size -= 1
+                font = theme_font(size, role)
+            if font.getlength(value) > width:
+                while value and font.getlength(value + "\u2026") > width:
+                    value = value[:-1]
+                value += "\u2026"
+        return value, font
+
+    def text(x, y, value, size=24, color=_WISH_INK, width=None, role="body", center=False, right=False):
+        value, font = fit(value, size, role, width)
+        if center:
+            x -= font.getlength(value) / 2
+        elif right:
+            x -= font.getlength(value)
+        draw.text((round(x), round(y)), value, font=font, fill=color)
+
+    def written(x, y, value, size, width):
+        """A number written on a lantern: centred on x, y whatever size it had to shrink to."""
+        value, font = fit(value, size, "title", width, floor=14)   # a number is never cut short
+        draw.text((round(x), round(y)), value, font=font, fill=_WISH_INK, anchor="mm")
+
+    def label(x, y, value):
+        text(x, y, value, 15, _WISH_INK_RED, role="heading")
+
+    def beads(x, y, width, ratio, count=10):
+        """A row of ink beads on the paper, filled up to the ratio."""
+        ratio = max(0, min(1, ratio))
+        for i in range(count):
+            bx = x - width / 2 + width * i / (count - 1)
+            if (i + .5) / count <= ratio or (i == 0 and ratio > 0):
+                draw.ellipse((bx - 4, y - 4, bx + 4, y + 4), fill=_WISH_INK_RED)
+            else:
+                draw.ellipse((bx - 4, y - 4, bx + 4, y + 4), outline=_WISH_INK_SOFT, width=1)
+
+    def ink_bar(x, y, width, ratio):
+        ratio = max(0, min(1, ratio))
+        draw.rounded_rectangle((x, y, x + width, y + 5), radius=3, fill=(222, 164, 112))
+        if ratio * width >= 5:
+            draw.rounded_rectangle((x, y, x + round(width * ratio), y + 5), radius=3, fill=_WISH_INK_RED)
+
+    # The hero's lantern: portrait in its window, level written beneath.
+    cx, cy, tall = _WISH_HERO
+    wx, wy, wd = _WISH_WINDOW
+    avatar = ImageOps.fit(data["avatar"].convert("RGB"), (wd, wd), method=Image.Resampling.LANCZOS)
+    canvas.paste(avatar, (wx - wd // 2, wy - wd // 2), _disc_mask(wd))
+    written(cx, 578, data["level"], 92, 250)
+    text(cx, 634, f'{str(data["rarity"]).upper()} HERO', 17, _WISH_INK_SOFT, 250, "heading", center=True)
+
+    # Power, health, attack and defense, each on a lantern of its own.
+    values = (data["power"], data["health"], data["attack"], data["defense"])
+    for (x, y, size, _caption), value, cap in zip(_WISH_STATS, values, (None, 20000, 5000, 5000)):
+        written(x, y - size * .04, f"{value:,}", round(size * .2), size * .66)
+        if cap is None:
+            text(x, y + size * .13, f'LUCK  {data["luck"]:.2f}%', 15, _WISH_INK_SOFT, size * .56, "heading", center=True)
+        else:
+            beads(x, y + size * .17, size * .46, value / cap)
+
+    # The name, written in lantern light, over a string of lights for experience.
+    value, font = fit(data["name"], 84, "title", 1100)
+    _foil_text(canvas, 1000, 790, value, font, _WISH_FOIL, _WISH_GLOW, .9, center=True)
+    draw = ImageDraw.Draw(canvas)
+    text(1000, 902, f'{data["race"]}  /  {data["classes"]}', 27, theme.muted, 1100, center=True)
+    bulbs = 25
+    lit = round(max(0, min(1, data["xp_progress"])) * bulbs)
+    points = [(640 + 720 * i / (bulbs - 1), 962 + 12 * math.sin(math.pi * i / (bulbs - 1))) for i in range(bulbs)]
+    draw.line(points, fill=theme.secondary, width=1)
+    for i, (x, y) in enumerate(points):
+        if i < lit:
+            _light(canvas, (x - 15, y - 10, x + 15, y + 20), (255, 176, 96), .9)
+    draw = ImageDraw.Draw(canvas)
+    for i, (x, y) in enumerate(points):
+        if i < lit:
+            draw.ellipse((x - 5, y, x + 5, y + 10), fill=(255, 238, 196))
+        else:
+            draw.ellipse((x - 4, y + 1, x + 4, y + 9), fill=theme.background, outline=theme.secondary, width=1)
+    text(1000, 1000, f'{data["xp_progress"]:.0%} TO LEVEL {data["level"]+1}   /   XP #{data["rank_xp"] or "-"}   /   WEALTH #{data["rank_money"] or "-"}',
+         17, theme.muted, 1100, "heading", center=True)
+
+    sprite = data.get("sprite")
+    if sprite is not None:
+        sprite = sprite.convert("RGBA")
+        _light(canvas, (1660 - 130, 900 - 110, 1660 + 130, 900 + 110), _WISH_GLOW, .5)
+        canvas.paste(sprite, (1660 - sprite.width // 2, 830), sprite)
+        draw = ImageDraw.Draw(canvas)
+        text(1660, 830 + sprite.height + 8, data["sprite_name"], 15, theme.muted, 220, center=True)
+
+    # The records, written in ink on four water lanterns.
+    x1, y1, x2, _ = _WISH_RAFTS[0]
+    left, wide = x1 + 30, x2 - x1 - 60
+    text(left, y1 + 78, data["stance"], 27, _WISH_INK, wide, "title")
+    for i, item in enumerate(data["equipment"]):
+        y = y1 + 136 + i * 132
+        label(left, y, item["label"])
+        text(left, y + 22, item["name"], 26, _WISH_INK, wide, "heading")
+        text(left, y + 58, item["detail"], 19, _WISH_INK_SOFT, wide)
+    label(left, y1 + 410, "CURRENT QUEST")
+    text(left, y1 + 432, data["mission"], 22, _WISH_INK, wide, "heading")
+
+    x1, y1, x2, _ = _WISH_RAFTS[1]
+    left = x1 + 30
+    ledger = dict(data["ledger"])
+    for index, key in enumerate(("Money", "Guild", "God", "Amulet", "PvP Wins", "Marriage")):
+        y = y1 + 80 + index * 64
+        label(left, y, key.upper())
+        text(left, y + 20, ledger.get(key, "-"), 24, _WISH_INK, wide, "heading")
+
+    x1, y1, x2, _ = _WISH_RAFTS[2]
+    left = x1 + 30
+    label(left, y1 + 80, "ASCENSION")
+    text(left, y1 + 100, data["ascension"], 24, _WISH_INK, wide, "heading")
+    label(left, y1 + 156, "RELICS AND BADGES")
+    for i, badge in enumerate(data["badges"][:6]):
+        text(left, y1 + 180 + i * 32, badge, 21, _WISH_INK, wide)
+    if data["jury_title"]:
+        text(left, y1 + 384, data["jury_title"], 19, _WISH_INK_RED, wide, "heading")
+    label(left, y1 + 432, "READER")
+    text(left, y1 + 452, f'ID {data["user_id"]}', 17, _WISH_INK_SOFT, wide)
+
+    x1, y1, x2, _ = _WISH_RAFTS[3]
+    left = x1 + 30
+    pet = data["companion"]
+    if pet:
+        px, py = left + 56, y1 + 136
+        pet_image = pet.get("image")
+        draw.ellipse((px - 56, py - 56, px + 56, py + 56), fill=(246, 204, 150))
+        if pet_image:
+            portrait = ImageOps.fit(pet_image.convert("RGBA"), (112, 112), method=Image.Resampling.LANCZOS)
+            canvas.paste(portrait, (px - 56, py - 56), ImageChops.multiply(_disc_mask(112), portrait.getchannel("A")))
+            draw = ImageDraw.Draw(canvas)
+        else:
+            draw_ornament_ink = replace(theme, accent="#%02x%02x%02x" % _WISH_INK_SOFT)
+            draw_ornament(draw, px, py + 4, 30, draw_ornament_ink)
+        draw.ellipse((px - 60, py - 60, px + 60, py + 60), outline=_WISH_INK, width=3)
+        text(left + 136, y1 + 82, pet["name"], 30, _WISH_INK, wide - 136, "title")
+        text(left + 136, y1 + 126, f'Lv {pet["level"]} / {pet["element"]}', 19, _WISH_INK_SOFT, wide - 136)
+        text(left + 136, y1 + 152, pet["stage"], 19, _WISH_INK_SOFT, wide - 136)
+        text(left, y1 + 206, f'BOND {pet["bond"]}   /   IV  {pet["iv"]}%', 16, _WISH_INK_RED, wide, "heading")
+        rows = (("HAPPINESS", pet["happiness"], 100, "%"), ("HUNGER", pet["hunger"], 100, "%"), ("TRUST", pet["trust"], 100, "%"),
+                ("HEALTH", pet["hp"], 30000, ""), ("ATTACK", pet["attack"], 6000, ""), ("DEFENSE", pet["defense"], 6000, ""))
+        for i, (name, value, cap, unit) in enumerate(rows):
+            y = y1 + 244 + i * 37
+            text(left, y, name, 15, _WISH_INK_SOFT, role="heading")
+            text(left + wide, y - 3, f"{value:,}{unit}", 19, _WISH_INK, 170, "heading", right=True)
+            ink_bar(left, y + 24, wide, value / cap)
+    else:
+        mid = (x1 + x2) / 2
+        draw_ornament(draw, mid, y1 + 214, 44, replace(theme, accent="#%02x%02x%02x" % _WISH_INK_SOFT))
+        text(mid, y1 + 290, "A WISH YET TO BE MADE", 25, _WISH_INK, wide, "title", center=True)
+        text(mid, y1 + 334, "No pet equipped / Use $pets equip", 19, _WISH_INK_SOFT, wide, center=True)
     return canvas
 
 

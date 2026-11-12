@@ -53,7 +53,7 @@ from utils.checks import is_gm
 from utils.i18n import _, locale_doc
 from utils.okapi import RenderError, render_profile_classic, render_profile_v2
 from utils.okapi import CLASSES as OKAPI_CLASS_ASSETS
-from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent, render_fable
+from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent, render_fable, render_wishlight
 from .theme_contract import is_contract_alias, start_trade_in
 from .theme_picker import ProfileThemePicker
 from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme, grant_random_theme, theme_drop_message
@@ -2775,7 +2775,7 @@ class Profile(commands.Cog):
         #draw.text((width - 16 - tw(footer, tiny_font), height - (19 if theme.classic else 25)), footer, font=tiny_font, fill=colors["muted"])
 
         output = BytesIO()
-        if theme.rarity in ("Transcendent", "Fable"):
+        if theme.rarity in ("Transcendent", "Fable") or theme.layout == "wishlight":
             # Pass the already resolved gameplay values to a separate visual format.
             # The folio never reads stats back from pixels or recalculates combat.
             companion = None
@@ -2793,7 +2793,10 @@ class Profile(commands.Cog):
                     detail=(f"{item_type_name(item)} / Power {self._format_stat_value(self._effective_item_primary_stat(item))}"
                             f" / {str(item.get('element') or 'No element').title()}") if item else "Empty slot",
                 ))
-            folio = render_fable if theme.rarity == "Fable" else render_transcendent
+            if theme.layout == "wishlight":
+                folio = render_wishlight
+            else:
+                folio = render_fable if theme.rarity == "Fable" else render_transcendent
             canvas = folio(theme, dict(
                 name=card_name, race=race_name, classes=classes, level=level, rarity=rarity,
                 xp_progress=xp_progress, power=power, luck=luck_percent,
@@ -4329,6 +4332,7 @@ class Profile(commands.Cog):
                        allowed_mentions=discord.AllowedMentions.none())
 
     # No "gmevent" alias: the Game Master cog already owns $gmevent.
+    # The check is repeated on every subcommand: discord.py doesn't run a group's checks for them.
     @commands.group(name="gmeventtheme", hidden=True, invoke_without_command=True)
     @commands.check_any(commands.is_owner(), is_gm())
     async def gm_event_theme(self, ctx):
@@ -4347,6 +4351,7 @@ class Profile(commands.Cog):
         return theme if theme is not None and theme.is_event else None
 
     @gm_event_theme.command(name="list")
+    @commands.check_any(commands.is_owner(), is_gm())
     async def gm_event_theme_list(self, ctx):
         events = [theme for theme in THEMES.values() if theme.is_event]
         if not events:
@@ -4362,6 +4367,7 @@ class Profile(commands.Cog):
         await ctx.send(embed=embed)
 
     @gm_event_theme.command(name="preview")
+    @commands.check_any(commands.is_owner(), is_gm())
     async def gm_event_theme_preview(self, ctx, *, name: str):
         theme = self._event_theme_or_none(name)
         if theme is None:
@@ -4369,6 +4375,7 @@ class Profile(commands.Cog):
         await self._send_profile_rpg(ctx, None, theme_key=theme.key, gm_preview=True)
 
     @gm_event_theme.command(name="give", aliases=["grant", "award"])
+    @commands.check_any(commands.is_owner(), is_gm())
     async def gm_event_theme_give(self, ctx, targets: commands.Greedy[MentionOrUserId], *, name: str):
         theme = self._event_theme_or_none(name)
         if theme is None:
@@ -4386,7 +4393,7 @@ class Profile(commands.Cog):
             lines.append(f"No character, skipped: {', '.join(missing)}")
         await ctx.send("\n".join(lines)[:2000], allowed_mentions=discord.AllowedMentions.none())
 
-    async def _send_profile_rpg(self, ctx, target=None, *, theme_key=None, gm_preview=False):
+    async def _send_profile_rpg(self, ctx, target=None, *, theme_key=None, gm_preview=False, preview_caption=None):
         # Shared boundary for both the preview command and wardrobe callbacks.
         # Check the requesting player's ownership before loading or rendering art.
         # gm_preview is only passed by the GM-gated gmeventtheme preview command.
@@ -4504,7 +4511,8 @@ class Profile(commands.Cog):
             theme_key=theme_key,
         )
         if gm_preview:
-            caption = f"GM preview: **{THEMES[theme_key].name}** (not granted or equipped)."
+            # An event cog showing a player its reward says so in its own words.
+            caption = preview_caption or f"GM preview: **{THEMES[theme_key].name}** (not granted or equipped)."
         elif theme_key:
             caption = (f"Preview: **{THEMES[theme_key].name}**. "
                        f"Equip with `{ctx.clean_prefix}prpg theme {theme_key}`")

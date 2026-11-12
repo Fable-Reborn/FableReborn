@@ -32,6 +32,7 @@ EXTRA_COGS = (
     "cogs.companions",   # Tiamat companions, reward DMs and the Clutch badge
     "cogs.rebuild",      # rebuilding Draslin after The Tiamat Sacrament
     "cogs.statcalc",     # slider calculator for raid attack, defense, and health
+    "cogs.wish",         # birthday wishes: $wish, staff approval, $wish redeem, the card
 )
 # Quest campaigns, faction-aware conversations and shops share the Factions service, so it loads
 # ahead of Quests even on older configs.
