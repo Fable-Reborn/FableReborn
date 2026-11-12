@@ -147,3 +147,4 @@ tests/test_elixirs.py
 tests/test_boot_cogs.py
 tests/test_wish.py
 tests/test_profile_themes.py
+assets/wish/sample_card.png

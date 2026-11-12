@@ -78,19 +78,42 @@ def _has_glyph(role: str, ch: str) -> bool:
     return mask.size != missing.size or bytes(mask) != bytes(missing)
 
 
-# Common symbols neither font has, drawn as the nearest one they do have (hearts and stars).
-STAND_INS = {"❤": "♥", "⭐": "★", "✨": "★", "✦": "★", "\U0001F31F": "★"}
+# Common symbols neither font has, drawn as the nearest one they do have. The emoji font is an
+# old one, so the newer faces and gestures go to their older relatives.
+STAND_INS = {"⭐": "★", "✨": "★", "✦": "★", "\U0001F31F": "★",
+             "\U0001F970": "\U0001F60D", "\U0001F973": "\U0001F389", "\U0001FAF6": "\U0001F495"}
+
+# Hearts keep their colour. The emoji font draws in one colour and has none of the newer hearts
+# (pink, orange, white...), so every heart is drawn as a heart the font does have, in the colour
+# the wisher chose.
+HEARTS = {
+    "❤": (240, 84, 96), "❣": (240, 84, 96), "♥": (240, 84, 96),
+    "\U0001FA77": (255, 150, 192), "\U0001F9E1": (255, 158, 72), "\U0001F49B": (255, 214, 92), "\U0001F49A": (118, 220, 140),
+    "\U0001F499": (112, 164, 255), "\U0001FA75": (140, 208, 255), "\U0001F49C": (190, 142, 255), "\U0001F90E": (176, 116, 84),
+    "\U0001F5A4": (132, 132, 148), "\U0001FA76": (176, 180, 192), "\U0001F90D": (255, 255, 255),
+    "\U0001F496": (255, 150, 192), "\U0001F497": (255, 150, 192), "\U0001F493": (255, 120, 150), "\U0001F495": (255, 150, 192),
+    "\U0001F49E": (255, 150, 192), "\U0001F498": (255, 120, 150), "\U0001F49D": (255, 150, 192),
+}
 
 
-def _runs(text: str, role: str) -> list[tuple[str, str]]:
-    """text split into (font role, characters): the given font where it has the glyph, the emoji
-    font where only that does, and nothing for characters neither can draw."""
-    runs: list[tuple[str, str]] = []
+# The font fills these four with a pattern (hatched, dotted) to tell them apart in one colour.
+# With real colour that isn't needed, so they are drawn solid like the rest.
+PLAIN_HEARTS = "\U0001F49B\U0001F49A\U0001F499\U0001F49C"
+
+
+def _runs(text: str, role: str) -> list[tuple[str, str, tuple | None]]:
+    """text split into (font role, characters, colour): the given font where it has the glyph,
+    the emoji font where only that does, and nothing for characters neither can draw. colour is
+    None for ordinary text and the heart's own colour for a heart."""
+    runs: list[tuple[str, str, tuple | None]] = []
     for ch in text:
         if ch in STAND_INS and not _has_glyph(role, ch) and not _has_glyph("emoji", ch):
             ch = STAND_INS[ch]
+        colour = HEARTS.get(ch)
+        if colour and (ch in PLAIN_HEARTS or not _has_glyph("emoji", ch)):
+            ch = "♥"
         if ch.isspace():
-            use = runs[-1][0] if runs else role
+            use, colour = (runs[-1][0] if runs else role), (runs[-1][2] if runs else None)
             ch = " "
         elif _has_glyph(role, ch):
             use = role
@@ -98,22 +121,22 @@ def _runs(text: str, role: str) -> list[tuple[str, str]]:
             use = "emoji"
         else:
             continue   # variation selectors, joiners, scripts neither font covers
-        if runs and runs[-1][0] == use:
-            runs[-1] = (use, runs[-1][1] + ch)
+        if runs and runs[-1][0] == use and runs[-1][2] == colour:
+            runs[-1] = (use, runs[-1][1] + ch, colour)
         else:
-            runs.append((use, ch))
+            runs.append((use, ch, colour))
     return runs
 
 
 def _width(text: str, role: str, size: float) -> float:
-    return sum(_font(r, size).getlength(part) for r, part in _runs(text, role))
+    return sum(_font(r, size).getlength(part) for r, part, _colour in _runs(text, role))
 
 
 def _draw_text(draw, x: float, baseline: float, text: str, role: str, size: float, fill) -> float:
     """Draws text from x on the baseline (both already multiplied by S). Returns where it ended."""
-    for r, part in _runs(text, role):
+    for r, part, colour in _runs(text, role):
         font = _font(r, size)
-        draw.text((x, baseline), part, font=font, fill=fill, anchor="ls")
+        draw.text((x, baseline), part, font=font, fill=(*colour, *fill[3:]) if colour else fill, anchor="ls")
         x += font.getlength(part)
     return x
 
@@ -326,7 +349,7 @@ def _spaced(draw, cx: float, baseline: float, text: str, role: str, size: float,
             sparks: bool = False) -> None:
     """Letter-spaced small text centred on cx (final pixels), with a spark either side if asked."""
     gap = tracking * S
-    glyphs = [(_font(r, size), ch) for r, part in _runs(text, role) for ch in part]
+    glyphs = [(_font(r, size), ch) for r, part, _colour in _runs(text, role) for ch in part]
     total = sum(font.getlength(ch) for font, ch in glyphs) + gap * (len(glyphs) - 1)
     x = cx * S - total / 2
     if sparks:
