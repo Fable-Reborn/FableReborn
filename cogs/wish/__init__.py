@@ -102,9 +102,9 @@ class RedeemView(discord.ui.View):
             self.add(_("3 Divine + 3 Fortune crates"), discord.ButtonStyle.primary, self.pick_crates, emoji="\U0001F381")
             self.add(_("{n} elixirs of your choice").format(n=lib.REWARD_ELIXIRS), discord.ButtonStyle.primary,
                      self.pick_elixirs, emoji="\U0001F9EA")
-            self.add(_("The Wishlight background"), discord.ButtonStyle.primary, self.pick_background,
+            self.add(_("The two backgrounds"), discord.ButtonStyle.primary, self.pick_background,
                      emoji="\U0001F3EE", disabled=self.owns_background)
-            self.add(_("Preview the background"), discord.ButtonStyle.secondary, self.preview, emoji="\U0001F440", row=1)
+            self.add_previews(row=1)
         elif self.choice == "elixirs":
             if len(self.picks) < lib.REWARD_ELIXIRS:
                 shelf = discord.ui.Select(
@@ -123,7 +123,12 @@ class RedeemView(discord.ui.View):
             self.add(_("Confirm"), discord.ButtonStyle.success, self.confirm)
             self.add(_("Back"), discord.ButtonStyle.secondary, self.back)
             if self.choice == "background":
-                self.add(_("Preview it first"), discord.ButtonStyle.secondary, self.preview, emoji="\U0001F440")
+                self.add_previews(row=1)
+
+    def add_previews(self, row: int):
+        """One preview button for each background, so either can be looked at on its own."""
+        for key, name in zip(lib.THEME_KEYS, lib.THEME_NAMES):
+            self.add(_("Preview {name}").format(name=name), discord.ButtonStyle.secondary, self.preview_of(key), emoji="\U0001F440", row=row)
 
     def add(self, label, style, callback, **kwargs):
         button = discord.ui.Button(label=label, style=style, **kwargs)
@@ -181,15 +186,18 @@ class RedeemView(discord.ui.View):
             self.picks.pop()
         await self.redraw(interaction)
 
-    async def preview(self, interaction: discord.Interaction):
-        if self.previewing:
-            return await interaction.response.send_message(_("Your preview is on its way."), ephemeral=True)
-        self.previewing = True
-        await interaction.response.defer()
-        try:
-            await self.cog.send_preview(self.ctx)
-        finally:
-            self.previewing = False
+    def preview_of(self, key: str):
+        """The button callback that posts the player's profile wearing one background. Gives nothing."""
+        async def preview(interaction: discord.Interaction):
+            if self.previewing:
+                return await interaction.response.send_message(_("Your preview is on its way."), ephemeral=True)
+            self.previewing = True
+            await interaction.response.defer()
+            try:
+                await self.cog.send_preview(self.ctx, key)
+            finally:
+                self.previewing = False
+        return preview
 
     async def confirm(self, interaction: discord.Interaction):
         choice, self.choice = self.choice, None
@@ -210,7 +218,30 @@ class Wish(commands.Cog):
     async def cog_load(self):
         async with self.bot.pool.acquire() as conn:
             await conn.execute(lib.TABLE_SQL)
+        await self.share_backgrounds()
         self.bot.add_view(self.review_view)
+
+    async def share_backgrounds(self) -> int:
+        """Whoever holds one of the wish backgrounds, or redeemed the background reward, holds them
+        all. So a background added after people redeemed reaches them the next time this loads.
+        Returns how many were handed out."""
+        given = 0
+        try:
+            for key in lib.THEME_KEYS:
+                done = await self.bot.pool.execute(
+                    "INSERT INTO profile_theme_unlocks (user_id, theme_key, source) "
+                    "SELECT holder.user_id, $1, 'event:birthday_wish' FROM ("
+                    "SELECT user_id FROM profile_theme_unlocks WHERE theme_key = ANY($2::text[]) "
+                    "UNION SELECT user_id FROM birthday_wishes WHERE reward = 'background') holder "
+                    'JOIN profile ON profile."user" = holder.user_id '
+                    "ON CONFLICT (user_id, theme_key) DO NOTHING",
+                    key, list(lib.THEME_KEYS))
+                given += int(done.split()[-1])
+        except asyncpg.UndefinedTableError:
+            pass   # the Profile cog hasn't made its table yet; nobody can hold a background before it has
+        if given:
+            log.info("Shared %s wish background unlock(s) with players who already held one", given)
+        return given
 
     async def cog_unload(self):
         self.review_view.stop()
@@ -321,7 +352,7 @@ class Wish(commands.Cog):
     def rewards_text(self) -> str:
         """The three rewards, for a player to read before choosing."""
         return (self.crates_text() + "\n" + _("**or**") + "\n" + self.elixirs_line() + "\n" + _("**or**") + "\n"
-                + _("- the **Wishlight** profile background, only from this birthday"))
+                + _("- **two** profile backgrounds, **Wishlight** and **Moonlight Lantern**, only from this birthday"))
 
     @staticmethod
     def picks_text(picks) -> str:
@@ -358,8 +389,8 @@ class Wish(commands.Cog):
                 for i, name in enumerate(elixirs.QUALITY_NAMES)]
 
     def redeem_embed(self, ctx, choice: str | None, owns_background: bool, picks=(), quality: int = lib.DEFAULT_QUALITY) -> discord.Embed:
-        background = _("- **Wishlight**, a profile background that only exists for this birthday. "
-                       "It can't be earned any other way.")
+        background = _("- **Wishlight** and **Moonlight Lantern**: two profile backgrounds that only exist for this birthday. "
+                       "You get both, and they can't be earned any other way.")
         final = _("This is your one reward and can't be changed afterwards.")
         if choice == "elixirs":
             left = lib.REWARD_ELIXIRS - len(picks)
@@ -379,25 +410,29 @@ class Wish(commands.Cog):
         if choice == "crates":
             return discord.Embed(title=_("Take the crates?"), colour=COLOUR, description=self.crates_text() + "\n\n" + final)
         if choice == "background":
-            return discord.Embed(title=_("Take the Wishlight background?"), colour=COLOUR, description=background + "\n\n" + final)
+            return discord.Embed(title=_("Take the two backgrounds?"), colour=COLOUR, description=background + "\n\n" + final)
         embed = discord.Embed(title=_("\U0001F382 Thank you for your wish"), colour=COLOUR,
                               description=_("Your wish is on the card. Pick **one** thank-you gift:"))
         embed.add_field(name=_("\U0001F381 Crates"), value=self.crates_text(), inline=False)
         embed.add_field(name=_("\U0001F9EA Elixirs"), value=self.elixirs_line(), inline=False)
-        embed.add_field(name=_("\U0001F3EE The Wishlight background"),
-                        value=background + ("\n" + _("*You already own it.*") if owns_background else ""), inline=False)
+        embed.add_field(name=_("\U0001F3EE The two backgrounds"),
+                        value=background + ("\n" + _("*You already own them.*") if owns_background else ""), inline=False)
         embed.set_footer(text=_("Elixirs shows what every elixir does before you choose. "
-                                "Preview shows the background on your own profile."))
+                                "Preview shows both backgrounds on your own profile."))
         return embed
 
-    async def send_preview(self, ctx):
+    async def send_preview(self, ctx, only: str | None = None):
+        """Posts the player's own profile wearing a wish background (all of them unless one is named)."""
         profile = self.bot.get_cog("Profile")
         if profile is None:
             return await ctx.send(_("Profiles are unavailable right now, so there's no preview. Try again in a moment."))
-        await profile._send_profile_rpg(
-            ctx, None, theme_key=lib.THEME_KEY, gm_preview=True,
-            preview_caption=_("{user}, this is your profile with the **Wishlight** background. Nothing has been chosen yet.").format(
-                user=ctx.author.mention))
+        for key, name in zip(lib.THEME_KEYS, lib.THEME_NAMES):
+            if only is not None and key != only:
+                continue
+            await profile._send_profile_rpg(
+                ctx, None, theme_key=key, gm_preview=True,
+                preview_caption=_("{user}, this is your profile with the **{name}** background. Nothing has been chosen yet.").format(
+                    user=ctx.author.mention, name=name))
 
     @staticmethod
     async def give_elixir(conn, user_id: int, ctype: str) -> bool:
@@ -435,17 +470,20 @@ class Wish(commands.Cog):
             if not await self.claim(self.bot.pool, wish_id, user_id, "background"):
                 return taken
             try:
-                granted = await grant_event_theme(self.bot.pool, user_id, lib.THEME_KEY, "birthday_wish")
+                granted = True
+                for key in lib.THEME_KEYS:
+                    granted = await grant_event_theme(self.bot.pool, user_id, key, "birthday_wish") and granted
             except Exception:
-                log.exception("Could not grant the wish background to %s", user_id)
+                log.exception("Could not grant the wish backgrounds to %s", user_id)
                 granted = False
             if not granted:   # hand the choice back, so nothing is lost
                 await self.bot.pool.execute(
                     "UPDATE birthday_wishes SET reward = NULL, redeemed_at = NULL WHERE id = $1", wish_id)
-                return _("The background couldn't be added just now. Nothing was used up: try `{prefix}wish redeem` again in a moment.").format(
+                return _("The backgrounds couldn't be added just now. Nothing was used up: try `{prefix}wish redeem` again in a moment.").format(
                     prefix=ctx.clean_prefix)
-            return _("\U0001F3EE **Wishlight** is yours. Put it on with `{prefix}prpg theme {key}`.").format(
-                prefix=ctx.clean_prefix, key=lib.THEME_KEY)
+            return _("\U0001F3EE **Wishlight** and \U0001F315 **Moonlight Lantern** are yours. Put one on with "
+                     "`{prefix}prpg theme {first}` or `{prefix}prpg theme {second}`.").format(
+                prefix=ctx.clean_prefix, first=lib.THEME_KEYS[0], second=lib.THEME_KEYS[1])
 
         if choice == "crates":
             async with self.bot.pool.acquire() as conn:
@@ -496,7 +534,7 @@ class Wish(commands.Cog):
         _(
             """`<message>` - your birthday wish, up to 200 characters
 
-            Writes your wish for the birthday card. Staff read every wish before it goes on. Once yours is approved you get a DM, and `{prefix}wish redeem` lets you pick a thank-you gift: 3 divine and 3 fortune crates, or 8 elixirs of your choice at any quality, or the Wishlight profile background.
+            Writes your wish for the birthday card. Staff read every wish before it goes on. Once yours is approved you get a DM, and `{prefix}wish redeem` lets you pick a thank-you gift: 3 divine and 3 fortune crates, or 8 elixirs of your choice at any quality, or the two wish profile backgrounds (Wishlight and Moonlight Lantern).
 
             One wish each. You need to be in the Fable server, on your main account. Send it in the Fable server: your message is deleted the moment you send it, to keep the surprise."""
         )
@@ -624,14 +662,15 @@ class Wish(commands.Cog):
     @locale_doc
     async def redeem(self, ctx):
         _(
-            """Pick the thank-you gift for your approved birthday wish: 3 divine and 3 fortune crates, or 8 elixirs of your choice at any quality, or the Wishlight profile background.
+            """Pick the thank-you gift for your approved birthday wish: 3 divine and 3 fortune crates, or 8 elixirs of your choice at any quality, or the two wish profile backgrounds (Wishlight and Moonlight Lantern).
 
             You can see what every elixir does, and preview the background on your own profile, before you choose. One gift, and the choice is final."""
         )
         async with self.bot.pool.acquire() as conn:
             mine = await self.open_wish(conn, ctx.author.id)
-            owns = bool(await conn.fetchval(
-                "SELECT 1 FROM profile_theme_unlocks WHERE user_id = $1 AND theme_key = $2", ctx.author.id, lib.THEME_KEY))
+            owns = await conn.fetchval(
+                "SELECT COUNT(*) FROM profile_theme_unlocks WHERE user_id = $1 AND theme_key = ANY($2::text[])",
+                ctx.author.id, list(lib.THEME_KEYS)) == len(lib.THEME_KEYS)
             rewarded = await conn.fetchval(
                 "SELECT 1 FROM birthday_wishes WHERE user_id = $1 AND reward IS NOT NULL LIMIT 1", ctx.author.id)
         if mine is None and rewarded:
@@ -684,6 +723,7 @@ class Wish(commands.Cog):
             f"`{p}gmwish name <name>` - the name written on the card\n"
             f"`{p}gmwish card` - draw the card here, without sending it\n"
             f"`{p}gmwish remove <wish #>` - take an approved wish off the card\n"
+            f"`{p}gmwish catchup` - give every background to players who already hold one\n"
             f"`{p}gmwish send` - send the card to the birthday person"), inline=False)
         await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
@@ -717,6 +757,21 @@ class Wish(commands.Cog):
         await self.bot.pool.execute(
             "INSERT INTO birthday_wish_event (id, recipient_name) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET recipient_name = $1", name)
         await ctx.send(f"The card will say **Happy Birthday {name or await self.recipient_name()}**.")
+
+    @gmwish.command(name="catchup", aliases=["sync"])
+    @gm_only
+    async def gm_catchup(self, ctx):
+        """Gives every wish background to players who hold one or redeemed the background reward.
+
+        This runs by itself whenever the bot starts. Use it after adding a background without a
+        restart, or to check that nobody was missed. Running it twice gives nothing twice."""
+        given = await self.share_backgrounds()
+        holders = await self.bot.pool.fetchval(
+            "SELECT COUNT(DISTINCT user_id) FROM profile_theme_unlocks WHERE theme_key = ANY($1::text[])", list(lib.THEME_KEYS))
+        names = " and ".join(f"**{name}**" for name in lib.THEME_NAMES)
+        if given:
+            return await ctx.send(f"Caught up: handed out **{given}** missing background(s). **{holders}** player(s) now hold {names}.")
+        await ctx.send(f"Nobody was missing one. **{holders}** player(s) hold {names}.")
 
     @gmwish.command(name="remove")
     @gm_only

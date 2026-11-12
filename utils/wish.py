@@ -2,7 +2,7 @@
 
 `$wish <message>` puts a wish in front of staff in the review channel. Once it's approved, the
 player picks one thank-you with `$wish redeem`: crates, or elixirs of their choosing, or the
-Wishlight profile background. Every approved wish goes on one card (cogs/wish/card.py) that a GM sends to the
+two wish profile backgrounds (Wishlight and Moonlight Lantern). Every approved wish goes on one card (cogs/wish/card.py) that a GM sends to the
 birthday person with `$gmwish send`.
 
 Who can wish: anyone with a character who is in the Fable server and doesn't carry the alt role,
@@ -27,7 +27,11 @@ MIN_LENGTH = 3
 MAX_LENGTH = 200
 NAME_LENGTH = 32
 
-THEME_KEY = "wishlight"                   # the background reward: an event theme in cogs/profile/themes.py
+# The background reward is both of these event themes (cogs/profile/themes.py), given together.
+# Anyone who holds one is given the rest when the cog loads, so a background added later reaches
+# the players who had already redeemed.
+THEME_KEYS = ("wishlight", "moonlantern")
+THEME_NAMES = ("Wishlight", "Moonlight Lantern")
 REWARD_CRATES = {"divine": 3, "fortune": 3}
 REWARD_ELIXIRS = 8                        # elixirs in the elixir reward: any kind, any quality, repeats allowed
 DEFAULT_QUALITY = 2                       # the quality the picker starts on (elixirs.QUALITIES: 0 plain, 1 silver, 2 gold)
