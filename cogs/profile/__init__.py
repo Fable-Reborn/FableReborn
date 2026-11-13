@@ -40,6 +40,7 @@ from classes.classes import from_string as class_from_string
 from classes.context import Context
 from classes.converters import IntFromTo, MemberWithCharacter, UserWithCharacter
 from classes.endgame import apply_item_progression_bonus, soulbound_level_from_xp
+from classes.equipment.repository import equip_item, fetch_loadout, unequip_item
 from classes.items import ALL_ITEM_TYPES, ItemType
 from cogs.adventure import ADVENTURE_NAMES
 from cogs.help import chunks
@@ -1652,7 +1653,7 @@ class PresetManagerView(discord.ui.View):
         async with cog.bot.pool.acquire() as conn:
             await cog.sanitize_presets_for_user(ctx.author.id, conn=conn)
             rows = await conn.fetch(
-                "SELECT preset_id, item_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
+                "SELECT preset_id, item_ids, gear_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
                 ctx.author.id,
             )
             max_slots = await cog.get_preset_limit(conn, ctx.author.id)
@@ -1662,7 +1663,7 @@ class PresetManagerView(discord.ui.View):
         async with self.cog.bot.pool.acquire() as conn:
             await self.cog.sanitize_presets_for_user(self.author_id, conn=conn)
             self.rows = list(await conn.fetch(
-                "SELECT preset_id, item_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
+                "SELECT preset_id, item_ids, gear_ids FROM presets WHERE user_id=$1 ORDER BY preset_id;",
                 self.author_id,
             ))
             self.max_slots = await self.cog.get_preset_limit(conn, self.author_id)
@@ -1678,7 +1679,10 @@ class PresetManagerView(discord.ui.View):
         amulet = "no amulet state"
         if has_amulet:
             amulet = f"amulet {amulet_id}" if amulet_id else "amulet unequipped"
-        return f"{len(item_ids)} gear item(s) • {amulet}"
+        text = f"{len(item_ids)} gear item(s) • {amulet}"
+        if self.cog._armory_open() and row["gear_ids"]:
+            text += f" • {len(row['gear_ids'])} armor piece(s)"
+        return text
 
     def build_embed(self):
         embed = discord.Embed(
@@ -1702,6 +1706,10 @@ class PresetManagerView(discord.ui.View):
                 value=(
                     f"Gear IDs: {', '.join(map(str, item_ids)) if item_ids else 'none'}\n"
                     f"Amulet: {amulet_id if has_amulet and amulet_id else ('unequipped' if has_amulet else 'not saved')}"
+                    + (
+                        f"\nArmor IDs: {', '.join(map(str, selected['gear_ids'])) if selected['gear_ids'] else 'none'}"
+                        if self.cog._armory_open() else ""
+                    )
                 )[:1024],
                 inline=False,
             )
@@ -1799,6 +1807,20 @@ class Profile(commands.Cog):
     async def cog_load(self):
         await self._ensure_profile_xp_bigint()
         await ensure_theme_schema(self.bot.pool)
+        await self._ensure_preset_gear_column()
+
+    async def _ensure_preset_gear_column(self) -> None:
+        async with self.bot.pool.acquire() as conn:
+            await conn.execute(
+                """
+                ALTER TABLE IF EXISTS presets
+                ADD COLUMN IF NOT EXISTS gear_ids BIGINT[] NOT NULL DEFAULT '{}'
+                """
+            )
+
+    def _armory_open(self) -> bool:
+        cog = self.bot.get_cog("Equipment")
+        return bool(cog and getattr(cog, "available", False) and getattr(cog, "schema_ready", False))
 
     async def _ensure_profile_xp_bigint(self) -> None:
         async with self.bot.pool.acquire() as conn:
@@ -3056,7 +3078,7 @@ class Profile(commands.Cog):
             if preset_id is None:
                 rows = await conn.fetch(
                     """
-                    SELECT preset_id, item_ids
+                    SELECT preset_id, item_ids, gear_ids
                     FROM presets
                     WHERE user_id = $1
                     ORDER BY preset_id;
@@ -3066,7 +3088,7 @@ class Profile(commands.Cog):
             else:
                 rows = await conn.fetch(
                     """
-                    SELECT preset_id, item_ids
+                    SELECT preset_id, item_ids, gear_ids
                     FROM presets
                     WHERE user_id = $1 AND preset_id = $2;
                     """,
@@ -3112,6 +3134,22 @@ class Profile(commands.Cog):
                 )
                 valid_amulet_ids = {int(row["id"]) for row in valid_amulet_rows}
 
+            armor_ids = list(dict.fromkeys(
+                int(armor_id) for row in rows for armor_id in (row["gear_ids"] or [])
+            ))
+            valid_armor_ids = None
+            if armor_ids and await conn.fetchval("SELECT to_regclass('equipment_items') IS NOT NULL;"):
+                valid_armor_rows = await conn.fetch(
+                    """
+                    SELECT id
+                    FROM equipment_items
+                    WHERE owner_id = $1 AND id = ANY($2::bigint[]);
+                    """,
+                    user_id,
+                    armor_ids,
+                )
+                valid_armor_ids = {int(row["id"]) for row in valid_armor_rows}
+
             result = {"updated": [], "deleted": []}
             for row in rows:
                 original_ids = list(row["item_ids"] or [])
@@ -3132,19 +3170,27 @@ class Profile(commands.Cog):
                     else:
                         changed = True
 
+                original_armor = [int(armor_id) for armor_id in (row["gear_ids"] or [])]
+                cleaned_armor = original_armor
+                if valid_armor_ids is not None:
+                    cleaned_armor = [a for a in original_armor if a in valid_armor_ids]
+                    if cleaned_armor != original_armor:
+                        changed = True
+
                 if not changed:
                     continue
 
-                if cleaned_ids:
+                if cleaned_ids or cleaned_armor:
                     await conn.execute(
                         """
                         UPDATE presets
-                        SET item_ids = $1
+                        SET item_ids = $1, gear_ids = $4
                         WHERE user_id = $2 AND preset_id = $3;
                         """,
                         cleaned_ids,
                         user_id,
                         row["preset_id"],
+                        cleaned_armor,
                     )
                     result["updated"].append(str(row["preset_id"]))
                 else:
@@ -6271,7 +6317,7 @@ class Profile(commands.Cog):
         Creates or overwrites a preset using your currently equipped items.
         Optional mode:
           - items (default): only equipment from inventory
-          - all: equipment + current amulet state
+          - all: equipment + current amulet state + worn armor ($gear)
         Enforces a per-user preset limit: MAX_PRESETS (6), more for donator tiers.
         Usage:
             $preset create raid_loadout
@@ -6311,11 +6357,15 @@ class Profile(commands.Cog):
                     ctx.author.id,
                 )
 
+            armor_ids: list[int] = []
+            if include_amulet and self._armory_open():
+                armor_ids = [int(piece["id"]) for piece in (await fetch_loadout(conn, ctx.author.id)).values()]
+
             if not item_ids and not include_amulet:
                 return await ctx.send("You have no currently equipped items to save.")
-            if not item_ids and include_amulet and equipped_amulet_id is None:
+            if not item_ids and include_amulet and equipped_amulet_id is None and not armor_ids:
                 return await ctx.send(
-                    "You have no currently equipped items or amulet to save."
+                    "You have no currently equipped items, armor, or amulet to save."
                 )
 
             if include_amulet:
@@ -6358,14 +6408,15 @@ class Profile(commands.Cog):
             # 4) Insert or update the preset in the DB
             await conn.execute(
                 """
-                INSERT INTO presets (user_id, preset_id, item_ids)
-                VALUES ($1, $2, $3)
+                INSERT INTO presets (user_id, preset_id, item_ids, gear_ids)
+                VALUES ($1, $2, $3, $4)
                 ON CONFLICT (user_id, preset_id)
-                DO UPDATE SET item_ids = EXCLUDED.item_ids;
+                DO UPDATE SET item_ids = EXCLUDED.item_ids, gear_ids = EXCLUDED.gear_ids;
                 """,
                 ctx.author.id,
                 preset_id,
-                item_ids
+                item_ids,
+                armor_ids,
             )
 
         saved_item_ids = [i for i in item_ids if not self._is_preset_amulet_marker(i)]
@@ -6373,8 +6424,12 @@ class Profile(commands.Cog):
 
         if include_amulet:
             amulet_text = str(equipped_amulet_id) if equipped_amulet_id is not None else "none"
+            armor_text = ""
+            if self._armory_open():
+                armor_text = f" | armor: {', '.join(map(str, armor_ids)) if armor_ids else '(none)'}"
             await ctx.send(
                 f"Preset **{preset_id}** saved with item IDs: {saved_items_text} | amulet: {amulet_text}"
+                f"{armor_text}"
             )
         else:
             await ctx.send(
@@ -6405,7 +6460,7 @@ class Profile(commands.Cog):
             # Get the preset
             record = await conn.fetchrow(
                 """
-                SELECT item_ids
+                SELECT item_ids, gear_ids
                   FROM presets
                  WHERE user_id = $1
                    AND preset_id = $2
@@ -6424,12 +6479,14 @@ class Profile(commands.Cog):
             item_ids, preset_has_amulet_state, preset_amulet_id = (
                 self._split_preset_saved_ids(raw_ids)
             )
+            armor_ids = [int(armor_id) for armor_id in (record["gear_ids"] or [])]
+            apply_armor = bool(apply_amulet and armor_ids and self._armory_open())
 
-            if not item_ids and not preset_has_amulet_state:
+            if not item_ids and not preset_has_amulet_state and not armor_ids:
                 return await ctx.send(f"Preset **{preset_id}** has no items stored.")
-            if not item_ids and preset_has_amulet_state and not apply_amulet:
+            if not item_ids and (preset_has_amulet_state or armor_ids) and not apply_amulet:
                 return await ctx.send(
-                    f"Preset **{preset_id}** has no gear items. Use `all` mode to apply the amulet state."
+                    f"Preset **{preset_id}** has no weapon items. Use `all` mode to apply its amulet/armor."
                 )
 
             # 2) Get currently equipped items to unequip them later
@@ -6551,6 +6608,17 @@ class Profile(commands.Cog):
                             ctx.author.id,
                         )
 
+                worn_armor: list[str] = []
+                skipped_armor: list[str] = []
+                if apply_armor:
+                    await unequip_item(conn, ctx.author.id)
+                    for armor_id in armor_ids:
+                        status, piece = await equip_item(conn, ctx.author.id, armor_id)
+                        if status == "equipped":
+                            worn_armor.append(f"- {piece['name']} ({piece['slot']})")
+                        else:
+                            skipped_armor.append(f"`{armor_id}` ({status})")
+
         # 7) Send success message with item details
         item_details = []
         for item_id in item_ids:
@@ -6572,6 +6640,13 @@ class Profile(commands.Cog):
         elif not apply_amulet and preset_has_amulet_state:
             item_details.append("- Amulet state is saved in this preset (use `all` mode to apply)")
 
+        if apply_armor:
+            item_details.extend(worn_armor)
+            if skipped_armor:
+                item_details.append(f"- Armor skipped: {', '.join(skipped_armor)}")
+        elif armor_ids and not apply_amulet and self._armory_open():
+            item_details.append("- Armor is saved in this preset (use `all` mode to apply)")
+
         if not item_details:
             item_details.append("- Nothing changed.")
 
@@ -6589,7 +6664,7 @@ class Profile(commands.Cog):
             await self.sanitize_presets_for_user(ctx.author.id, conn=conn)
             rows = await conn.fetch(
                 """
-                SELECT preset_id, item_ids
+                SELECT preset_id, item_ids, gear_ids
                   FROM presets
                  WHERE user_id = $1
                  ORDER BY preset_id
@@ -6616,7 +6691,10 @@ class Profile(commands.Cog):
             else:
                 amulet_str = str(preset_amulet_id)
 
-            lines.append(f"**Preset {pid}:** items={items_str} | amulet={amulet_str}")
+            line = f"**Preset {pid}:** items={items_str} | amulet={amulet_str}"
+            if self._armory_open() and r["gear_ids"]:
+                line += f" | armor={', '.join(map(str, r['gear_ids']))}"
+            lines.append(line)
 
         await ctx.send("\n".join(lines))
 
