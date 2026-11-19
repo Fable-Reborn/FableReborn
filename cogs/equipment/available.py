@@ -153,11 +153,20 @@ class GearCraftView(discord.ui.View):
         if not shown:
             embed.add_field(name="None discovered", value="Find a piece of this line to learn its pattern.")
             return embed
-        blocks = []
+        grouped: dict[str, list[dict]] = {}
         for recipe in shown:
-            marker = "▶ " if recipe["key"] == self.selected_key else ""
-            progress = recipe["progress"]
-            block = f"{marker}**{recipe['rarity'].title()}**\n" + "\n".join(progress["lines"])
+            grouped.setdefault(recipe["rarity"], []).append(recipe)
+        blocks = []
+        for rarity in RARITIES:
+            recipes = grouped.get(rarity)
+            if not recipes:
+                continue
+            slots = ", ".join(SLOT_NOUN.get(recipe["slot"], recipe["slot"]) for recipe in recipes)
+            selected = next((recipe for recipe in recipes if recipe["key"] == self.selected_key), None)
+            progress = recipes[0]["progress"]
+            block = f"{'▶ ' if selected else ''}**{rarity.title()}** — {slots}\n" + "\n".join(progress["lines"])
+            if selected:
+                block += f"\nSelected: {SLOT_NOUN.get(selected['slot'], selected['slot'])}"
             if progress["state"] == "ready":
                 block += "\n🟢 **Ready to craft!**"
             elif progress["state"] == "close":
