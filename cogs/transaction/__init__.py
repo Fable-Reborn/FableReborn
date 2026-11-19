@@ -468,6 +468,10 @@ class Transaction(commands.Cog):
             return True
         if any(amount > 0 for amount in offer.get("consumables", {}).values()):
             return True
+        if offer.get("gear"):
+            return True
+        if any(amount > 0 for amount in offer.get("armory", {}).values()):
+            return True
         return False
 
     @staticmethod
@@ -510,6 +514,11 @@ class Transaction(commands.Cog):
                 lines.append(f"• {rarity.title()} crates: **{int(amount)}**")
         for item in offer.get("items", []):
             lines.append(f"• {item['name']} (ID {item['id']}, stat {item['damage'] + item['armor']})")
+        for item in offer.get("gear", []):
+            lines.append(f"• Armor {item['name']} (armor ID {item['id']})")
+        for material_id, amount in offer.get("armory", {}).items():
+            if amount:
+                lines.append(f"• Armory {material_id.replace('_', ' ').title()}: **{int(amount)}**")
         for resource, amount in offer.get("resources", {}).items():
             if amount:
                 lines.append(f"• {resource.replace('_', ' ').title()}: **{int(amount)}**")
@@ -541,6 +550,8 @@ class Transaction(commands.Cog):
         offer["crates"].clear()
         offer["resources"].clear()
         offer.setdefault("consumables", defaultdict(lambda: 0)).clear()
+        offer["gear"] = []
+        offer.setdefault("armory", defaultdict(lambda: 0)).clear()
         return True, "Your offer was cleared."
 
     async def update_trade_offer_component(
@@ -953,6 +964,56 @@ class Transaction(commands.Cog):
                             f"(has {current_amount or 0}, needs {amount})."
                         )
 
+                from classes.equipment.repository import add_materials, move_piece, spend_materials
+
+                for giver, pieces in (
+                    (user1, user1_gives.get("gear") or []),
+                    (user2, user2_gives.get("gear") or []),
+                ):
+                    for piece in pieces:
+                        owned = await conn.fetchrow(
+                            """
+                            SELECT bound, fully_rolled, refinement, modification_state, owner_id
+                              FROM equipment_items
+                             WHERE id = $1
+                             FOR UPDATE
+                            """,
+                            int(piece["id"]),
+                        )
+                        if (
+                            owned is None
+                            or int(owned["owner_id"]) != int(giver.id)
+                            or owned["bound"]
+                            or owned["fully_rolled"]
+                            or int(owned["refinement"] or 0) > 0
+                            or str(owned["modification_state"] or "pristine") != "pristine"
+                        ):
+                            return await chan.send(
+                                "Trade cancelled. A piece can no longer be traded."
+                            )
+                for giver, offered in (
+                    (user1, user1_gives.get("armory") or {}),
+                    (user2, user2_gives.get("armory") or {}),
+                ):
+                    for material_id, amount in offered.items():
+                        if int(amount) <= 0:
+                            continue
+                        have = await conn.fetchval(
+                            """
+                            SELECT amount
+                              FROM equipment_materials
+                             WHERE user_id = $1
+                               AND material_id = $2
+                             FOR UPDATE
+                            """,
+                            int(giver.id),
+                            material_id,
+                        )
+                        if have is None or int(have) < int(amount):
+                            return await chan.send(
+                                "Trade cancelled. An armory material stack changed."
+                            )
+
                 # Everything OK, do transaction
                 if user1_items:
                     await conn.execute(
@@ -976,6 +1037,28 @@ class Transaction(commands.Cog):
                         False,
                         user2_item_ids,
                     )
+                for piece in user1_gives.get("gear") or []:
+                    if await move_piece(conn, int(piece["id"]), user1.id, user2.id) != "moved":
+                        raise RuntimeError("cuirass transfer failed")
+                for piece in user2_gives.get("gear") or []:
+                    if await move_piece(conn, int(piece["id"]), user2.id, user1.id) != "moved":
+                        raise RuntimeError("cuirass transfer failed")
+                user1_armory = {
+                    material_id: int(amount)
+                    for material_id, amount in (user1_gives.get("armory") or {}).items()
+                    if int(amount) > 0
+                }
+                user2_armory = {
+                    material_id: int(amount)
+                    for material_id, amount in (user2_gives.get("armory") or {}).items()
+                    if int(amount) > 0
+                }
+                if user1_armory and not await spend_materials(conn, user1.id, user1_armory):
+                    raise RuntimeError("armory material transfer failed")
+                if user2_armory and not await spend_materials(conn, user2.id, user2_armory):
+                    raise RuntimeError("armory material transfer failed")
+                await add_materials(conn, user2.id, user1_armory)
+                await add_materials(conn, user1.id, user2_armory)
 
                 row_string_user1 = ", ".join(
                     [
@@ -1124,8 +1207,8 @@ class Transaction(commands.Cog):
 
         self.transactions[identifier] = {
             "content": {
-                ctx.author: {"crates": defaultdict(lambda: 0), "money": 0, "items": [], "resources": defaultdict(lambda: 0), "consumables": defaultdict(lambda: 0)},
-                user: {"crates": defaultdict(lambda: 0), "money": 0, "items": [], "resources": defaultdict(lambda: 0), "consumables": defaultdict(lambda: 0)},
+                ctx.author: {"crates": defaultdict(lambda: 0), "money": 0, "items": [], "gear": [], "resources": defaultdict(lambda: 0), "armory": defaultdict(lambda: 0), "consumables": defaultdict(lambda: 0)},
+                user: {"crates": defaultdict(lambda: 0), "money": 0, "items": [], "gear": [], "resources": defaultdict(lambda: 0), "armory": defaultdict(lambda: 0), "consumables": defaultdict(lambda: 0)},
             },
             "base": None,
             "task": None,
@@ -1222,6 +1305,49 @@ class Transaction(commands.Cog):
             await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("You do not own this item."))
+
+    @has_transaction()
+    @add.command(name="gear", brief=_("Adds a piece of armor to a trade."))
+    async def add_gear(self, ctx, equipment_id: int):
+        """`<equipment_id>` - The armor id from the `$armory` Gear tab."""
+        if not getattr(self.bot, "equipment_combat_enabled", False):
+            return await ctx.send("The armory is closed on this realm.")
+        from classes.equipment.economy import is_tradable
+        from classes.equipment.repository import fetch_item
+
+        offer = ctx.transaction.setdefault("gear", [])
+        if len(offer) >= 15:
+            return await ctx.send("You can only add up to 15 pieces of armor to the trade.")
+        if equipment_id in [item["id"] for item in offer]:
+            return await ctx.send("You already added this piece.")
+        async with self.bot.pool.acquire() as conn:
+            item = await fetch_item(conn, ctx.author.id, equipment_id)
+        if item is None:
+            return await ctx.send("You do not own that piece.")
+        if not is_tradable(item):
+            return await ctx.send("That piece is bound and cannot be traded.")
+        offer.append(item)
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
+
+    @has_transaction()
+    @add.command(name="armory", brief=_("Adds armory materials to a trade."))
+    async def add_armory(self, ctx, amount: IntGreaterThan(0), *, material: str):
+        """`<amount>` and `<material>` - for example `12 Bog Iron`."""
+        if not getattr(self.bot, "equipment_combat_enabled", False):
+            return await ctx.send("The armory is closed on this realm.")
+        from classes.equipment.definitions import resolve_material
+        from classes.equipment.repository import fetch_materials
+
+        material_id = resolve_material(material)
+        if material_id is None:
+            return await ctx.send("That is not an armory material. Try Bog Iron, Wardsteel, or Cinder Ore.")
+        offer = ctx.transaction.setdefault("armory", defaultdict(lambda: 0))
+        async with self.bot.pool.acquire() as conn:
+            owned = await fetch_materials(conn, ctx.author.id)
+        if owned.get(material_id, 0) < offer[material_id] + amount:
+            return await ctx.send("You do not have enough of that material.")
+        offer[material_id] += amount
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
 
     @has_transaction()
     @add.command(name="items", brief=_("Adds multiple items to a trade."))
@@ -1637,6 +1763,32 @@ class Transaction(commands.Cog):
             await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
         else:
             await ctx.send(_("This item is not in the trade."))
+
+    @has_transaction()
+    @remove.command(name="gear", brief=_("Removes a piece of armor from a trade."))
+    async def remove_gear(self, ctx, equipment_id: int):
+        """`<equipment_id>` - The armor id to take off your offer."""
+        offer = ctx.transaction.setdefault("gear", [])
+        item = discord.utils.find(lambda row: int(row["id"]) == equipment_id, offer)
+        if not item:
+            return await ctx.send("That piece is not in the trade.")
+        offer.remove(item)
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
+
+    @has_transaction()
+    @remove.command(name="armory", brief=_("Removes armory materials from a trade."))
+    async def remove_armory(self, ctx, amount: IntGreaterThan(0), *, material: str):
+        """`<amount>` and `<material>` - remove smithing goods from your offer."""
+        from classes.equipment.definitions import resolve_material
+
+        material_id = resolve_material(material)
+        if material_id is None:
+            return await ctx.send("That is not an armory material.")
+        offer = ctx.transaction.setdefault("armory", defaultdict(lambda: 0))
+        if offer[material_id] < amount:
+            return await ctx.send("The resulting amount would be negative.")
+        offer[material_id] -= amount
+        await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
 
     @has_transaction()
     @remove.command(name="items", brief=_("Removes multiple items to a trade."))

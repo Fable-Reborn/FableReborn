@@ -17,6 +17,8 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 from collections import Counter, namedtuple
+import io
+import logging
 
 import discord
 import random
@@ -41,6 +43,11 @@ from classes.classes import (
 )
 from classes.classes import from_string as class_from_string
 
+from classes.equipment.generation import describe_reward, summarize_rewards
+from classes.equipment.definitions import ARMORY_DAILY_ROLLS
+from classes.equipment.repository import apply_crate_opening, armory_rolls_left
+
+log = logging.getLogger(__name__)
 from classes.converters import (
     CrateRarity,
     IntFromTo,
@@ -275,6 +282,13 @@ class Crates(commands.Cog):
             materials="<:c_mats:1403797590335819897>",
         )
 
+    async def _announce(self, event: str) -> None:
+        """Post a crate result to the event channel. A closed channel does not fail the open."""
+        try:
+            await self.bot.public_log(event)
+        except discord.HTTPException:
+            log.warning("Crate announcement could not be posted")
+
     @has_char()
     @commands.command(aliases=["boxes"], brief=_("Show your crates."))
     @locale_doc
@@ -390,6 +404,8 @@ class Crates(commands.Cog):
             `[amount]` - the amount of crates to open, may be in range from 1 to 100 at once
 
             Open one of your crates to receive a weapon. To check which crates contain which items, check `{prefix}help crates`.
+            On the development realm, Common through Legendary crates can also leave armor and armory materials. Divine crates do not.
+            Armor rolls are limited per rarity in any 24 hours: 60 Common, 30 Uncommon, 20 Rare, 8 Magic, and 4 Legendary. Crates past that still give their weapon.
             This command takes up a lot of space, so choose a spammy channel to open crates."""
         )
         try:
@@ -401,6 +417,19 @@ class Crates(commands.Cog):
                         " Vote me up to get a random one or find them!"
                     ).format(amount=amount)
                 )
+
+            armory_left = None
+            if getattr(self.bot, "equipment_combat_enabled", False) and rarity in ARMORY_DAILY_ROLLS:
+                async with self.bot.pool.acquire() as conn:
+                    armory_left = await armory_rolls_left(conn, ctx.author.id, rarity)
+                if amount > armory_left:
+                    warning = (
+                        f"Only {armory_left} of these {amount} {rarity} crates can roll armor right now. "
+                        f"The armory allows {ARMORY_DAILY_ROLLS[rarity]} {rarity} armor rolls in any 24 hours. "
+                        "The rest still give their weapon. Open all of them anyway?"
+                    )
+                    if not await ctx.confirm(warning):
+                        return await ctx.send("Crate opening cancelled.")
 
             async with self.bot.pool.acquire() as conn:
                 remaining = await conn.fetchval(
@@ -597,7 +626,7 @@ class Crates(commands.Cog):
                         log_parts.append(f"**${total_money:,}**")
                     if log_parts:
                         log_text = " and ".join(log_parts)
-                        await self.bot.public_log(
+                        await self._announce(
                             f"**{ctx.author}** opened {amount} fortune {crate_label} and received {log_text}."
                         )
 
@@ -746,7 +775,10 @@ class Crates(commands.Cog):
                 else:
                     items = []
                     total_dragon_coins_gained = 0
-                    for _i in range(amount):
+                    armor_rewards = []
+                    opening_id = uuid.uuid4().hex
+                    armory_open = bool(getattr(self.bot, "equipment_combat_enabled", False))
+                    for index in range(amount):
                         # A number to detemine the crate item range
 
                         rand = random.randint(0, 9)
@@ -829,6 +861,16 @@ class Crates(commands.Cog):
                             data={"Name": item["name"], "Value": item["value"]},
                             conn=conn,
                         )
+                        if armory_open and (armory_left is None or index < armory_left):
+                            reward = await apply_crate_opening(
+                                conn,
+                                ctx.author.id,
+                                rarity,
+                                f"{ctx.author.id}:{rarity}:{opening_id}:{index}",
+                                random.Random(),
+                            )
+                            if reward:
+                                armor_rewards.append(reward)
 
                     if amount == 1:
                         embed = discord.Embed(
@@ -860,23 +902,61 @@ class Crates(commands.Cog):
                                 value=f"You also found **{dragon_coins_gained} <:dragoncoin:1404860657366728788> Dragon Coins**!",
                                 inline=False
                             )
-                        
+                        if armor_rewards:
+                            embed.add_field(
+                                name="Armory",
+                                value=describe_reward(armor_rewards[0])[:1024],
+                                inline=False,
+                            )
+                        elif armory_open and armory_left == 0:
+                            embed.add_field(
+                                name="Armory",
+                                value=(
+                                    f"Your {ARMORY_DAILY_ROLLS[rarity]} {rarity} armor rolls for the last 24 hours "
+                                    "are used, so this crate gave a weapon only."
+                                ),
+                                inline=False,
+                            )
+
                         await ctx.send(embed=embed)
+                        discovery = armor_rewards[0]["item"] if armor_rewards else None
+                        if discovery and discovery.get("fully_rolled"):
+                            from classes.equipment.card import render_armory
+                            from classes.equipment.repository import gear_theme
+
+                            async with self.bot.pool.acquire() as theme_conn:
+                                cover = await gear_theme(theme_conn, ctx.author.id)
+                            png = render_armory(
+                                {discovery.get("slot") or "chest": discovery},
+                                title="A discovery",
+                                subtitle="Bound when found. It cannot be traded.",
+                                theme=cover,
+                            )
+                            armory_embed = discord.Embed(
+                                title=discovery["name"],
+                                description="This legendary discovery is bound to you.",
+                                color=0x846236,
+                            )
+                            armory_embed.set_image(url="attachment://armory.png")
+                            await ctx.send(
+                                embed=armory_embed,
+                                file=discord.File(io.BytesIO(png), filename="armory.png"),
+                            )
                         if rarity == "legendary":
-                            await self.bot.public_log(
+                            await self._announce(
                                 f"**{ctx.author}** opened a legendary crate and received"
                                 f" {item['name']}, a **{item['type']}** with **{item['damage'] or item['armor']}"
                                 f" {'damage' if item['damage'] else 'armor'}**."
                             )
                         if rarity == "divine":
-                            await self.bot.public_log(
+                            await self._announce(
                                 f"**{ctx.author}** opened a divine crate and received"
                                 f" {item['name']}, a **{item['type']}** with **{item['damage'] or item['armor']}"
                                 f" {'damage' if item['damage'] else 'armor'}**."
                             )
                         elif rarity == "magic" and item["damage"] + item["armor"] >= 41:
                             if item["damage"] >= 41:
-                                await self.bot.public_log(
+                                await self._announce(
                                     f"**{ctx.author}** opened a magic crate and received"
                                     f" {item['name']}, a **{item['type']}** with **{item['damage'] or item['armor']}"
                                     f" {'damage' if item['damage'] else 'armor'}**."
@@ -909,20 +989,31 @@ class Crates(commands.Cog):
                         # Add Dragon Coin message if gained
                         if total_dragon_coins_gained > 0:
                             message += f"\n\n🎉 **Bonus Dragon Coins:** You also found **{total_dragon_coins_gained} <:dragoncoin:1404860657366728788> Dragon Coins**!"
-                        
-                        await ctx.send(message)
+                        armory_line = summarize_rewards(armor_rewards)
+                        if armory_open and armory_left is not None and amount > armory_left:
+                            armory_line = (
+                                f"{armory_line}\n" if armory_line else ""
+                            ) + (
+                                f"Armory allowance reached: {amount - armory_left} crate(s) gave a weapon only."
+                            )
+                        if armory_line and len(message) + 2 + len(armory_line) <= 2000:
+                            await ctx.send(f"{message}\n\n{armory_line}")
+                        else:
+                            await ctx.send(message[:2000])
+                            if armory_line:
+                                await ctx.send(armory_line[:2000])
                         if rarity == "legendary":
-                            await self.bot.public_log(
+                            await self._announce(
                                 f"**{ctx.author}** opened {amount} legendary crates and received"
                                 f" stats:\n```\n{most_common}\n```\nAverage: {average_stat}"
                             )
                         if rarity == "divine":
-                            await self.bot.public_log(
+                            await self._announce(
                                 f"**{ctx.author}** opened {amount} divine crates and received"
                                 f" stats:\n```\n{most_common}\n```\nAverage: {average_stat}"
                             )
                         elif rarity == "magic":
-                            await self.bot.public_log(
+                            await self._announce(
                                 f"**{ctx.author}** opened {amount} magic crates and received"
                                 f" stats:\n```\n{most_common}\n```\nAverage: {average_stat}"
                             )
