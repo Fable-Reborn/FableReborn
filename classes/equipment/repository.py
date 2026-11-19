@@ -683,7 +683,7 @@ async def fetch_materials(conn, user_id: int) -> dict[str, int]:
 
 
 async def armory_rolls_left(conn, user_id: int, rarity: str) -> int:
-    """Armory rolls still open for this rarity in the rolling 24-hour window."""
+    """Armory rolls still open for this rarity in the rolling 7-day window."""
     from classes.equipment.definitions import ARMORY_DAILY_ROLLS
 
     allowance = ARMORY_DAILY_ROLLS.get(str(rarity).lower(), 0)
@@ -695,7 +695,7 @@ async def armory_rolls_left(conn, user_id: int, rarity: str) -> int:
           FROM equipment_reward_grants
          WHERE user_id = $1
            AND rarity = $2
-           AND created_at > NOW() - INTERVAL '24 hours'
+           AND created_at > NOW() - INTERVAL '7 days'
         """,
         int(user_id),
         str(rarity).lower(),

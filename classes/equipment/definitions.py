@@ -158,8 +158,8 @@ GEAR_CHANCE = {
     "legendary": 0.30,
 }
 FULLY_ROLLED_CHANCE = 0.004
-# Armory rolls per rarity in any 24 hours. Normal income stays far below these;
-# a large stockpile still opens, but only this many crates a day also roll armor.
+# Armory rolls per rarity in any 7 days. Normal income stays far below these;
+# a large stockpile still opens, but only this many crates a week also roll armor.
 ARMORY_DAILY_ROLLS = {
     "common": 60,
     "uncommon": 30,
