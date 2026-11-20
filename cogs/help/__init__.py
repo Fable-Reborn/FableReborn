@@ -2812,7 +2812,8 @@ class Help(commands.Cog):
                                     "name": "Crate Quick Facts",
                                     "value": (
                                         "Common -> Legendary -> Divine scaling exists.\n"
-                                        "Fortune/Mystery/Materials crates have special reward logic."
+                                        "Fortune/Mystery/Materials crates have special reward logic.\n"
+                                        "Armory smithing goods: each Common–Legendary crate drops its own material and can drop lower ones. Only Legendary crates drop legendary goods."
                                     ),
                                     "inline": False,
                                 },
@@ -3650,7 +3651,7 @@ class Help(commands.Cog):
                         },
                         {
                             "title": "Materials and crafting",
-                            "description": "Each armor line has rough, worked, and relic goods. You can only craft patterns you have discovered.",
+                            "description": "Each armor line has five materials, one per crate rarity. Higher crates can drop the lower goods. Only Legendary crates and the Abyssal Maw drop legendary goods. You can only craft patterns you have discovered.",
                             "fields": [
                                 {
                                     "name": "Commands",
@@ -3701,7 +3702,8 @@ class Help(commands.Cog):
                                         "• Dragon Coins: premium currency (`dragoncoinshop`)\n"
                                         "• Favor: god progression and standing\n"
                                         "• Crates: gear/resource/utility reward containers\n"
-                                        "• Crafting resources: amulet and crafting progression"
+                                        "• Crafting resources: amulet and crafting progression\n"
+                                        "• Armory materials: five per armor line, matching crate rarities (`gear materials`)"
                                     ),
                                     "inline": False,
                                 },

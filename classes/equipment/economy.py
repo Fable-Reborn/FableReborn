@@ -24,10 +24,11 @@ from classes.equipment.definitions import (
     MAX_PENETRATION,
     MODIFIERS,
     RARITIES,
-    material_dot,
+    format_material,
 )
 
-# Amounts are in tier order: rough, worked, relic. Zero means that tier is unused.
+# Amounts are in crate-rarity order: common, uncommon, rare, magic, legendary.
+# Zero means that tier is unused.
 
 
 def recipe_key(archetype: str, rarity: str, slot: str = "chest") -> str:
@@ -62,14 +63,16 @@ def all_recipe_keys() -> list[str]:
 def preview_balances() -> dict[str, int]:
     """Sample wallet used by the GM preview.
 
-    Each line has 20 rough, 4 worked, and no relic. That makes common ready,
-    uncommon and rare close, and magic and legendary short.
+    Each line has 20 common, 8 uncommon, 4 rare, and no magic or legendary.
+    That makes common ready, uncommon close, and magic and legendary short.
     """
     balances = {}
-    for rough, worked, relic in MATERIAL_LINES.values():
-        balances[rough] = 20
-        balances[worked] = 4
-        balances[relic] = 0
+    for goods in MATERIAL_LINES.values():
+        balances[goods[0]] = 20
+        balances[goods[1]] = 8
+        balances[goods[2]] = 4
+        balances[goods[3]] = 0
+        balances[goods[4]] = 0
     return balances
 
 
@@ -96,7 +99,7 @@ def recipe_progress(cost: dict[str, int], balances: dict[str, int]) -> dict:
     missing = []
     for material_id, needed in cost.items():
         owned = int(balances.get(material_id, 0))
-        label = f"{material_dot(material_id)} {MATERIALS[material_id]}"
+        label = format_material(material_id)
         if owned >= needed:
             lines.append(f"✅ {needed}x {label}")
         else:
@@ -111,16 +114,16 @@ def recipe_progress(cost: dict[str, int], balances: dict[str, int]) -> dict:
     return {"state": state, "lines": lines, "missing": missing}
 
 
-# Materials for each temper star, in rough, worked, relic amounts. Every
+# Materials for each temper star, in common through legendary amounts. Every
 # attempt pays this whether it succeeds or not.
 TEMPER_STAR_COSTS = {
-    1: (8, 0, 0),
-    2: (12, 2, 0),
-    3: (16, 4, 0),
-    4: (20, 8, 1),
-    5: (24, 12, 3),
-    6: (28, 16, 5),
-    7: (32, 20, 8),
+    1: (8, 0, 0, 0, 0),
+    2: (12, 2, 0, 0, 0),
+    3: (16, 2, 4, 0, 0),
+    4: (20, 4, 8, 0, 1),
+    5: (24, 6, 12, 2, 3),
+    6: (28, 8, 16, 4, 5),
+    7: (32, 10, 20, 6, 8),
 }
 
 
@@ -158,10 +161,10 @@ def refine_step(archetype: str, quality: int) -> dict | None:
     quality = int(quality)
     if quality >= 100:
         return None
-    for ceiling, rough, worked, relic, gold, chance, pity in REFINE_QUALITY_BANDS:
+    for ceiling, common, uncommon, rare, magic, legendary, gold, chance, pity in REFINE_QUALITY_BANDS:
         if quality <= ceiling:
             return {
-                "cost": _line_cost(archetype, (rough, worked, relic)),
+                "cost": _line_cost(archetype, (common, uncommon, rare, magic, legendary)),
                 "gold": int(gold),
                 "chance": float(chance),
                 "pity": int(pity),
@@ -170,9 +173,9 @@ def refine_step(archetype: str, quality: int) -> dict | None:
 
 
 def inscribe_step(archetype: str) -> dict:
-    rough, worked, relic, gold, chance, pity = INSCRIBE_COST
+    common, uncommon, rare, magic, legendary, gold, chance, pity = INSCRIBE_COST
     return {
-        "cost": _line_cost(archetype, (rough, worked, relic)),
+        "cost": _line_cost(archetype, (common, uncommon, rare, magic, legendary)),
         "gold": int(gold),
         "chance": float(chance),
         "pity": int(pity),
@@ -246,23 +249,38 @@ def dragon_tier(level: int) -> tuple:
 
 
 def roll_dragon_materials(level: int, archetype: str, rng) -> dict[str, int]:
-    """Smithing goods for one party dragon kill at this dragon level."""
-    _ceiling, _stage, low, high, worked_chance, worked_amount, relic_chance = dragon_tier(level)
-    rough, worked, relic = MATERIAL_LINES[str(archetype).lower()]
-    materials = {rough: rng.randint(low, high)}
-    if worked_amount and rng.random() < worked_chance:
-        materials[worked] = int(worked_amount)
-    if relic_chance and rng.random() < relic_chance:
-        materials[relic] = 1
-    return materials
+    """Smithing goods for one party dragon kill at this dragon level.
+
+    Higher dragons pay higher goods and the lower goods on the same line.
+    Legendary materials only come from the Abyssal Maw.
+    """
+    _ceiling, _stage, max_tier, low, high = dragon_tier(level)
+    goods = MATERIAL_LINES[str(archetype).lower()]
+    amounts = {goods[0]: rng.randint(low, high)}
+    for tier in range(1, int(max_tier) + 1):
+        is_top = tier == max_tier
+        if is_top and max_tier >= 4:
+            chance = 0.35
+        elif is_top:
+            chance = 0.75
+        else:
+            chance = 0.90
+        if rng.random() >= chance:
+            continue
+        amounts[goods[tier]] = 1 if tier >= 3 else rng.randint(1, 2)
+    return {
+        material_id: amount
+        for material_id, amount in amounts.items()
+        if MATERIAL_LINES[str(archetype).lower()].index(material_id) <= max_tier
+    }
 
 
 CRAFT_COSTS = {
-    "common": (12, 0, 0),
-    "uncommon": (24, 0, 0),
-    "rare": (20, 8, 0),
-    "magic": (30, 16, 2),
-    "legendary": (40, 24, 10),
+    "common": (12, 0, 0, 0, 0),
+    "uncommon": (8, 10, 0, 0, 0),
+    "rare": (8, 6, 8, 0, 0),
+    "magic": (10, 8, 8, 6, 0),
+    "legendary": (12, 10, 10, 8, 4),
 }
 
 
@@ -284,10 +302,9 @@ def craft_cost(rarity: str, archetype: str) -> dict[str, int]:
         raise ValueError(f"unsupported equipment rarity: {rarity}")
     if archetype not in ARCHETYPES:
         raise ValueError(f"unsupported equipment archetype: {archetype}")
-    rough, worked, relic = MATERIAL_LINES[archetype]
     amounts = CRAFT_COSTS[rarity]
     cost = {}
-    for material_id, amount in zip((rough, worked, relic), amounts):
+    for material_id, amount in zip(MATERIAL_LINES[archetype], amounts):
         if amount > 0:
             cost[material_id] = int(amount)
     return cost

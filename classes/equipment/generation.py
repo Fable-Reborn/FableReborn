@@ -20,7 +20,10 @@ from classes.equipment.definitions import (
     MATERIALS,
     MODIFIER_LINES,
     QUALITY_MODE,
-    material_dot,
+    RARITIES,
+    crate_material_cap,
+    format_material,
+    material_tier_index,
     quality_band,
 )
 
@@ -88,30 +91,38 @@ def roll_crate(rarity: str, rng: random.Random) -> CrateRoll | None:
 
 
 def _roll_materials(rarity: str, rng: random.Random, line: str) -> dict[str, int]:
-    rough, worked, relic = MATERIAL_LINES[line]
-    if rarity == "common":
-        return {rough: rng.randint(1, 2)}
-    if rarity == "uncommon":
-        materials = {rough: rng.randint(2, 3)}
-        if rng.random() < 0.10:
-            materials[worked] = 1
-        return materials
-    if rarity == "rare":
-        materials = {rough: rng.randint(2, 3)}
-        if rng.random() < 0.50:
-            materials[worked] = 1
-        if rng.random() < 0.03:
-            materials[relic] = 1
-        return materials
-    if rarity == "magic":
-        materials = {rough: 3, worked: rng.randint(1, 2)}
-        if rng.random() < 0.35:
-            materials[relic] = 1
-        return materials
-    materials = {rough: 4, worked: 2, relic: 1}
-    if rng.random() < 0.30:
-        materials[relic] = 2
-    return materials
+    """Pay this crate's good, and maybe every lower good on the same line.
+
+    A crate never pays a material above its own rarity. Legendary goods only
+    come from legendary crates.
+    """
+    rarity = str(rarity).lower()
+    goods = MATERIAL_LINES[line]
+    cap = crate_material_cap(rarity)
+    own = goods[cap]
+    if cap <= 2:
+        amounts = {own: rng.randint(1, 2)}
+    elif cap == 3:
+        amounts = {own: 1}
+    else:
+        amounts = {own: 2 if rng.random() < 0.30 else 1}
+    for lower in range(cap):
+        distance = cap - lower
+        chance = max(0.30, 1.0 - 0.18 * distance)
+        if rng.random() >= chance:
+            continue
+        good = goods[lower]
+        if lower == 0:
+            amounts[good] = rng.randint(1, 1 + distance)
+        elif distance == 1:
+            amounts[good] = rng.randint(1, 2)
+        else:
+            amounts[good] = 1
+    return {
+        material_id: amount
+        for material_id, amount in amounts.items()
+        if material_tier_index(material_id) <= cap
+    }
 
 
 def summarize_rewards(rewards: list[dict]) -> str:
@@ -142,7 +153,7 @@ def summarize_rewards(rewards: list[dict]) -> str:
             f"Types:\n```\n{kinds_text}\n```"
         )
     material_text = ", ".join(
-        f"{material_dot(material_id)} {MATERIALS[material_id]} x{totals[material_id]}"
+        format_material(material_id, totals[material_id])
         for material_id in MATERIAL_ORDER
         if totals.get(material_id)
     )
@@ -167,7 +178,7 @@ def describe_reward(reward: dict) -> str:
                 f"{item['archetype'].title()} · tradable"
             )
     material_text = ", ".join(
-        f"{material_dot(material_id)} {MATERIALS[material_id]} x{int(amount)}"
+        format_material(material_id, amount)
         for material_id, amount in reward.get("materials", {}).items()
         if int(amount) > 0 and material_id in MATERIALS
     )

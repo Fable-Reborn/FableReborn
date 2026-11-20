@@ -303,6 +303,7 @@ class Crates(commands.Cog):
             - **Legendary crates** contain items with stats ranging from **41 to 80**.
             - **Divine crates** contain items with stats ranging from **47 to 100**.
             - **Materials crates** contain 3-10 random crafting materials.
+            Armory smithing goods (Bog Iron through Aegisheart, and the Slayer and Vanguard lines) come from Common through Legendary crates: each crate drops its own rarity and can drop lower rarities. Only Legendary crates drop legendary smithing goods.
             - **Mystery crates** contain a random crate type.
             - **Fortune Crates** contain either XP or money.
             
@@ -404,7 +405,7 @@ class Crates(commands.Cog):
             `[amount]` - the amount of crates to open, may be in range from 1 to 100 at once
 
             Open one of your crates to receive a weapon. To check which crates contain which items, check `{prefix}help crates`.
-            On the development realm, Common through Legendary crates can also leave armor and armory materials. Divine crates do not.
+            On the development realm, Common through Legendary crates can also leave armor and armory materials. A crate drops its own material and can drop every lower one. Only Legendary crates drop legendary materials. Divine crates do not roll armor.
             Armor rolls are limited per rarity in any 7 days: 60 Common, 30 Uncommon, 20 Rare, 8 Magic, and 4 Legendary. Crates past that still give their weapon.
             This command takes up a lot of space, so choose a spammy channel to open crates."""
         )

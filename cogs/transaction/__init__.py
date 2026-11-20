@@ -516,9 +516,11 @@ class Transaction(commands.Cog):
             lines.append(f"• {item['name']} (ID {item['id']}, stat {item['damage'] + item['armor']})")
         for item in offer.get("gear", []):
             lines.append(f"• Armor {item['name']} (armor ID {item['id']})")
+        from classes.equipment.definitions import format_material
+
         for material_id, amount in offer.get("armory", {}).items():
             if amount:
-                lines.append(f"• Armory {material_id.replace('_', ' ').title()}: **{int(amount)}**")
+                lines.append(f"• {format_material(material_id, amount)}")
         for resource, amount in offer.get("resources", {}).items():
             if amount:
                 lines.append(f"• {resource.replace('_', ' ').title()}: **{int(amount)}**")
@@ -1340,7 +1342,7 @@ class Transaction(commands.Cog):
 
         material_id = resolve_material(material)
         if material_id is None:
-            return await ctx.send("That is not an armory material. Try Bog Iron, Wardsteel, or Cinder Ore.")
+            return await ctx.send("That is not an armory material. Try Bog Iron, Fen Iron, or Cinder Ore.")
         offer = ctx.transaction.setdefault("armory", defaultdict(lambda: 0))
         async with self.bot.pool.acquire() as conn:
             owned = await fetch_materials(conn, ctx.author.id)

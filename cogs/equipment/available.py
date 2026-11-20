@@ -5,12 +5,12 @@ import discord
 
 from classes.equipment.definitions import (
     ARCHETYPE_NOUN,
-    MATERIALS,
+    MATERIAL_LINES,
     MAX_REFINEMENT,
     OPEN_SLOTS,
     RARITIES,
     SLOT_NOUN,
-    material_dot,
+    format_material,
 )
 from classes.equipment.economy import (
     craft_cost,
@@ -174,11 +174,12 @@ class GearCraftView(discord.ui.View):
             color=0x846236,
         )
         if self.preview:
-            sample = "\n".join(
-                f"{material_dot(material_id)} {MATERIALS[material_id]}: {amount}"
-                for material_id, amount in self.balances.items()
-            )
-            embed.add_field(name="Example resources", value=sample[:1024], inline=False)
+            for line, material_ids in MATERIAL_LINES.items():
+                sample = "\n".join(
+                    f"{format_material(material_id)}: {self.balances.get(material_id, 0)}"
+                    for material_id in material_ids
+                )
+                embed.add_field(name=f"Example {line.title()}", value=sample, inline=False)
         embed.add_field(
             name="How to use",
             value="Choose an armor line below. Only patterns you have discovered are listed.",

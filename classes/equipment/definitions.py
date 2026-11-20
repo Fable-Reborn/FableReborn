@@ -171,13 +171,13 @@ ARMORY_DAILY_ROLLS = {
 # nothing else. Pity is the number of failures in a row after which the next
 # attempt succeeds.
 #
-# Refining raises quality by 1. (highest quality in band, rough, worked,
-# relic, gold, success chance, pity)
+# Refining raises quality by 1. Material amounts are common, uncommon, rare,
+# magic, legendary, then gold, success chance, pity.
 REFINE_QUALITY_BANDS = (
-    (69, 4, 0, 0, 2_000, 1.00, 0),
-    (84, 6, 1, 0, 5_000, 0.85, 2),
-    (94, 8, 2, 0, 10_000, 0.65, 3),
-    (99, 10, 3, 1, 25_000, 0.50, 3),
+    (69, 4, 0, 0, 0, 0, 2_000, 1.00, 0),
+    (84, 6, 0, 1, 0, 0, 5_000, 0.85, 2),
+    (94, 8, 0, 2, 0, 0, 10_000, 0.65, 3),
+    (99, 10, 0, 3, 0, 1, 25_000, 0.50, 3),
 )
 # Tempering adds a star, +1 to +7. Materials are TEMPER_STAR_COSTS in economy.py.
 TEMPER_STAR_CHANCE = {1: 0.90, 2: 0.80, 3: 0.70, 4: 0.60, 5: 0.50, 6: 0.40, 7: 0.30}
@@ -185,22 +185,23 @@ TEMPER_STAR_PITY = {1: 1, 2: 2, 3: 2, 4: 3, 5: 3, 6: 4, 7: 5}
 TEMPER_STAR_GOLD = {star: star * 60_000 for star in range(1, 8)}
 # Inscribing sets one enchantment from the piece's line on a Magic or Legendary
 # piece. Two enchantments only come from a fully rolled Legendary crate drop.
-# (rough, worked, relic, gold, success chance, pity)
-INSCRIBE_COST = (20, 12, 3, 150_000, 0.35, 3)
+# (common, uncommon, rare, magic, legendary, gold, success chance, pity)
+INSCRIBE_COST = (20, 0, 12, 0, 3, 150_000, 0.35, 3)
 INSCRIBE_RARITIES = ("magic", "legendary")
 # Garron's trade: this many of one line's material buys one of another line's
 # material of the same tier.
 TRADE_RATIO = 3
 # Party dragon kills pay smithing goods by dragon level. The line follows the
-# armor the player wears most. (highest level, stage, rough low, rough high,
-# worked chance, worked amount, relic chance)
+# armor the player wears most.
+# (highest level, stage, highest material index 0-4, common low, common high)
+# Legendary goods only come from the Abyssal Maw, matching legendary crates.
 DRAGON_MATERIAL_TIERS = (
-    (5, "Frostbite Wyrm", 1, 2, 0.0, 0, 0.0),
-    (10, "Corrupted Ice Dragon", 2, 3, 0.0, 0, 0.0),
-    (15, "Permafrost", 2, 3, 0.20, 1, 0.0),
-    (20, "Absolute Zero", 3, 3, 1.0, 1, 0.0),
-    (34, "Void Tyrant", 3, 3, 1.0, 1, 0.15),
-    (None, "The Abyssal Maw", 4, 4, 1.0, 2, 0.35),
+    (5, "Frostbite Wyrm", 0, 1, 2),
+    (10, "Corrupted Ice Dragon", 1, 2, 3),
+    (15, "Permafrost", 2, 2, 3),
+    (20, "Absolute Zero", 3, 3, 3),
+    (34, "Void Tyrant", 3, 3, 4),
+    (None, "The Abyssal Maw", 4, 4, 4),
 )
 QUALITY_MODE = {
     "common": 45,
@@ -210,40 +211,48 @@ QUALITY_MODE = {
     "legendary": 62,
 }
 
-# Nine smithing goods: one rough, worked, and relic material for each armor line.
-# Dots match $amulet resources. Rough is common, worked is rare, relic is legendary.
+# Fifteen smithing goods: one per crate rarity on each armor line.
+# A crate can drop its own good and every lower good. Dots match $amulet resources.
 MATERIALS = {
     "bog_iron": "Bog Iron",
+    "fen_iron": "Fen Iron",
     "wardsteel": "Wardsteel",
+    "bastion_steel": "Bastion Steel",
     "aegisheart": "Aegisheart",
     "cinder_ore": "Cinder Ore",
+    "ember_ore": "Ember Ore",
     "razorsteel": "Razorsteel",
+    "sunder_steel": "Sunder Steel",
     "wyrmglass": "Wyrmglass",
     "river_bronze": "River Bronze",
+    "tide_bronze": "Tide Bronze",
     "oathsteel": "Oathsteel",
+    "vow_steel": "Vow Steel",
     "sunstone": "Sunstone",
 }
 MATERIAL_LINES = {
-    "guardian": ("bog_iron", "wardsteel", "aegisheart"),
-    "slayer": ("cinder_ore", "razorsteel", "wyrmglass"),
-    "vanguard": ("river_bronze", "oathsteel", "sunstone"),
+    "guardian": ("bog_iron", "fen_iron", "wardsteel", "bastion_steel", "aegisheart"),
+    "slayer": ("cinder_ore", "ember_ore", "razorsteel", "sunder_steel", "wyrmglass"),
+    "vanguard": ("river_bronze", "tide_bronze", "oathsteel", "vow_steel", "sunstone"),
 }
 MATERIAL_TIERS = {
-    "bog_iron": "rough",
-    "cinder_ore": "rough",
-    "river_bronze": "rough",
-    "wardsteel": "worked",
-    "razorsteel": "worked",
-    "oathsteel": "worked",
-    "aegisheart": "relic",
-    "wyrmglass": "relic",
-    "sunstone": "relic",
+    "bog_iron": "common",
+    "fen_iron": "uncommon",
+    "wardsteel": "rare",
+    "bastion_steel": "magic",
+    "aegisheart": "legendary",
+    "cinder_ore": "common",
+    "ember_ore": "uncommon",
+    "razorsteel": "rare",
+    "sunder_steel": "magic",
+    "wyrmglass": "legendary",
+    "river_bronze": "common",
+    "tide_bronze": "uncommon",
+    "oathsteel": "rare",
+    "vow_steel": "magic",
+    "sunstone": "legendary",
 }
-MATERIAL_RARITY = {
-    "rough": "common",
-    "worked": "rare",
-    "relic": "legendary",
-}
+MATERIAL_RARITY = {rarity: rarity for rarity in RARITIES}
 RARITY_DOTS = {
     "common": "⚪",
     "uncommon": "🟢",
@@ -265,6 +274,23 @@ def material_rarity(material_id: str) -> str:
 
 def material_dot(material_id: str) -> str:
     return RARITY_DOTS[material_rarity(material_id)]
+
+
+def material_tier_index(material_id: str) -> int:
+    return RARITIES.index(material_rarity(material_id))
+
+
+def crate_material_cap(rarity: str) -> int:
+    """Highest material index a crate of this rarity may pay. Never above itself."""
+    return RARITIES.index(str(rarity).lower())
+
+
+def format_material(material_id: str, amount: int | None = None) -> str:
+    """Dot, name, and crate rarity, used by every materials embed."""
+    label = f"{material_dot(material_id)} {MATERIALS[material_id]} ({material_rarity(material_id).title()})"
+    if amount is None:
+        return label
+    return f"{label} x{int(amount)}"
 
 
 def resolve_material(name: str) -> str | None:

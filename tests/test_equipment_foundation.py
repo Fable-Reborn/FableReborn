@@ -9,6 +9,7 @@ import random
 
 from classes.equipment.definitions import (
     MATERIAL_LINES,
+    MATERIALS,
     MAX_IGNORED_OF_ATTACK,
     RARITIES,
 )
@@ -175,15 +176,38 @@ class CrateRollTests(unittest.TestCase):
         self.assertGreater(common["pieces"], 1400)
         self.assertLess(common["pieces"], 1800)
         self.assertEqual(0, common["discoveries"])
-        rough = {"bog_iron", "cinder_ore", "river_bronze"}
-        self.assertTrue(set(common["materials"]) <= rough | {"wardsteel", "razorsteel", "oathsteel", "aegisheart", "wyrmglass", "sunstone"})
+        common_goods = {"bog_iron", "cinder_ore", "river_bronze"}
         for material_id, amount in common["materials"].items():
-            if material_id not in rough:
+            if material_id not in common_goods:
                 self.assertEqual(0, amount)
             else:
                 self.assertGreater(amount, 0)
         self.assertGreater(common["quality_mean"], 35)
         self.assertLess(common["quality_mean"], 55)
+
+    def test_crate_materials_match_crate_rarity_and_lower(self):
+        from classes.equipment.definitions import MATERIAL_TIERS
+        from classes.equipment.generation import _roll_materials
+
+        rng = random.Random(7)
+        for _ in range(200):
+            amounts = _roll_materials("common", rng, "guardian")
+            self.assertEqual(set(amounts), {"bog_iron"})
+        legendary = {"aegisheart", "wyrmglass", "sunstone"}
+        for rarity in ("common", "uncommon", "rare", "magic"):
+            cap = RARITIES.index(rarity)
+            for _ in range(1500):
+                roll = roll_crate(rarity, rng)
+                self.assertTrue(set(roll.materials).isdisjoint(legendary))
+                for material_id in roll.materials:
+                    self.assertLessEqual(RARITIES.index(MATERIAL_TIERS[material_id]), cap)
+        seen_lower = set()
+        for _ in range(400):
+            amounts = _roll_materials("legendary", rng, "guardian")
+            self.assertIn("aegisheart", amounts)
+            self.assertTrue(set(amounts) <= set(MATERIAL_LINES["guardian"]))
+            seen_lower.update(amounts)
+        self.assertTrue({"bog_iron", "fen_iron", "wardsteel", "bastion_steel"} <= seen_lower)
 
 
 class EconomyTests(unittest.TestCase):
@@ -213,8 +237,12 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(60, len(all_recipe_keys()))
         sample = preview_balances()
         self.assertEqual("ready", recipe_progress(craft_cost("common", "slayer"), sample)["state"])
+        self.assertEqual("close", recipe_progress(craft_cost("uncommon", "slayer"), sample)["state"])
         self.assertEqual("close", recipe_progress(craft_cost("rare", "slayer"), sample)["state"])
         self.assertEqual("short", recipe_progress(craft_cost("legendary", "slayer"), sample)["state"])
+        self.assertEqual({"cinder_ore": 8, "ember_ore": 10}, craft_cost("uncommon", "slayer"))
+        self.assertEqual(5, len(MATERIAL_LINES["guardian"]))
+        self.assertEqual(15, len(MATERIALS))
 
     def test_binding_rules(self):
         self.assertTrue(is_tradable({"bound": False, "fully_rolled": False, "refinement": 0}))
@@ -490,6 +518,7 @@ class ForgeTests(unittest.TestCase):
         from classes.equipment.economy import trade_result
 
         self.assertEqual(trade_result("bog_iron", "slayer", 10), ("cinder_ore", 3, 9))
+        self.assertEqual(trade_result("fen_iron", "slayer", 6), ("ember_ore", 2, 6))
         self.assertEqual(trade_result("aegisheart", "vanguard", 3), ("sunstone", 1, 3))
         self.assertIsNone(trade_result("bog_iron", "guardian", 9))
         self.assertIsNone(trade_result("bog_iron", "slayer", 2))
@@ -550,9 +579,17 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(dragon_tier(50)[1], "The Abyssal Maw")
         low = roll_dragon_materials(3, "guardian", random.Random(1))
         self.assertEqual(set(low), {"bog_iron"})
-        high = roll_dragon_materials(40, "vanguard", random.Random(1))
-        self.assertEqual(high["river_bronze"], 4)
-        self.assertEqual(high["oathsteel"], 2)
+        for seed in range(400):
+            mid = roll_dragon_materials(34, "guardian", random.Random(seed))
+            self.assertNotIn("aegisheart", mid)
+            self.assertTrue(set(mid) <= {"bog_iron", "fen_iron", "wardsteel", "bastion_steel"})
+        maw_seen = set()
+        for seed in range(400):
+            high = roll_dragon_materials(50, "vanguard", random.Random(seed))
+            self.assertGreaterEqual(high.get("river_bronze", 0), 4)
+            self.assertTrue(set(high) <= set(MATERIAL_LINES["vanguard"]))
+            maw_seen.update(high)
+        self.assertIn("sunstone", maw_seen)
 
     def test_forge_animation_is_a_looping_gif(self):
         import io

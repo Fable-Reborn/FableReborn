@@ -56,7 +56,7 @@ from classes.equipment.definitions import (
     OPEN_SLOTS,
     PAPER_DOLL_SLOTS,
     RARITIES,
-    material_dot,
+    format_material,
     quality_band,
     resolve_material,
     resolve_slot,
@@ -168,7 +168,8 @@ class Equipment(commands.Cog):
         `{prefix}help gear enchantments` lists every enchantment and which line can roll it.
 
         Smithing goods are separate for Guardian, Slayer, and Vanguard.
-        Each line has a rough material, a worked material, and a relic.
+        Each line has five materials, one per crate rarity. A crate can drop its
+        own good and every lower good on that line.
         `{prefix}gear materials` shows what you hold.
 
         `{prefix}gear available` lists only the patterns you have discovered.
@@ -181,7 +182,8 @@ class Equipment(commands.Cog):
         sets one enchantment. Each costs materials and gold, can fail, and has pity.
         The first time binds the piece. `{prefix}forge trade` swaps goods between lines at 3 for 1.
         Party dragon kills pay smithing goods for the line you wear most.
-        Higher dragon levels pay worked goods and sometimes a relic. `{prefix}gear salvage <id>` breaks one down for fewer
+        Higher dragons pay higher goods and the lower ones on that line. Legendary
+        materials only come from Legendary crates and the Abyssal Maw. `{prefix}gear salvage <id>` breaks one down for fewer
         materials than it cost.
 
         Bound pieces and fully rolled discoveries cannot be given, traded, or
@@ -471,9 +473,10 @@ class Equipment(commands.Cog):
         _(
             """Show your smithing goods.
 
-        Guardian, Slayer, and Vanguard each have three materials. The dots match
-        `{prefix}amulet resources`: white is the rough good, blue is worked, and
-        gold is the relic. A balance of zero is still shown.
+        Guardian, Slayer, and Vanguard each have five materials, one per crate
+        rarity. A crate drops its own good and can drop every lower good. Only
+        Legendary crates and the Abyssal Maw drop legendary goods. The dots
+        match `{prefix}amulet resources`. A balance of zero is still shown.
             """
         )
         if await self._closed(ctx):
@@ -486,12 +489,16 @@ class Equipment(commands.Cog):
         )
         embed.add_field(
             name="Rarity Legend",
-            value="⚪ Common • 🟢 Uncommon • 🔵 Rare • 🟣 Epic • 🟡 Legendary",
+            value=(
+                "⚪ Common • 🟢 Uncommon • 🔵 Rare • 🟣 Magic • 🟡 Legendary\n"
+                "Higher crates can drop lower goods. Legendary goods only come from "
+                "Legendary crates and the Abyssal Maw."
+            ),
             inline=False,
         )
         for line, material_ids in MATERIAL_LINES.items():
             lines = [
-                f"{material_dot(material_id)} {MATERIALS[material_id]}: {balances.get(material_id, 0):,}"
+                f"{format_material(material_id)}: {balances.get(material_id, 0):,}"
                 for material_id in material_ids
             ]
             embed.add_field(name=line.title(), value="\n".join(lines), inline=False)
@@ -628,7 +635,7 @@ class Equipment(commands.Cog):
 
     def _material_text(self, amounts: dict) -> str:
         parts = [
-            f"{material_dot(material_id)} {MATERIALS[material_id]} x{amount}"
+            format_material(material_id, amount)
             for material_id, amount in amounts.items()
             if int(amount) > 0 and material_id in MATERIALS
         ]
@@ -852,7 +859,7 @@ class Equipment(commands.Cog):
                     },
                 )
         await ctx.send(
-            f"You pay {member.mention} {material_dot(material_id)} {MATERIALS[material_id]} x{amount}."
+            f"You pay {member.mention} {format_material(material_id, amount)}."
         )
 
     @has_char()

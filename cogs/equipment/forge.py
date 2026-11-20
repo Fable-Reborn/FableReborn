@@ -11,13 +11,12 @@ from classes.equipment.attunement import ATTUNEMENT_CAP, refinement_cap
 from classes.equipment.definitions import (
     INSCRIBE_RARITIES,
     MATERIAL_LINES,
-    MATERIALS,
     MAX_REFINEMENT,
     MODIFIER_LINES,
     MODIFIERS,
     PAPER_DOLL_SLOTS,
     SLOT_NOUN,
-    material_dot,
+    format_material,
     quality_band,
 )
 from classes.equipment.economy import inscribe_step, refine_step, temper_step
@@ -65,7 +64,7 @@ def anvil_file() -> discord.File:
 
 
 def _price(step: dict) -> str:
-    parts = [f"{material_dot(material_id)} {MATERIALS[material_id]} x{amount}" for material_id, amount in step["cost"].items()]
+    parts = [format_material(material_id, amount) for material_id, amount in step["cost"].items()]
     if step.get("gold"):
         parts.append(f"${int(step['gold']):,}")
     return ", ".join(parts)
@@ -82,7 +81,7 @@ def _odds(step: dict, fails: int) -> str:
 def _offer(step: dict, fails: int) -> str:
     """Odds, then goods, then gold: three short lines that wrap well on a phone."""
     goods = " · ".join(
-        f"{material_dot(material_id)} {MATERIALS[material_id]} {amount}" for material_id, amount in step["cost"].items()
+        format_material(material_id, amount) for material_id, amount in step["cost"].items()
     )
     lines = [f"**{_odds(step, fails)}**", goods]
     if step.get("gold"):
@@ -251,8 +250,8 @@ class ForgeView(discord.ui.View):
                 inline=False,
             )
 
-        goods = " · ".join(
-            f"{material_dot(material_id)} {MATERIALS[material_id]} {self.balances.get(material_id, 0):,}"
+        goods = "\n".join(
+            f"{format_material(material_id)}: {self.balances.get(material_id, 0):,}"
             for material_id in MATERIAL_LINES[archetype]
         )
         embed.add_field(name="🎒 You have", value=f"{goods}\n💰 ${self.money:,}", inline=False)
