@@ -926,6 +926,7 @@ class Equipment(commands.Cog):
             "self": "You cannot buy your own listing.",
             "bound": "That listing was withdrawn because the piece can no longer be traded.",
             "poor": "You cannot afford that listing.",
+            "changed": "That listing's price changed. Open the shop again to see the new price.",
         }
         if status != "bought":
             return await ctx.send(messages.get(status, "The purchase did not complete."))

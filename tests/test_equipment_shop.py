@@ -1,5 +1,6 @@
 import unittest
 
+from classes.equipment.repository import listing_price_changed
 from cogs.equipment.shop import (
     GearShopView,
     _gold,
@@ -74,6 +75,11 @@ class GearShopFormatTests(unittest.TestCase):
         self.assertIn("Ward", text)
         shop.author_id = 99
         self.assertIn("your listing", GearShopView.selected_text(shop))
+
+    def test_stale_confirm_price_is_rejected(self):
+        self.assertFalse(listing_price_changed(5000, None))
+        self.assertFalse(listing_price_changed(5000, 5000))
+        self.assertTrue(listing_price_changed(9000, 5000))
 
     def test_gold_and_slot_helpers(self):
         self.assertEqual(_gold(1500), "$1,500")

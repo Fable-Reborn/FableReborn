@@ -1380,8 +1380,21 @@ async def withdraw_listing(conn, owner_id: int, equipment_id: int) -> str:
     return "withdrawn" if removed else "missing"
 
 
-async def buy_listing(conn, buyer_id: int, equipment_id: int) -> tuple[str, dict | None]:
-    """Buy a gear listing. The weapon market is not used."""
+def listing_price_changed(listing_price, expected_price) -> bool:
+    """True when the buyer agreed to one price and the stall now has another."""
+    if expected_price is None:
+        return False
+    return int(listing_price) != int(expected_price)
+
+
+async def buy_listing(
+    conn, buyer_id: int, equipment_id: int, expected_price: int | None = None
+) -> tuple[str, dict | None]:
+    """Buy a gear listing. The weapon market is not used.
+
+    `expected_price` is the gold the buyer confirmed. If the seller relisted
+    at a different price, the purchase is refused and nothing is charged.
+    """
     async with conn.transaction():
         listing = await conn.fetchrow(
             """
@@ -1404,6 +1417,8 @@ async def buy_listing(conn, buyer_id: int, equipment_id: int) -> tuple[str, dict
             )
             return "bound", None
         price = int(listing["price"])
+        if listing_price_changed(price, expected_price):
+            return "changed", {"name": listing["name"], "price": price}
         paid = await conn.fetchval(
             """
             UPDATE profile

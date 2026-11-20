@@ -159,14 +159,24 @@ class ShopBuyConfirm(discord.ui.View):
     @discord.ui.button(label="Confirm buy", style=discord.ButtonStyle.green)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         async with self.shop.bot.pool.acquire() as conn:
-            status, result = await buy_listing(conn, self.shop.author_id, self.listing_id)
+            status, result = await buy_listing(
+                conn, self.shop.author_id, self.listing_id, expected_price=self.price
+            )
         messages = {
             "missing": "That listing is gone.",
             "self": "You cannot buy your own listing.",
             "bound": "That listing was withdrawn because the piece can no longer be traded.",
             "poor": "You cannot afford that listing.",
         }
-        if status != "bought":
+        if status == "changed":
+            await interaction.response.edit_message(
+                content=(
+                    f"That listing is now **{_gold(result['price'])}**. "
+                    "The stall was refreshed — buy again if you still want it."
+                ),
+                view=None,
+            )
+        elif status != "bought":
             await interaction.response.edit_message(
                 content=messages.get(status, "The purchase did not complete."),
                 view=None,
@@ -457,13 +467,28 @@ class GearShopView(discord.ui.View):
         listing = self.selected()
         if listing is None:
             return await interaction.response.send_message("Choose a listing first.", ephemeral=True)
-        if int(listing["seller_id"]) == self.author_id:
-            return await interaction.response.send_message("That listing is yours. Unlist it instead.", ephemeral=True)
-        if self.gold < int(listing["price"]):
-            return await interaction.response.send_message("You cannot afford that listing.", ephemeral=True)
-        await interaction.response.send_message(
-            f"Buy **{listing['name']}** for **{_gold(listing['price'])}**?",
-            view=ShopBuyConfirm(self, listing),
+        asked = int(listing["price"])
+        await self.reload()
+        live = self.selected()
+        self.rebuild()
+        await self.redraw(interaction)
+        if live is None:
+            return await interaction.followup.send("That listing is gone.", ephemeral=True)
+        if int(live["seller_id"]) == self.author_id:
+            return await interaction.followup.send("That listing is yours. Unlist it instead.", ephemeral=True)
+        price = int(live["price"])
+        if self.gold < price:
+            return await interaction.followup.send("You cannot afford that listing.", ephemeral=True)
+        if price != asked:
+            prompt = (
+                f"That listing is now **{_gold(price)}** (was **{_gold(asked)}**). "
+                f"Buy **{live['name']}** for **{_gold(price)}**?"
+            )
+        else:
+            prompt = f"Buy **{live['name']}** for **{_gold(price)}**?"
+        await interaction.followup.send(
+            prompt,
+            view=ShopBuyConfirm(self, live),
             ephemeral=True,
         )
 

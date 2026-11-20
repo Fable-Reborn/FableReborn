@@ -90,6 +90,25 @@ class MentionOrUserId(commands.Converter):
         return discord.Object(id=int(match.group(1) or match.group(2)))
 
 
+ARMORY_OWNER_ONLY = "This armory isn't yours."
+
+
+def _armory_owner_ids(ctx) -> set[int]:
+    allowed = {int(ctx.author.id)}
+    alt_invoker_id = getattr(ctx, "alt_invoker_id", None)
+    if alt_invoker_id is not None:
+        allowed.add(int(alt_invoker_id))
+    return allowed
+
+
+async def _require_armory_owner(ctx, interaction: discord.Interaction, message: str = ARMORY_OWNER_ONLY) -> bool:
+    if int(interaction.user.id) in _armory_owner_ids(ctx):
+        return True
+    if not interaction.response.is_done():
+        await interaction.response.send_message(message, ephemeral=True)
+    return False
+
+
 class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
     item_type = discord.ui.TextInput(
         label="Item type",
@@ -105,6 +124,8 @@ class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
         self.armory_view = armory_view
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await _require_armory_owner(self.armory_view.ctx, interaction):
+            return
         try:
             low = int(str(self.lowest.value))
             high = int(str(self.highest.value))
@@ -133,6 +154,8 @@ class ArmoryMarketModal(discord.ui.Modal, title="List Item on Market"):
         self.item_id = item_id
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not await _require_armory_owner(self.armory_view.ctx, interaction):
+            return
         try:
             price = int(str(self.price.value))
         except ValueError:
@@ -182,6 +205,8 @@ class ArmoryItemSelect(discord.ui.Select):
         self.armory_view = armory_view
 
     async def callback(self, interaction):
+        if not await _require_armory_owner(self.armory_view.ctx, interaction):
+            return
         self.armory_view.selected_item_id = self.values[0]
         self.armory_view.sync_dynamic_components()
         await interaction.response.edit_message(
@@ -223,6 +248,8 @@ class ArmoryActionSelect(discord.ui.Select):
 
     async def callback(self, interaction):
         view = self.armory_view
+        if not await _require_armory_owner(view.ctx, interaction):
+            return
         item = view.selected_item()
         if item is None:
             return await interaction.response.send_message("Select an item first.", ephemeral=True)
@@ -289,6 +316,8 @@ class ArmorySortSelect(discord.ui.Select):
         self.armory_view = armory_view
 
     async def callback(self, interaction):
+        if not await _require_armory_owner(self.armory_view.ctx, interaction):
+            return
         self.armory_view.apply_sort(self.values[0])
         self.armory_view.sync_dynamic_components()
         await interaction.response.edit_message(
@@ -377,6 +406,8 @@ class ArmoryPaginatorView(discord.ui.View):
         self.selected_item_id = (first.get("armory_key") or f"weapon:{first['id']}") if first else None
 
     async def handle_armor_action(self, interaction, item, action):
+        if not await _require_armory_owner(self.ctx, interaction):
+            return
         from classes.equipment.repository import equip_item, unequip_item
 
         item_id = int(item["id"])
@@ -445,11 +476,10 @@ class ArmoryPaginatorView(discord.ui.View):
         await interaction.followup.send(message)
 
     def _is_allowed_user(self, user_id: int) -> bool:
-        allowed_user_ids = {int(self.ctx.author.id)}
-        alt_invoker_id = getattr(self.ctx, "alt_invoker_id", None)
-        if alt_invoker_id is not None:
-            allowed_user_ids.add(int(alt_invoker_id))
-        return int(user_id) in allowed_user_ids
+        return int(user_id) in _armory_owner_ids(self.ctx)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return await _require_armory_owner(self.ctx, interaction)
 
     async def invoke_command(self, command, *args, **kwargs):
         previous = self.ctx.command
@@ -478,7 +508,7 @@ class ArmoryPaginatorView(discord.ui.View):
     async def go_first(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Jump to the first page."""
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         self.current_page = 0
         first = self.pages[0][0]
@@ -492,7 +522,7 @@ class ArmoryPaginatorView(discord.ui.View):
     async def go_previous(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Go back one page."""
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         if self.current_page > 0:
             self.current_page -= 1
@@ -512,7 +542,7 @@ class ArmoryPaginatorView(discord.ui.View):
     async def stop_pages(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Stop the paginator (removes all buttons)."""
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         await interaction.response.defer()  # Acknowledge the button press
         await interaction.delete_original_response()
@@ -522,7 +552,7 @@ class ArmoryPaginatorView(discord.ui.View):
     async def go_next(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Advance forward one page."""
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         if self.current_page < len(self.embeds) - 1:
             self.current_page += 1
@@ -541,7 +571,7 @@ class ArmoryPaginatorView(discord.ui.View):
     async def go_last(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Jump to the last page."""
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         self.current_page = len(self.embeds) - 1
         first = self.pages[self.current_page][0]
@@ -557,7 +587,7 @@ class ArmoryPaginatorView(discord.ui.View):
         Collect the item IDs from the current page and send them to the channel.
         """
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         current_items = self.pages[self.current_page]  # raw DB rows for this page
         item_ids = [
@@ -570,15 +600,21 @@ class ArmoryPaginatorView(discord.ui.View):
 
     @discord.ui.button(label="Filters", style=discord.ButtonStyle.secondary, row=1)
     async def filters_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await _require_armory_owner(self.ctx, interaction):
+            return
         await interaction.response.send_modal(ArmoryFilterModal(self))
 
     @discord.ui.button(label="Inventory", style=discord.ButtonStyle.secondary, row=1)
     async def inventory_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await _require_armory_owner(self.ctx, interaction):
+            return
         await interaction.response.defer()
         await self.ctx.invoke(self.ctx.bot.get_command("inventory"))
 
     @discord.ui.button(label="Loadouts", style=discord.ButtonStyle.secondary, row=1)
     async def loadouts_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not await _require_armory_owner(self.ctx, interaction):
+            return
         await interaction.response.defer()
         await self.ctx.invoke(self.ctx.bot.get_command("preset"))
 
@@ -586,7 +622,7 @@ class ArmoryPaginatorView(discord.ui.View):
     async def gear_tab(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Switch the armory embed between weapons and armor."""
         if not self._is_allowed_user(interaction.user.id):
-            await interaction.response.send_message("Only the command author can use this button.", ephemeral=True)
+            await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         target = "weapons" if self.catalog == "armor" else "armor"
         if target not in self.cached_pages:
@@ -716,6 +752,8 @@ class InventoryCategorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         view = self.inventory_view
+        if not view._is_allowed_user(interaction.user.id):
+            return await interaction.response.send_message("This inventory isn't yours.", ephemeral=True)
         view.selected_key = self.values[0]
         view.detail_mode = False
         view.selected_entry_key = None
@@ -752,9 +790,11 @@ class InventoryEntrySelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        view = self.inventory_view
+        if not view._is_allowed_user(interaction.user.id):
+            return await interaction.response.send_message("This inventory isn't yours.", ephemeral=True)
         if self.values[0] == "__none__":
             return await interaction.response.defer()
-        view = self.inventory_view
         view.selected_entry_key = self.values[0]
         view.detail_mode = True
         view.confirm = None
@@ -783,6 +823,8 @@ class InventoryTargetConsumeModal(discord.ui.Modal):
             self.add_item(self.element_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if not self.inventory_view._is_allowed_user(interaction.user.id):
+            return await interaction.response.send_message("This inventory isn't yours.", ephemeral=True)
         target = str(self.target_input.value).strip()
         if not target.isdigit():
             return await interaction.response.send_message("The target ID must be a number.", ephemeral=True)
@@ -1541,6 +1583,8 @@ class PresetSelect(discord.ui.Select):
         self.manager = manager
 
     async def callback(self, interaction: discord.Interaction):
+        if int(interaction.user.id) != int(self.manager.author_id):
+            return await interaction.response.send_message("This loadout manager is not yours.", ephemeral=True)
         if self.values[0] == "__none__":
             return await interaction.response.defer()
         self.manager.selected_id = self.values[0]
@@ -1565,6 +1609,8 @@ class PresetNameModal(discord.ui.Modal):
         self.add_item(self.name_input)
 
     async def on_submit(self, interaction: discord.Interaction):
+        if int(interaction.user.id) != int(self.manager.author_id):
+            return await interaction.response.send_message("This loadout manager is not yours.", ephemeral=True)
         name = str(self.name_input.value).strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
             return await interaction.response.send_message(

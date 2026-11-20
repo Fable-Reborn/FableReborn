@@ -24,6 +24,12 @@ class GearSheetView(discord.ui.View):
             self.add_item(self.cover)
         self._paint()
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("This sheet belongs to someone else.", ephemeral=True)
+            return False
+        return True
+
     def _cover_options(self) -> list[discord.SelectOption]:
         return [
             discord.SelectOption(label=spec.label, value=key, default=key == self.theme)
