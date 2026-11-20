@@ -20,6 +20,9 @@ exec(compile("from __future__ import annotations\n" + _helper_src, "armory_helpe
 ARMORY_OWNER_ONLY = HELPERS["ARMORY_OWNER_ONLY"]
 _require_armory_owner = HELPERS["_require_armory_owner"]
 _armory_owner_ids = HELPERS["_armory_owner_ids"]
+armory_item_still_listed = HELPERS["armory_item_still_listed"]
+resolve_armory_invoke_outcome = HELPERS["resolve_armory_invoke_outcome"]
+invoke_callback_succeeded = HELPERS["invoke_callback_succeeded"]
 
 
 class FakeResponse:
@@ -143,6 +146,25 @@ class ArmoryOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(listing_price_changed(9000, 5000))
         self.assertFalse(listing_price_changed(5000, 5000))
         self.assertFalse(listing_price_changed(5000, None))
+
+    def test_stale_armory_cache_is_treated_as_sold_when_item_is_gone(self):
+        pages = [[{"id": 2, "armory_key": "weapon:2"}]]
+        self.assertFalse(armory_item_still_listed(pages, "weapon:1"))
+        self.assertTrue(armory_item_still_listed(pages, "weapon:2"))
+        self.assertTrue(
+            resolve_armory_invoke_outcome(succeeded=False, still_owned=False)
+        )
+        self.assertFalse(
+            resolve_armory_invoke_outcome(succeeded=False, still_owned=True)
+        )
+        self.assertTrue(
+            resolve_armory_invoke_outcome(succeeded=True, still_owned=True)
+        )
+
+    def test_command_callback_none_is_success_false_is_failure(self):
+        self.assertTrue(invoke_callback_succeeded(None))
+        self.assertTrue(invoke_callback_succeeded("ok"))
+        self.assertFalse(invoke_callback_succeeded(False))
 
 
 if __name__ == "__main__":

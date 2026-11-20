@@ -168,27 +168,32 @@ class ShopBuyConfirm(discord.ui.View):
             "bound": "That listing was withdrawn because the piece can no longer be traded.",
             "poor": "You cannot afford that listing.",
         }
-        if status == "changed":
-            await interaction.response.edit_message(
-                content=(
-                    f"That listing is now **{_gold(result['price'])}**. "
-                    "The stall was refreshed — buy again if you still want it."
-                ),
-                view=None,
-            )
-        elif status != "bought":
-            await interaction.response.edit_message(
-                content=messages.get(status, "The purchase did not complete."),
-                view=None,
-            )
-        else:
-            await interaction.response.edit_message(
-                content=f"You buy **{result['name']}** for **{_gold(result['price'])}**.",
-                view=None,
-            )
-            self.shop.selected_id = None
-        await self.shop.reload()
-        await self.shop.redraw(interaction, followup=True)
+        try:
+            if status == "changed":
+                await interaction.response.edit_message(
+                    content=(
+                        f"That listing is now **{_gold(result['price'])}**. "
+                        "The stall was refreshed — buy again if you still want it."
+                    ),
+                    view=None,
+                )
+            elif status != "bought":
+                await interaction.response.edit_message(
+                    content=messages.get(status, "The purchase did not complete."),
+                    view=None,
+                )
+            else:
+                await interaction.response.edit_message(
+                    content=f"You buy **{result['name']}** for **{_gold(result['price'])}**.",
+                    view=None,
+                )
+                self.shop.selected_id = None
+        finally:
+            await self.shop.reload()
+            try:
+                await self.shop.redraw(interaction, followup=True)
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -212,16 +217,21 @@ class ShopUnlistConfirm(discord.ui.View):
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
         async with self.shop.bot.pool.acquire() as conn:
             status = await withdraw_listing(conn, self.shop.author_id, self.listing_id)
-        if status == "missing":
-            await interaction.response.edit_message(content="You do not have that listing.", view=None)
-        else:
-            await interaction.response.edit_message(
-                content=f"You take **{self.name}** back from the shop.",
-                view=None,
-            )
-        self.shop.selected_id = None
-        await self.shop.reload()
-        await self.shop.redraw(interaction, followup=True)
+        try:
+            if status == "missing":
+                await interaction.response.edit_message(content="You do not have that listing.", view=None)
+            else:
+                await interaction.response.edit_message(
+                    content=f"You take **{self.name}** back from the shop.",
+                    view=None,
+                )
+            self.shop.selected_id = None
+        finally:
+            await self.shop.reload()
+            try:
+                await self.shop.redraw(interaction, followup=True)
+            except discord.HTTPException:
+                pass
 
     @discord.ui.button(label="Keep listed", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):

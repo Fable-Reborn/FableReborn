@@ -17,6 +17,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import asyncio
+import logging
 import math
 import re
 from decimal import Decimal, ROUND_HALF_UP
@@ -90,7 +91,31 @@ class MentionOrUserId(commands.Converter):
         return discord.Object(id=int(match.group(1) or match.group(2)))
 
 
+_log = logging.getLogger(__name__)
 ARMORY_OWNER_ONLY = "This armory isn't yours."
+
+
+def armory_item_still_listed(pages, armory_key: str) -> bool:
+    for page in pages or []:
+        for item in page:
+            key = item.get("armory_key") or f"weapon:{item['id']}"
+            if key == armory_key:
+                return True
+    return False
+
+
+def resolve_armory_invoke_outcome(*, succeeded: bool, still_owned: bool | None) -> bool:
+    """Treat merch/sell as done if Discord failed after the item already left inventory."""
+    if succeeded:
+        return True
+    if still_owned is False:
+        return True
+    return False
+
+
+def invoke_callback_succeeded(result) -> bool:
+    """Commands return False on a handled failure; None or a Message means they finished."""
+    return result is not False
 
 
 def _armory_owner_ids(ctx) -> set[int]:
@@ -164,7 +189,12 @@ class ArmoryMarketModal(discord.ui.Modal, title="List Item on Market"):
             return await interaction.response.send_message("Price must be from 1 to 100,000,000.", ephemeral=True)
         command = self.armory_view.ctx.bot.get_command("sell")
         await interaction.response.defer()
-        await self.armory_view.ctx.invoke(command, itemid=self.item_id, price=price)
+        try:
+            await self.armory_view.ctx.invoke(command, itemid=self.item_id, price=price)
+        except discord.HTTPException:
+            _log.exception("Armory market listing Discord send failed for item %s", self.item_id)
+        await self.armory_view.refresh_from_db()
+        await self.armory_view.redraw_message()
 
 
 class ArmoryItemSelect(discord.ui.Select):
@@ -295,13 +325,24 @@ class ArmoryActionSelect(discord.ui.Select):
             "merchant": "merchant",
         }[action]
         command = view.ctx.bot.get_command(command_name)
+        previous_key = item.get("armory_key") or f"weapon:{item['id']}"
         await interaction.response.defer()
         if action == "merchant":
             ok, message = await view.invoke_command(command, item_id)
         else:
             ok, message = await view.invoke_command(command, itemid=item_id)
-        if not ok:
-            await interaction.followup.send(message, ephemeral=True)
+        await view.refresh_from_db()
+        still_owned = armory_item_still_listed(view.pages, previous_key)
+        if resolve_armory_invoke_outcome(succeeded=ok, still_owned=still_owned):
+            await view.redraw_message()
+            if not ok:
+                await interaction.followup.send(
+                    "That action finished. Your armory was refreshed.",
+                    ephemeral=True,
+                )
+            return
+        await interaction.followup.send(message, ephemeral=True)
+        await view.redraw_message()
 
 
 class ArmorySortSelect(discord.ui.Select):
@@ -337,6 +378,8 @@ class ArmoryPaginatorView(discord.ui.View):
         catalog: str = "weapons",
         lowest: int = 0,
         highest: int = 201,
+        itemtype: str = "All",
+        armor_slot: str | None = None,
     ):
         super().__init__(timeout=timeout)
         self.ctx = ctx
@@ -344,6 +387,8 @@ class ArmoryPaginatorView(discord.ui.View):
         self.pages = pages  # Each element is a list of items for that page
         self.embeds = embeds
         self.catalog = catalog
+        self.itemtype = itemtype
+        self.armor_slot = armor_slot
         self.embed_title = (
             _("{user}'s armor").format(user=ctx.disp) if catalog == "armor" else None
         )
@@ -364,11 +409,16 @@ class ArmoryPaginatorView(discord.ui.View):
         self.sync_dynamic_components()
 
     def selected_item(self):
-        for item in self.pages[self.current_page]:
+        for item in self._current_items():
             key = item.get("armory_key") or f"weapon:{item['id']}"
             if key == self.selected_item_id:
                 return item
         return None
+
+    def _current_items(self):
+        if not self.pages or self.current_page >= len(self.pages):
+            return []
+        return self.pages[self.current_page] or []
 
     def sync_dynamic_components(self):
         for child in list(self.children):
@@ -473,6 +523,8 @@ class ArmoryPaginatorView(discord.ui.View):
             else:
                 status, removed = await unequip_item(conn, self.ctx.author.id, item_id)
                 message = "Nothing came off." if status == "missing" else f"You put away piece `{removed}`."
+        await self.refresh_from_db()
+        await self.redraw_message()
         await interaction.followup.send(message)
 
     def _is_allowed_user(self, user_id: int) -> bool:
@@ -493,12 +545,68 @@ class ArmoryPaginatorView(discord.ui.View):
                 return False, str(exc).strip() or "You cannot use that action right now."
             if not allowed:
                 return False, "You cannot use that action right now."
-            await command.callback(command.cog, self.ctx, *args, **kwargs)
+            result = await command.callback(command.cog, self.ctx, *args, **kwargs)
+            if not invoke_callback_succeeded(result):
+                return False, "Action did not complete."
             return True, "Action completed in this channel."
+        except (discord.HTTPException, discord.Forbidden) as exc:
+            _log.exception("Armory action Discord error for %s", getattr(command, "name", command))
+            return False, f"Action failed: {exc}"
         except Exception as exc:
+            _log.exception("Armory action failed for %s", getattr(command, "name", command))
             return False, f"Action failed: {exc}"
         finally:
             self.ctx.command = previous
+
+    async def refresh_from_db(self) -> None:
+        """Drop stale page caches and reload the open catalog from the database."""
+        self.cached_pages.clear()
+        self.cached_embeds.clear()
+        if self.catalog == "armor":
+            rows = await self.cog._fetch_armory_armor(
+                self.ctx.author.id, self.lowest, self.highest, self.armor_slot
+            )
+            title = self.embed_title or _("{user}'s armor").format(user=self.ctx.disp)
+        else:
+            rows = await self.cog._fetch_armory_weapons(
+                self.ctx.author.id, self.itemtype or "All", self.lowest, self.highest
+            )
+            title = None
+        self.embed_title = title
+        if not rows:
+            self.pages = []
+            self.embeds = [
+                discord.Embed(
+                    title=title or _("{user}'s inventory includes").format(user=self.ctx.disp),
+                    description="Nothing in this range right now. Use Filters or Gear to look elsewhere.",
+                    colour=discord.Colour.blurple(),
+                )
+            ]
+            self.current_page = 0
+            self.selected_item_id = None
+            return
+        previous_key = self.selected_item_id
+        self.pages = list(chunks(rows, 5))
+        self.apply_sort(self.sort_mode)
+        if previous_key and armory_item_still_listed(self.pages, previous_key):
+            self.selected_item_id = previous_key
+            for index, page in enumerate(self.pages):
+                for item in page:
+                    key = item.get("armory_key") or f"weapon:{item['id']}"
+                    if key == previous_key:
+                        self.current_page = index
+                        return
+
+    async def redraw_message(self) -> None:
+        if self.message is None:
+            return
+        if not self.embeds:
+            return
+        self.sync_dynamic_components()
+        try:
+            await self.message.edit(embed=self.embeds[self.current_page], view=self)
+        except discord.HTTPException:
+            _log.exception("Could not refresh the armory message")
 
     async def start(self):
         """Send the initial embed and attach this view to it."""
@@ -510,9 +618,12 @@ class ArmoryPaginatorView(discord.ui.View):
         if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
+        if not self.embeds:
+            return await interaction.response.send_message("This list is empty.", ephemeral=True)
         self.current_page = 0
-        first = self.pages[0][0]
-        self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
+        if self._current_items():
+            first = self.pages[0][0]
+            self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
         self.sync_dynamic_components()
         await interaction.response.edit_message(
             embed=self.embeds[self.current_page], view=self
@@ -526,8 +637,10 @@ class ArmoryPaginatorView(discord.ui.View):
             return
         if self.current_page > 0:
             self.current_page -= 1
-            first = self.pages[self.current_page][0]
-            self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
+            items = self._current_items()
+            if items:
+                first = items[0]
+                self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
             self.sync_dynamic_components()
             await interaction.response.edit_message(
                 embed=self.embeds[self.current_page], view=self
@@ -556,8 +669,10 @@ class ArmoryPaginatorView(discord.ui.View):
             return
         if self.current_page < len(self.embeds) - 1:
             self.current_page += 1
-            first = self.pages[self.current_page][0]
-            self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
+            items = self._current_items()
+            if items:
+                first = items[0]
+                self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
             self.sync_dynamic_components()
             await interaction.response.edit_message(
                 embed=self.embeds[self.current_page], view=self
@@ -573,9 +688,13 @@ class ArmoryPaginatorView(discord.ui.View):
         if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
+        if not self.embeds:
+            return await interaction.response.send_message("This list is empty.", ephemeral=True)
         self.current_page = len(self.embeds) - 1
-        first = self.pages[self.current_page][0]
-        self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
+        items = self._current_items()
+        if items:
+            first = items[0]
+            self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
         self.sync_dynamic_components()
         await interaction.response.edit_message(
             embed=self.embeds[self.current_page], view=self
@@ -589,7 +708,9 @@ class ArmoryPaginatorView(discord.ui.View):
         if not self._is_allowed_user(interaction.user.id):
             await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
-        current_items = self.pages[self.current_page]  # raw DB rows for this page
+        current_items = self._current_items()
+        if not current_items:
+            return await interaction.response.send_message("Nothing on this page.", ephemeral=True)
         item_ids = [
             f"armor {item['id']}" if item.get("armory_kind") == "armor" else str(item["id"])
             for item in current_items
@@ -6022,6 +6143,8 @@ class Profile(commands.Cog):
             catalog=catalog,
             lowest=lowest,
             highest=highest,
+            itemtype=itemtype if catalog == "weapons" else "All",
+            armor_slot=armor_slot if catalog == "armor" else None,
         )
         await view.start()
 
@@ -6829,54 +6952,55 @@ class Profile(commands.Cog):
             await self.bot.reset_cooldown(ctx)
             return await ctx.send(_("Good luck with that."))
         async with self.bot.pool.acquire() as conn:
-            item = await conn.fetchrow(
-                'SELECT * FROM allitems WHERE "id"=$1 AND "owner"=$2;',
-                firstitemid,
-                ctx.author.id,
-            )
-            item2 = await conn.fetchrow(
-                'SELECT * FROM allitems WHERE "id"=$1 AND "owner"=$2;',
-                seconditemid,
-                ctx.author.id,
-            )
-            if not item or not item2:
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(_("You don't own both of these items."))
-            if item["type"] != item2["type"]:
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(
-                    _(
-                        "The items are of unequal type. You may only merge a sword with"
-                        " a sword or a shield with a shield."
+            async with conn.transaction():
+                item = await conn.fetchrow(
+                    'SELECT * FROM allitems WHERE "id"=$1 AND "owner"=$2;',
+                    firstitemid,
+                    ctx.author.id,
+                )
+                item2 = await conn.fetchrow(
+                    'SELECT * FROM allitems WHERE "id"=$1 AND "owner"=$2;',
+                    seconditemid,
+                    ctx.author.id,
+                )
+                if not item or not item2:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(_("You don't own both of these items."))
+                if item["type"] != item2["type"]:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(
+                        _(
+                            "The items are of unequal type. You may only merge a sword with"
+                            " a sword or a shield with a shield."
+                        )
                     )
+                stat = "damage" if item["type"] != "Shield" else "armor"
+                min_ = item[stat] - 5
+                main = item[stat]
+                main2 = item2[stat]
+                max_ = item[stat] + 5
+                main_hand = item["hand"]
+                if (main > 60 and main_hand != "both") or (
+                        main > 122 and main_hand == "both"
+                ):
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(
+                        _("This item is already on the maximum upgrade level.")
+                    )
+                if not min_ <= main2 <= max_:
+                    await self.bot.reset_cooldown(ctx)
+                    return await ctx.send(
+                        _(
+                            "The second item's stat must be in the range of `{min_}` to"
+                            " `{max_}` to upgrade an item with the stat of `{stat}`."
+                        ).format(min_=min_, max_=max_, stat=main)
+                    )
+                await conn.execute(
+                    f'UPDATE allitems SET "{stat}"="{stat}"+1 WHERE "id"=$1;', firstitemid
                 )
-            stat = "damage" if item["type"] != "Shield" else "armor"
-            min_ = item[stat] - 5
-            main = item[stat]
-            main2 = item2[stat]
-            max_ = item[stat] + 5
-            main_hand = item["hand"]
-            if (main > 60 and main_hand != "both") or (
-                    main > 122 and main_hand == "both"
-            ):
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(
-                    _("This item is already on the maximum upgrade level.")
-                )
-            if not min_ <= main2 <= max_:
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(
-                    _(
-                        "The second item's stat must be in the range of `{min_}` to"
-                        " `{max_}` to upgrade an item with the stat of `{stat}`."
-                    ).format(min_=min_, max_=max_, stat=main)
-                )
-            await conn.execute(
-                f'UPDATE allitems SET "{stat}"="{stat}"+1 WHERE "id"=$1;', firstitemid
-            )
-            await conn.execute('DELETE FROM inventory WHERE "item"=$1;', seconditemid)
-            await conn.execute('DELETE FROM allitems WHERE "id"=$1;', seconditemid)
-            await self.sanitize_presets_for_user(ctx.author.id, conn=conn)
+                await conn.execute('DELETE FROM inventory WHERE "item"=$1;', seconditemid)
+                await conn.execute('DELETE FROM allitems WHERE "id"=$1;', seconditemid)
+                await self.sanitize_presets_for_user(ctx.author.id, conn=conn)
         await ctx.send(
             _(
                 "The {stat} of your **{item}** is now **{newstat}**. The other item was"

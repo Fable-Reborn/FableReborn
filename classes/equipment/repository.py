@@ -1,6 +1,7 @@
 """Equipment persistence. The switch row starts on for FableDev and off everywhere else."""
 from __future__ import annotations
 
+import logging
 import random
 from decimal import Decimal
 
@@ -17,6 +18,8 @@ from classes.equipment.economy import (
 )
 from classes.equipment.generation import roll_crate, roll_quality
 from classes.equipment.stats import contribution
+
+LOGGER = logging.getLogger(__name__)
 
 SCHEMA_STATEMENTS = (
     """
@@ -408,7 +411,7 @@ async def _with_weapon_progression(conn, user_id: int, weapons: list[dict]) -> l
                 soulbound_item_id = int(soulbound_row["item_id"])
                 soulbound_level = soulbound_level_from_xp(soulbound_row["xp"])
     except Exception:
-        return weapons
+        LOGGER.exception("Could not load weapon progression for user %s", user_id)
     for item in weapons:
         item_id = int(item["id"])
         level = soulbound_level if item_id == soulbound_item_id else 0

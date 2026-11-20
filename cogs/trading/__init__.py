@@ -128,12 +128,20 @@ class MarketBuyConfirmView(discord.ui.View):
             self.market_view.cog.buy,
             itemid=int(self.item["item"]),
         )
+        item_id = int(self.item["item"])
         still_listed = await self.market_view.cog.bot.pool.fetchval(
-            "SELECT 1 FROM market WHERE item=$1;", int(self.item["item"])
+            "SELECT 1 FROM market WHERE item=$1;", item_id
         )
+        buyer_owns = await self.market_view.cog.bot.pool.fetchval(
+            "SELECT 1 FROM allitems WHERE id=$1 AND owner=$2;",
+            item_id,
+            self.market_view.ctx.author.id,
+        )
+        if buyer_owns:
+            ok = True
         if not still_listed:
             self.market_view.items = [
-                item for item in self.market_view.items if int(item["item"]) != int(self.item["item"])
+                item for item in self.market_view.items if int(item["item"]) != item_id
             ]
             self.market_view.index = min(self.market_view.index, max(0, len(self.market_view.items) - 1))
             if self.market_view.items and self.market_view.message:
@@ -247,9 +255,15 @@ class MarketBrowserView(discord.ui.View):
                 return False, str(exc).strip() or "You cannot use that market action."
             if not allowed:
                 return False, "You cannot use that market action."
-            await command.callback(command.cog, self.ctx, *args, **kwargs)
+            result = await command.callback(command.cog, self.ctx, *args, **kwargs)
+            if result is False:
+                return False, "Market action did not complete."
             return True, "Market action completed."
+        except (discord.HTTPException, discord.Forbidden) as exc:
+            logger.exception("Market action Discord error for %s", getattr(command, "name", command))
+            return False, f"Market action failed: {exc}"
         except Exception as exc:
+            logger.exception("Market action failed for %s", getattr(command, "name", command))
             return False, f"Market action failed: {exc}"
         finally:
             self.ctx.command = previous
@@ -356,6 +370,14 @@ class Trading(commands.Cog):
 
     def is_item_expired(self, timestamp, expiry_duration_hours):
         return (self.get_current_time() - timestamp).total_seconds() > expiry_duration_hours * 3600
+
+    def _drop_trader_offer(self, player_id, offer_id) -> None:
+        offers = self.player_item_cache.get(player_id) or []
+        if not isinstance(offers, list):
+            return
+        self.player_item_cache[player_id] = [
+            offer for offer in offers if offer.get("id") != offer_id
+        ]
 
     def _build_trader_offer(self, offer_type, name, price, data=None):
         return {
@@ -1857,12 +1879,35 @@ class Trading(commands.Cog):
                 )
                 return await self.bot.reset_cooldown(ctx)
 
+            changed = False
             async with conn.transaction():
-                await self.bot.delete_items([i["id"] for i in allitems], conn=conn)
-                await conn.execute(
-                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                    money,
+                locked = await conn.fetch(
+                    "SELECT ai.id, ai.value FROM inventory i JOIN allitems ai ON"
+                    " (i.item=ai.id) WHERE ai.id=ANY($1) AND ai.owner=$2"
+                    " AND i.equipped IS FALSE AND i.locked IS FALSE"
+                    " FOR UPDATE OF ai;",
+                    [i["id"] for i in allitems],
                     ctx.author.id,
+                )
+                if len(locked) != count:
+                    changed = True
+                else:
+                    money = sum(i["value"] for i in locked)
+                    if buildings:
+                        money = int(money * (1 + buildings["trade_building"] / 2))
+                    await self.bot.delete_items([i["id"] for i in locked], conn=conn)
+                    await conn.execute(
+                        'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                        money,
+                        ctx.author.id,
+                    )
+            if changed:
+                await self.bot.reset_cooldown(ctx)
+                return await ctx.send(
+                    _(
+                        "Looks like you got more or less items in that range in the"
+                        " meantime. Please try again."
+                    )
                 )
 
             await self.bot.log_transaction(
@@ -2204,16 +2249,19 @@ class Trading(commands.Cog):
                         conn=conn,
                     )
 
-            self.player_item_cache[player_id] = [
-                offer for offer in self.player_item_cache[player_id]
-                if offer["id"] != selected_offer["id"]
-            ]
-
-            await ctx.send(embed=embed)
+            self._drop_trader_offer(player_id, selected_offer["id"])
+            try:
+                await ctx.send(embed=embed)
+            except discord.HTTPException:
+                logger.exception(
+                    "Trader purchase completed for user %s but Discord send failed",
+                    player_id,
+                )
 
         except Exception as e:
             import traceback
             error_message = f"Error occurred: {e}\n" + traceback.format_exc()
+            logger.exception("Trader purchase failed for user %s", ctx.author.id)
             await ctx.send(error_message)
             print(error_message)
 

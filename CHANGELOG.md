@@ -12,6 +12,15 @@ All **dates and times are UTC** unless stated otherwise.
 | **Time (UTC)** | 03:40 |
 | **ISO** | `2026-11-20T03:40:00Z` |
 
+### Armory error cache / merch send failures
+
+- `$armory` no longer keeps a stale page cache after merch, sell, equip, lock, or armor wear. The list reloads from the database so a sold piece cannot be merched again from the same embed.
+- If Discord errors after the merchant already took the item, the player is told the action finished and the armory is refreshed instead of **Action failed** with the piece still shown.
+- Merching the last item in a filter no longer blanks the whole armory as empty; Filters and Gear stay available.
+- `$merchall` re-locks the same IDs before deleting, so a mid-sale inventory change cannot destroy extra gear. Discord is not sent while those rows are still locked.
+- `$merge` upgrade + destroy runs in one transaction. Trader purchases drop the bought offer even if the success embed fails to send.
+- Market buy is only treated as done if the buyer now owns the item. A listing vanishing because someone else bought it is still a failure.
+
 ### `$armory` / `$inventory` owner lock
 
 - Only the player who opened `$armory` can use its buttons, item/action/sort selects, Filters, Inventory, Loadouts, Gear tab, and filter/market modals.

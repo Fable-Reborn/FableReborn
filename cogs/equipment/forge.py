@@ -102,7 +102,16 @@ class BindConfirm(discord.ui.View):
             await self.forge.perform(self.action)
         except Exception:
             logging.getLogger(__name__).exception("Forge attempt failed")
+            try:
+                await self.forge._reload()
+            except Exception:
+                logging.getLogger(__name__).exception("Forge reload after a failed strike")
             await interaction.response.edit_message(content="Garron's hammer slips. Try that again.", view=None)
+            if self.forge.message is not None and self.forge.slot:
+                try:
+                    await self.forge.message.edit(embed=self.forge.embed(), view=self.forge)
+                except discord.HTTPException:
+                    pass
             return
         text = banner_text(self.forge.banner) if self.forge.banner else "Garron sets the hammer down."
         await interaction.response.edit_message(content=text[:2000], view=None)
