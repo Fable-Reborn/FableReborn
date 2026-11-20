@@ -3,7 +3,15 @@ from __future__ import annotations
 
 import discord
 
-from classes.equipment.definitions import ARCHETYPE_NOUN, MATERIALS, OPEN_SLOTS, RARITIES, SLOT_NOUN, material_dot
+from classes.equipment.definitions import (
+    ARCHETYPE_NOUN,
+    MATERIALS,
+    MAX_REFINEMENT,
+    OPEN_SLOTS,
+    RARITIES,
+    SLOT_NOUN,
+    material_dot,
+)
 from classes.equipment.economy import (
     craft_cost,
     known_recipe_keys,
@@ -11,6 +19,7 @@ from classes.equipment.economy import (
     recipe_progress,
 )
 from classes.equipment.repository import craft_chest, fetch_discovered_recipes, fetch_materials
+from classes.equipment.stats import contribution
 
 
 LINE_LABELS = {
@@ -24,6 +33,41 @@ def _counts(recipes: list[dict]) -> tuple[int, int]:
     ready = sum(1 for recipe in recipes if recipe["progress"]["state"] == "ready")
     close = sum(1 for recipe in recipes if recipe["progress"]["state"] == "close")
     return ready, close
+
+
+def _trim(value: float) -> str:
+    text = f"{value:.2f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _blessing(value) -> str:
+    return f"+{_trim(float(value) * 100)}%"
+
+
+def _ward(value) -> str:
+    return f"+{_trim(float(value))}"
+
+
+def _range(low: str, high: str) -> str:
+    return f"{low}–{high.lstrip('+')}"
+
+
+def _craft_preview(recipe: dict) -> str:
+    """Short Blessing/Ward range for the selected pattern. Mobile-friendly."""
+    rarity = recipe["rarity"]
+    archetype = recipe["archetype"]
+    slot = recipe["slot"]
+    forged_low = contribution(rarity, archetype, 1, 0, slot)
+    forged_high = contribution(rarity, archetype, 100, 0, slot)
+    finished = contribution(rarity, archetype, 100, MAX_REFINEMENT, slot)
+    slot_name = SLOT_NOUN.get(slot, slot)
+    return (
+        f"**{rarity.title()} {slot_name}**\n"
+        f"Forged · Blessing {_range(_blessing(forged_low[0]), _blessing(forged_high[0]))} · "
+        f"Ward {_range(_ward(forged_low[1]), _ward(forged_high[1]))}\n"
+        f"At 100 / +{MAX_REFINEMENT} · Blessing {_blessing(finished[0])} · Ward {_ward(finished[1])}\n"
+        "Quality rolls 1–100. Temper later. No crafted enchantments."
+    )
 
 
 class GearRecipeSelect(discord.ui.Select):
@@ -165,8 +209,6 @@ class GearCraftView(discord.ui.View):
             selected = next((recipe for recipe in recipes if recipe["key"] == self.selected_key), None)
             progress = recipes[0]["progress"]
             block = f"{'▶ ' if selected else ''}**{rarity.title()}** — {slots}\n" + "\n".join(progress["lines"])
-            if selected:
-                block += f"\nSelected: {SLOT_NOUN.get(selected['slot'], selected['slot'])}"
             if progress["state"] == "ready":
                 block += "\n🟢 **Ready to craft!**"
             elif progress["state"] == "close":
@@ -195,6 +237,13 @@ class GearCraftView(discord.ui.View):
             embed.add_field(
                 name="Discovered" if field_index == 0 else "Discovered, continued",
                 value="\n\n".join(field),
+                inline=False,
+            )
+        selected = self.selected_recipe()
+        if selected:
+            embed.add_field(
+                name="Craft preview",
+                value=_craft_preview(selected)[:1024],
                 inline=False,
             )
         return embed
