@@ -799,6 +799,18 @@ class Equipment(commands.Cog):
                 if not await spend_materials(conn, ctx.author.id, {material_id: amount}):
                     return await ctx.send("You do not have enough of that material.")
                 await add_materials(conn, member.id, {material_id: amount})
+                from classes.equipment.balance_log import log_event
+
+                await log_event(
+                    conn,
+                    ctx.author.id,
+                    "material_pay",
+                    payload={
+                        "to_id": member.id,
+                        "material_id": material_id,
+                        "amount": int(amount),
+                    },
+                )
         await ctx.send(
             f"You pay {member.mention} {material_dot(material_id)} {MATERIALS[material_id]} x{amount}."
         )
@@ -885,6 +897,48 @@ class Equipment(commands.Cog):
         if status == "missing":
             return await ctx.send("You do not have that listing.")
         await ctx.send(f"You take piece `{equipment_id}` back from the shop.")
+
+    @is_gm()
+    @gear.command(name="balance", brief="GM: export gear balance review file", hidden=True)
+    @locale_doc
+    async def gear_balance(self, ctx, days: int = 7):
+        _(
+            """`[days]` - How many days to include. Defaults to 7. Max 60.
+
+            Writes `logs/gear_balance_review.md` from the live gear event log and posts a short summary.
+            Hand that file to the next balance pass.
+            """
+        )
+        from classes.equipment.balance_log import DEFAULT_DAYS, MAX_DAYS, write_review
+
+        if not getattr(self, "schema_ready", False):
+            return await ctx.send("The armory tables did not load. Check the bot log.")
+        window = max(1, min(int(days or DEFAULT_DAYS), MAX_DAYS))
+        async with self.bot.pool.acquire() as conn:
+            name = await database_name(conn)
+            path = await write_review(conn, days=window, database=name)
+            total = await conn.fetchval(
+                """
+                SELECT count(*)
+                  FROM equipment_events
+                 WHERE created_at > NOW() - ($1::text || ' days')::interval
+                """,
+                str(window),
+            )
+            players = await conn.fetchval(
+                """
+                SELECT count(DISTINCT user_id)
+                  FROM equipment_events
+                 WHERE created_at > NOW() - ($1::text || ' days')::interval
+                """,
+                str(window),
+            )
+        await ctx.send(
+            f"Gear balance review for the last **{window}** day(s) on **{name}**: "
+            f"**{int(total or 0)}** events from **{int(players or 0)}** players.\n"
+            f"Wrote `{path.as_posix()}`. Attach that file in Cursor next week for the balance pass.",
+            file=discord.File(path, filename=path.name),
+        )
 
     @is_gm()
     @gear.command(name="grant", brief="GM: create a tradable piece", hidden=True)
@@ -1008,6 +1062,18 @@ class Equipment(commands.Cog):
                     line = await worn_line(conn, member.id) or rng.choice(ARCHETYPES)
                     materials = roll_dragon_materials(dragon_level, line, rng)
                     await add_materials(conn, member.id, materials)
+                    from classes.equipment.balance_log import log_event
+
+                    await log_event(
+                        conn,
+                        member.id,
+                        "dragon_materials",
+                        archetype=line,
+                        payload={
+                            "dragon_level": int(dragon_level),
+                            "materials": materials,
+                        },
+                    )
                     lines.append(f"{member.mention}: {self._material_text(materials)}")
         except Exception:
             log.exception("Dragon armory materials failed")

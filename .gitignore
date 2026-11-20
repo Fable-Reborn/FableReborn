@@ -10,6 +10,7 @@ cogs/russian/rr_settings.json
 
 # Logs
 *.log
+logs/gear_balance_review.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

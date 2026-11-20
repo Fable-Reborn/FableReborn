@@ -4,6 +4,7 @@ from __future__ import annotations
 import random
 from decimal import Decimal
 
+from classes.equipment.balance_log import log_event
 from classes.equipment.definitions import DEV_DATABASE, OPEN_SLOTS, display_name
 from classes.equipment.economy import (
     STARTER_RECIPES,
@@ -136,6 +137,27 @@ SCHEMA_STATEMENTS = (
         user_id BIGINT PRIMARY KEY,
         theme TEXT NOT NULL DEFAULT 'chronicle'
     )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS equipment_events (
+        id BIGSERIAL PRIMARY KEY,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        user_id BIGINT NOT NULL,
+        action TEXT NOT NULL,
+        equipment_id BIGINT,
+        rarity TEXT,
+        archetype TEXT,
+        slot TEXT,
+        payload JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS equipment_events_created_idx
+        ON equipment_events (created_at)
+    """,
+    """
+    CREATE INDEX IF NOT EXISTS equipment_events_action_created_idx
+        ON equipment_events (action, created_at)
     """,
 )
 
@@ -285,6 +307,17 @@ async def attune_worn(conn, user_id: int, foe_hp=None, wearer_hp=None, amount=No
             return None
         lead = dict(decisions[0])
         lead["pieces"] = decisions
+        await log_event(
+            conn,
+            user_id,
+            "attune",
+            payload={
+                "amount": int(amount),
+                "pieces": len(decisions),
+                "binds": any(item.get("newly_bound") for item in decisions),
+                "levels": [int(item["level"]) for item in decisions],
+            },
+        )
         return lead
 
 
@@ -473,6 +506,16 @@ async def grant_chest(
     item = dict(row)
     item["modifiers"] = []
     item["equipped"] = False
+    await log_event(
+        conn,
+        owner_id,
+        "grant",
+        equipment_id=int(item["id"]),
+        rarity=item["rarity"],
+        archetype=item["archetype"],
+        slot=item["slot"],
+        payload={"quality": int(item["quality"]), "origin": origin, "bound": bool(bound)},
+    )
     return item
 
 
@@ -539,6 +582,16 @@ async def equip_item(conn, user_id: int, equipment_id: int) -> tuple[str, dict |
             raise RuntimeError("equipping changed the binding state")
         equipped = dict(item)
         equipped["equipped"] = True
+        await log_event(
+            conn,
+            user_id,
+            "equip",
+            equipment_id=int(item["id"]),
+            rarity=item["rarity"],
+            archetype=item["archetype"],
+            slot=item["slot"],
+            payload={"quality": int(item["quality"]), "refinement": int(item["refinement"] or 0)},
+        )
         return "equipped", equipped
 
 
@@ -750,6 +803,22 @@ async def apply_crate_opening(conn, user_id: int, rarity: str, grant_key: str, r
                 material_id,
                 int(amount),
             )
+        await log_event(
+            conn,
+            user_id,
+            "crate",
+            equipment_id=int(item["id"]) if item else None,
+            rarity=roll.rarity,
+            archetype=item["archetype"] if item else None,
+            slot=item["slot"] if item else None,
+            payload={
+                "has_piece": item is not None,
+                "piece_id": int(item["id"]) if item else None,
+                "quality": int(item["quality"]) if item else None,
+                "fully_rolled": bool(item.get("fully_rolled")) if item else False,
+                "materials": dict(roll.materials),
+            },
+        )
         return {"item": item, "materials": dict(roll.materials)}
 
 
@@ -843,6 +912,16 @@ async def craft_chest(conn, owner_id: int, rarity: str, archetype: str, rng=None
             slot=slot,
         )
         item = await create_piece(conn, owner_id, piece, origin="craft")
+        await log_event(
+            conn,
+            owner_id,
+            "craft",
+            equipment_id=int(item["id"]),
+            rarity=item["rarity"],
+            archetype=item["archetype"],
+            slot=item["slot"],
+            payload={"quality": int(item["quality"]), "cost": cost},
+        )
         return "crafted", item
 
 
@@ -944,6 +1023,23 @@ async def temper_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
         result["pity_used"] = success and fails >= step["pity"]
         result["refinement_cap"] = refinement_cap(item["attunement"])
         result["newly_bound"] = not bool(item["bound"])
+        await log_event(
+            conn,
+            owner_id,
+            "temper",
+            equipment_id=int(equipment_id),
+            rarity=item["rarity"],
+            archetype=item["archetype"],
+            slot=item["slot"],
+            payload={
+                "success": success,
+                "pity_used": result["pity_used"],
+                "star": stars if success else current,
+                "refinement": stars,
+                "quality": int(item["quality"]),
+                "fails_before": fails,
+            },
+        )
         return "tempered", result
 
 
@@ -991,6 +1087,23 @@ async def refine_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
         result["success"] = success
         result["pity_used"] = success and fails >= step["pity"]
         result["newly_bound"] = not bool(item["bound"])
+        await log_event(
+            conn,
+            owner_id,
+            "refine",
+            equipment_id=int(equipment_id),
+            rarity=item["rarity"],
+            archetype=item["archetype"],
+            slot=item["slot"],
+            payload={
+                "success": success,
+                "pity_used": result["pity_used"],
+                "quality": quality,
+                "quality_before": int(item["quality"]),
+                "refinement": int(item["refinement"] or 0),
+                "fails_before": fails,
+            },
+        )
         return "refined", result
 
 
@@ -1044,7 +1157,7 @@ async def inscribe_piece(conn, owner_id: int, equipment_id: int, modifier_id: st
             int(equipment_id),
             0 if success else fails + 1,
         )
-        return "inscribed", {
+        result = {
             **step,
             "success": success,
             "pity_used": success and fails >= step["pity"],
@@ -1052,6 +1165,23 @@ async def inscribe_piece(conn, owner_id: int, equipment_id: int, modifier_id: st
             "fails": 0 if success else fails + 1,
             "newly_bound": not bool(item["bound"]),
         }
+        await log_event(
+            conn,
+            owner_id,
+            "inscribe",
+            equipment_id=int(equipment_id),
+            rarity=item["rarity"],
+            archetype=item["archetype"],
+            slot=item["slot"],
+            payload={
+                "success": success,
+                "pity_used": result["pity_used"],
+                "modifier_id": modifier_id,
+                "replaced": result["replaced"],
+                "fails_before": fails,
+            },
+        )
+        return "inscribed", result
 
 
 async def trade_materials(conn, user_id: int, material_id: str, target_line: str, amount: int) -> tuple[str, dict | None]:
@@ -1066,6 +1196,18 @@ async def trade_materials(conn, user_id: int, material_id: str, target_line: str
         if not await spend_materials(conn, user_id, {material_id: spent}):
             return "poor", {"spent": spent}
         await add_materials(conn, user_id, {received_id: received})
+        await log_event(
+            conn,
+            user_id,
+            "material_trade",
+            payload={
+                "spent_id": material_id,
+                "spent": spent,
+                "received_id": received_id,
+                "received": received,
+                "target_line": target_line,
+            },
+        )
     return "traded", {"spent_id": material_id, "spent": spent, "received_id": received_id, "received": received}
 
 
@@ -1109,10 +1251,26 @@ async def salvage_piece(conn, owner_id: int, equipment_id: int) -> tuple[str, di
         if deleted is None:
             return "missing", None
         await add_materials(conn, owner_id, yield_amounts)
+        await log_event(
+            conn,
+            owner_id,
+            "salvage",
+            equipment_id=int(equipment_id),
+            rarity=item["rarity"],
+            archetype=item["archetype"],
+            slot=item["slot"],
+            payload={
+                "quality": int(item["quality"]),
+                "refinement": int(item["refinement"] or 0),
+                "materials": yield_amounts,
+            },
+        )
         return "salvaged", {"name": item["name"], "materials": yield_amounts}
 
 
-async def move_piece(conn, equipment_id: int, from_id: int, to_id: int) -> str:
+async def move_piece(
+    conn, equipment_id: int, from_id: int, to_id: int, *, log_as: str | None = "give"
+) -> str:
     """Move a tradable chest. Unequip it and clear any gear listing."""
     row = await conn.fetchrow(
         """
@@ -1144,6 +1302,17 @@ async def move_piece(conn, equipment_id: int, from_id: int, to_id: int) -> str:
         int(equipment_id),
         int(to_id),
     )
+    if log_as:
+        await log_event(
+            conn,
+            from_id,
+            log_as,
+            equipment_id=int(equipment_id),
+            rarity=row["rarity"],
+            archetype=row["archetype"],
+            slot=row["slot"],
+            payload={"to_id": int(to_id), "quality": int(row["quality"])},
+        )
     return "moved"
 
 
@@ -1182,6 +1351,16 @@ async def list_piece(conn, owner_id: int, equipment_id: int, price: int) -> tupl
             int(owner_id),
             int(price),
         )
+        await log_event(
+            conn,
+            owner_id,
+            "market_list",
+            equipment_id=int(equipment_id),
+            rarity=row["rarity"],
+            archetype=row["archetype"],
+            slot=row["slot"],
+            payload={"price": int(price), "quality": int(row["quality"])},
+        )
         return "listed", dict(row)
 
 
@@ -1196,6 +1375,8 @@ async def withdraw_listing(conn, owner_id: int, equipment_id: int) -> str:
         int(equipment_id),
         int(owner_id),
     )
+    if removed:
+        await log_event(conn, owner_id, "market_withdraw", equipment_id=int(equipment_id))
     return "withdrawn" if removed else "missing"
 
 
@@ -1241,9 +1422,25 @@ async def buy_listing(conn, buyer_id: int, equipment_id: int) -> tuple[str, dict
             price,
             int(listing["seller_id"]),
         )
-        status = await move_piece(conn, equipment_id, int(listing["seller_id"]), int(buyer_id))
+        status = await move_piece(
+            conn, equipment_id, int(listing["seller_id"]), int(buyer_id), log_as=None
+        )
         if status != "moved":
             raise RuntimeError("gear listing could not be delivered")
+        await log_event(
+            conn,
+            buyer_id,
+            "market_buy",
+            equipment_id=int(equipment_id),
+            rarity=listing["rarity"],
+            archetype=listing["archetype"],
+            slot=listing["slot"],
+            payload={
+                "price": price,
+                "seller_id": int(listing["seller_id"]),
+                "quality": int(listing["quality"]),
+            },
+        )
         return "bought", {"name": listing["name"], "price": price, "seller_id": int(listing["seller_id"])}
 
 
