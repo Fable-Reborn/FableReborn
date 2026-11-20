@@ -1444,10 +1444,12 @@ async def buy_listing(conn, buyer_id: int, equipment_id: int) -> tuple[str, dict
         return "bought", {"name": listing["name"], "price": price, "seller_id": int(listing["seller_id"])}
 
 
-async def fetch_market(conn, limit: int = 15) -> list[dict]:
+async def fetch_market(conn, limit: int = 25) -> list[dict]:
     rows = await conn.fetch(
         """
-        SELECT i.id, i.name, i.rarity, i.archetype, i.quality, m.price, m.seller_id
+        SELECT i.id, i.name, i.slot, i.rarity, i.archetype, i.quality, i.refinement,
+               i.offense_value, i.defense_value, i.origin, i.bound, i.fully_rolled,
+               m.price, m.seller_id, m.published
           FROM equipment_market m
           JOIN equipment_items i ON i.id = m.equipment_id
          WHERE i.owner_id = m.seller_id
@@ -1458,7 +1460,12 @@ async def fetch_market(conn, limit: int = 15) -> list[dict]:
         """,
         int(limit),
     )
-    return [dict(row) for row in rows]
+    items = [dict(row) for row in rows]
+    modifiers = await fetch_modifiers(conn, [int(item["id"]) for item in items])
+    for item in items:
+        item["modifiers"] = modifiers.get(int(item["id"]), [])
+        item["equipped"] = False
+    return items
 
 
 async def gear_theme(conn, user_id: int) -> str:

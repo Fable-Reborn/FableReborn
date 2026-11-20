@@ -841,20 +841,23 @@ class Equipment(commands.Cog):
     @gear.command(name="shop", brief="Browse the gear shop")
     @locale_doc
     async def gear_shop(self, ctx):
-        _("""Show armor listed on the gear shop.""")
+        _(
+            """Open the gear stall. Choose a listing, then Preview, Buy, or Unlist.
+
+            Filter by line, rarity, or slot. Sort by blessing, ward, quality, temper, or price.
+            `{prefix}gear sell <id> <price>` still lists a piece. `{prefix}gear buy` and `{prefix}gear unsell` still work if you already know the id.
+            """
+        )
         if await self._closed(ctx):
             return
+        from cogs.equipment.shop import GearShopView
+
         async with self.bot.pool.acquire() as conn:
             rows = await fetch_market(conn)
-        if not rows:
-            return await ctx.send("The gear shop is empty.")
-        lines = [
-            f"`{row['id']}` **{row['name']}** · {row['rarity'].title()} {row['archetype'].title()} · "
-            f"{quality_band(row['quality'])} {row['quality']} · **${int(row['price']):,}**"
-            for row in rows
-        ]
-        embed = discord.Embed(title="Gear shop", description="\n".join(lines), color=0x846236)
-        await ctx.send(embed=embed)
+            gold = int(await conn.fetchval('SELECT money FROM profile WHERE "user" = $1', ctx.author.id) or 0)
+            theme = await gear_theme(conn, ctx.author.id)
+        view = GearShopView(ctx, rows, gold, theme)
+        view.message = await ctx.send(embed=view.embed(), view=view)
 
     @has_char()
     @gear.command(name="buy", brief="Buy a piece from the gear shop")
