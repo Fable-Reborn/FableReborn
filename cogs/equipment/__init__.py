@@ -1,11 +1,53 @@
 """Development armory. Commands and combat stats stay dark outside FableDev."""
 from __future__ import annotations
 
+import importlib
 import io
 import logging
+import sys
 
 import discord
 from discord.ext import commands, tasks
+
+log = logging.getLogger(__name__)
+
+# `$reload equipment` only reloads this file. These stay cached unless we
+# refresh them first, so shop, craft, forge, and repository pick up together.
+_SUPPORT_MODULES = (
+    "classes.equipment.definitions",
+    "classes.equipment.attunement",
+    "classes.equipment.stats",
+    "classes.equipment.offense",
+    "classes.equipment.economy",
+    "classes.equipment.generation",
+    "classes.equipment.forge_result",
+    "classes.equipment.forge_art",
+    "classes.equipment.chronicle",
+    "classes.equipment.card",
+    "classes.equipment.character_card",
+    "classes.equipment.character_card_v2",
+    "classes.equipment.balance_log",
+    "classes.equipment.repository",
+    "cogs.equipment.layout",
+    "cogs.equipment.sheet",
+    "cogs.equipment.available",
+    "cogs.equipment.forge",
+    "cogs.equipment.shop",
+)
+
+
+def _reload_support() -> None:
+    for name in _SUPPORT_MODULES:
+        module = sys.modules.get(name)
+        if module is None:
+            continue
+        try:
+            importlib.reload(module)
+        except Exception:
+            log.exception("Failed to reload %s with the equipment cog", name)
+
+
+_reload_support()
 
 from classes.equipment.definitions import (
     ARCHETYPES,
@@ -46,8 +88,6 @@ from classes.equipment.repository import (
 from classes.equipment.card import preview_loadout, render_armory
 from utils.checks import has_char, is_gm
 from utils.i18n import _, locale_doc
-
-log = logging.getLogger(__name__)
 
 
 def _file(png: bytes, name: str = "armory.png") -> discord.File:
