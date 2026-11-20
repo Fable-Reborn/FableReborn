@@ -33,6 +33,10 @@ All **dates and times are UTC** unless stated otherwise.
 - Buy reloads the live listing first, refreshes the stall, and confirms at the current price.
 - Confirm charges only the agreed price. If the seller changes it again, the purchase is refused and nothing is taken.
 
+### Crate armor rolls
+
+- Gear rolls from crates reset each UTC day, not across a rolling 7-day pool. Daily caps stay 60 Common, 30 Uncommon, 20 Rare, 8 Magic, 4 Legendary. Extra crates still give a weapon only.
+
 ### Armory materials
 
 - Five smithing goods per armor line, matching crate rarities. Higher crates can drop lower goods. Legendary goods only from Legendary crates and a lucky Abyssal Maw drop.

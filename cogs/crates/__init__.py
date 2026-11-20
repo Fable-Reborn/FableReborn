@@ -406,7 +406,7 @@ class Crates(commands.Cog):
 
             Open one of your crates to receive a weapon. To check which crates contain which items, check `{prefix}help crates`.
             On the development realm, Common through Legendary crates can also leave armor and armory materials. A crate drops its own material and can drop every lower one. Only Legendary crates drop legendary materials. Divine crates do not roll armor.
-            Armor rolls are limited per rarity in any 7 days: 60 Common, 30 Uncommon, 20 Rare, 8 Magic, and 4 Legendary. Crates past that still give their weapon.
+            Armor rolls reset each UTC day: 60 Common, 30 Uncommon, 20 Rare, 8 Magic, and 4 Legendary. Crates past that still give their weapon.
             This command takes up a lot of space, so choose a spammy channel to open crates."""
         )
         try:
@@ -426,7 +426,7 @@ class Crates(commands.Cog):
                 if amount > armory_left:
                     warning = (
                         f"Only {armory_left} of these {amount} {rarity} crates can roll armor right now. "
-                        f"The armory allows {ARMORY_DAILY_ROLLS[rarity]} {rarity} armor rolls in any 7 days. "
+                        f"The armory allows {ARMORY_DAILY_ROLLS[rarity]} {rarity} armor rolls each UTC day. "
                         "The rest still give their weapon. Open all of them anyway?"
                     )
                     if not await ctx.confirm(warning):
@@ -913,7 +913,7 @@ class Crates(commands.Cog):
                             embed.add_field(
                                 name="Armory",
                                 value=(
-                                    f"Your {ARMORY_DAILY_ROLLS[rarity]} {rarity} armor rolls for the last 7 days "
+                                    f"Your {ARMORY_DAILY_ROLLS[rarity]} {rarity} armor rolls for today "
                                     "are used, so this crate gave a weapon only."
                                 ),
                                 inline=False,
