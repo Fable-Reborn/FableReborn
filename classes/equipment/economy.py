@@ -10,6 +10,7 @@ from decimal import Decimal
 from classes.equipment.definitions import (
     ARCHETYPES,
     DRAGON_MATERIAL_TIERS,
+    DRAGON_MATERIAL_WEIGHTS,
     MATERIAL_LINES,
     INSCRIBE_COST,
     REFINE_QUALITY_BANDS,
@@ -251,28 +252,21 @@ def dragon_tier(level: int) -> tuple:
 def roll_dragon_materials(level: int, archetype: str, rng) -> dict[str, int]:
     """Smithing goods for one party dragon kill at this dragon level.
 
-    Higher dragons pay higher goods and the lower goods on the same line.
-    Legendary materials only come from the Abyssal Maw.
+    This roll is independent of the ice-dragon weapon drop. First the kill
+    either pays nothing or it pays. Then one good is chosen from the goods
+    this dragon is allowed to give. Lower goods are more likely. Legendary
+    materials only come from the Abyssal Maw.
     """
-    _ceiling, _stage, max_tier, low, high = dragon_tier(level)
+    _ceiling, _stage, max_tier, drop_chance = dragon_tier(level)
+    if rng.random() >= float(drop_chance):
+        return {}
     goods = MATERIAL_LINES[str(archetype).lower()]
-    amounts = {goods[0]: rng.randint(low, high)}
-    for tier in range(1, int(max_tier) + 1):
-        is_top = tier == max_tier
-        if is_top and max_tier >= 4:
-            chance = 0.35
-        elif is_top:
-            chance = 0.75
-        else:
-            chance = 0.90
-        if rng.random() >= chance:
-            continue
-        amounts[goods[tier]] = 1 if tier >= 3 else rng.randint(1, 2)
-    return {
-        material_id: amount
-        for material_id, amount in amounts.items()
-        if MATERIAL_LINES[str(archetype).lower()].index(material_id) <= max_tier
-    }
+    allowed = goods[: int(max_tier) + 1]
+    weights = DRAGON_MATERIAL_WEIGHTS[: len(allowed)]
+    pick = rng.choices(list(allowed), weights=list(weights), k=1)[0]
+    tier = goods.index(pick)
+    amount = rng.randint(1, 2) if tier <= 1 else 1
+    return {pick: amount}
 
 
 CRAFT_COSTS = {

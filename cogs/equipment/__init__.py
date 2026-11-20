@@ -181,8 +181,9 @@ class Equipment(commands.Cog):
         wearing. Refining raises quality. Tempering adds stars, up to +5. Inscribing
         sets one enchantment. Each costs materials and gold, can fail, and has pity.
         The first time binds the piece. `{prefix}forge trade` swaps goods between lines at 3 for 1.
-        Party dragon kills pay smithing goods for the line you wear most.
-        Higher dragons pay higher goods and the lower ones on that line. Legendary
+        Party dragon kills can pay smithing goods for the line you wear most.
+        That roll is independent of the ice-dragon weapon drop. Higher dragons
+        are more likely to pay, and more likely to pay a higher good. Legendary
         materials only come from Legendary crates and the Abyssal Maw. `{prefix}gear salvage <id>` breaks one down for fewer
         materials than it cost.
 
@@ -475,7 +476,7 @@ class Equipment(commands.Cog):
 
         Guardian, Slayer, and Vanguard each have five materials, one per crate
         rarity. A crate drops its own good and can drop every lower good. Only
-        Legendary crates and the Abyssal Maw drop legendary goods. The dots
+        Legendary crates and a lucky Abyssal Maw drop legendary goods. The dots
         match `{prefix}amulet resources`. A balance of zero is still shown.
             """
         )
@@ -492,7 +493,7 @@ class Equipment(commands.Cog):
             value=(
                 "⚪ Common • 🟢 Uncommon • 🔵 Rare • 🟣 Magic • 🟡 Legendary\n"
                 "Higher crates can drop lower goods. Legendary goods only come from "
-                "Legendary crates and the Abyssal Maw."
+                "Legendary crates and a lucky Abyssal Maw drop."
             ),
             inline=False,
         )
@@ -1111,6 +1112,8 @@ class Equipment(commands.Cog):
                         continue
                     line = await worn_line(conn, member.id) or rng.choice(ARCHETYPES)
                     materials = roll_dragon_materials(dragon_level, line, rng)
+                    if not materials:
+                        continue
                     await add_materials(conn, member.id, materials)
                     from classes.equipment.balance_log import log_event
 

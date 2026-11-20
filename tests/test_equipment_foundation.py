@@ -577,18 +577,29 @@ class ForgeTests(unittest.TestCase):
         self.assertEqual(dragon_tier(20)[1], "Absolute Zero")
         self.assertEqual(dragon_tier(34)[1], "Void Tyrant")
         self.assertEqual(dragon_tier(50)[1], "The Abyssal Maw")
-        low = roll_dragon_materials(3, "guardian", random.Random(1))
-        self.assertEqual(set(low), {"bog_iron"})
+        frost_hits = 0
+        for seed in range(400):
+            low = roll_dragon_materials(3, "guardian", random.Random(seed))
+            if not low:
+                continue
+            frost_hits += 1
+            self.assertEqual(set(low), {"bog_iron"})
+        self.assertGreater(frost_hits, 20)
+        self.assertLess(frost_hits, 80)
         for seed in range(400):
             mid = roll_dragon_materials(34, "guardian", random.Random(seed))
             self.assertNotIn("aegisheart", mid)
             self.assertTrue(set(mid) <= {"bog_iron", "fen_iron", "wardsteel", "bastion_steel"})
         maw_seen = set()
-        for seed in range(400):
+        maw_hits = 0
+        for seed in range(800):
             high = roll_dragon_materials(50, "vanguard", random.Random(seed))
-            self.assertGreaterEqual(high.get("river_bronze", 0), 4)
             self.assertTrue(set(high) <= set(MATERIAL_LINES["vanguard"]))
-            maw_seen.update(high)
+            if high:
+                maw_hits += 1
+                maw_seen.update(high)
+        self.assertGreater(maw_hits, 140)
+        self.assertLess(maw_hits, 320)
         self.assertIn("sunstone", maw_seen)
 
     def test_forge_animation_is_a_looping_gif(self):

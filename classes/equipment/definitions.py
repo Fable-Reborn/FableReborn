@@ -191,18 +191,20 @@ INSCRIBE_RARITIES = ("magic", "legendary")
 # Garron's trade: this many of one line's material buys one of another line's
 # material of the same tier.
 TRADE_RATIO = 3
-# Party dragon kills pay smithing goods by dragon level. The line follows the
-# armor the player wears most.
-# (highest level, stage, highest material index 0-4, common low, common high)
+# Party dragon kills can pay smithing goods by dragon level, independently of
+# the ice-dragon weapon roll. The line follows the armor the player wears most.
+# (highest level, stage, highest material index 0-4, chance to drop anything)
 # Legendary goods only come from the Abyssal Maw, matching legendary crates.
 DRAGON_MATERIAL_TIERS = (
-    (5, "Frostbite Wyrm", 0, 1, 2),
-    (10, "Corrupted Ice Dragon", 1, 2, 3),
-    (15, "Permafrost", 2, 2, 3),
-    (20, "Absolute Zero", 3, 3, 3),
-    (34, "Void Tyrant", 3, 3, 4),
-    (None, "The Abyssal Maw", 4, 4, 4),
+    (5, "Frostbite Wyrm", 0, 0.12),
+    (10, "Corrupted Ice Dragon", 1, 0.15),
+    (15, "Permafrost", 2, 0.18),
+    (20, "Absolute Zero", 3, 0.22),
+    (34, "Void Tyrant", 3, 0.25),
+    (None, "The Abyssal Maw", 4, 0.28),
 )
+# Inner table once a drop hits. Lower goods are more likely.
+DRAGON_MATERIAL_WEIGHTS = (16, 8, 4, 2, 1)
 QUALITY_MODE = {
     "common": 45,
     "uncommon": 50,

@@ -3651,7 +3651,7 @@ class Help(commands.Cog):
                         },
                         {
                             "title": "Materials and crafting",
-                            "description": "Each armor line has five materials, one per crate rarity. Higher crates can drop the lower goods. Only Legendary crates and the Abyssal Maw drop legendary goods. You can only craft patterns you have discovered.",
+                            "description": "Each armor line has five materials, one per crate rarity. Higher crates can drop the lower goods. Dragon party can also drop goods, independently of the weapon roll. Only Legendary crates and a lucky Abyssal Maw drop legendary goods. You can only craft patterns you have discovered.",
                             "fields": [
                                 {
                                     "name": "Commands",
