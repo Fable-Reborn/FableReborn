@@ -95,7 +95,7 @@ class GearRecipeSelect(discord.ui.Select):
                 discord.SelectOption(
                     label="No patterns discovered",
                     value="none",
-                    description="Find this line in a crate to learn more",
+                    description="Find a piece in a crate to learn its pattern",
                 )
             )
         super().__init__(placeholder="Choose a discovered pattern", options=options[:25], row=1)
@@ -182,7 +182,7 @@ class GearCraftView(discord.ui.View):
                 embed.add_field(name=f"Example {line.title()}", value=sample, inline=False)
         embed.add_field(
             name="How to use",
-            value="Choose an armor line below. Only patterns you have discovered are listed.",
+            value="Choose an armor line below. Only patterns you have discovered are listed; each found piece teaches its own slot.",
             inline=False,
         )
         return embed
@@ -196,7 +196,7 @@ class GearCraftView(discord.ui.View):
         )
         shown = self.recipes_for_line()
         if not shown:
-            embed.add_field(name="None discovered", value="Find a piece of this line to learn its pattern.")
+            embed.add_field(name="None discovered", value="Find a piece of this line to learn that piece's pattern. Each slot is learned on its own.")
             return embed
         grouped: dict[str, list[dict]] = {}
         for recipe in shown:

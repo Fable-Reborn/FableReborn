@@ -10,6 +10,7 @@ from classes.equipment.definitions import DEV_DATABASE, OPEN_SLOTS, display_name
 from classes.equipment.economy import (
     STARTER_RECIPES,
     craft_cost,
+    extra_discovery_keys,
     is_tradable,
     modifier_adjustments,
     offensive_properties,
@@ -128,14 +129,6 @@ SCHEMA_STATEMENTS = (
     "ALTER TABLE equipment_items DROP CONSTRAINT IF EXISTS equipment_items_attunement_chk",
     "ALTER TABLE equipment_items ADD CONSTRAINT equipment_items_attunement_chk CHECK (attunement BETWEEN 0 AND 2500)",
     """
-    INSERT INTO equipment_discoveries (user_id, recipe_key)
-    SELECT d.user_id, s.slot || substr(d.recipe_key, strpos(d.recipe_key, ':'))
-      FROM equipment_discoveries d
-     CROSS JOIN (VALUES ('head'), ('chest'), ('legs'), ('feet')) AS s (slot)
-     WHERE d.recipe_key NOT LIKE '%:common'
-    ON CONFLICT (user_id, recipe_key) DO NOTHING
-    """,
-    """
     CREATE TABLE IF NOT EXISTS equipment_preferences (
         user_id BIGINT PRIMARY KEY,
         theme TEXT NOT NULL DEFAULT 'chronicle'
@@ -187,6 +180,13 @@ async def ensure_schema(conn) -> None:
             """,
             dev,
         )
+        pruned = await prune_undiscovered_recipes(conn, apply=True)
+        if pruned["removed"]:
+            LOGGER.info(
+                "Removed %s undiscovered gear recipes on %s",
+                pruned["removed"],
+                await database_name(conn),
+            )
 
 
 async def feature_enabled(conn) -> bool:
@@ -194,6 +194,76 @@ async def feature_enabled(conn) -> bool:
         "SELECT enabled FROM equipment_settings WHERE key = 'equipment'"
     )
     return bool(enabled)
+
+
+_FOUND_RECIPE_SQL = """
+SELECT DISTINCT owner_id AS user_id, slot || ':' || archetype || ':' || rarity AS recipe_key
+  FROM equipment_items
+ WHERE origin IS DISTINCT FROM 'craft'
+   AND rarity <> 'common'
+UNION
+SELECT DISTINCT user_id, slot || ':' || archetype || ':' || rarity
+  FROM equipment_events
+ WHERE action = 'crate'
+   AND slot IS NOT NULL
+   AND archetype IS NOT NULL
+   AND rarity IS NOT NULL
+   AND rarity <> 'common'
+UNION
+SELECT DISTINCT g.user_id, i.slot || ':' || i.archetype || ':' || i.rarity
+  FROM equipment_reward_grants g
+  JOIN equipment_items i ON i.id = g.equipment_id
+ WHERE i.rarity <> 'common'
+"""
+
+_EXTRA_DISCOVERY_SQL = f"""
+SELECT d.user_id, d.recipe_key
+  FROM equipment_discoveries d
+ WHERE split_part(d.recipe_key, ':', 3) <> 'common'
+   AND NOT EXISTS (
+         SELECT 1
+           FROM ({_FOUND_RECIPE_SQL}) found
+          WHERE found.user_id = d.user_id
+            AND found.recipe_key = d.recipe_key
+       )
+"""
+
+
+async def prune_undiscovered_recipes(conn, *, apply: bool = True) -> dict:
+    """Drop discovery rows that were never a found piece (the old four-slot unlock)."""
+    extras = await conn.fetch(_EXTRA_DISCOVERY_SQL)
+    rows = [(int(row["user_id"]), row["recipe_key"]) for row in extras]
+    stored = {key for _user_id, key in rows}
+    # Safety: never delete a key that looks like a real find even if SQL drifted.
+    keys = extra_discovery_keys(stored, set())
+    rows = [(user_id, key) for user_id, key in rows if key in keys]
+    removed = 0
+    if apply and rows:
+        deleted = await conn.fetch(
+            """
+            DELETE FROM equipment_discoveries d
+             WHERE (d.user_id, d.recipe_key) IN (
+                   SELECT x.user_id, x.recipe_key
+                     FROM unnest($1::bigint[], $2::text[]) AS x(user_id, recipe_key)
+             )
+            RETURNING d.user_id, d.recipe_key
+            """,
+            [user_id for user_id, _key in rows],
+            [key for _user_id, key in rows],
+        )
+        removed = len(deleted)
+        rows = [(int(row["user_id"]), row["recipe_key"]) for row in deleted]
+    elif not apply:
+        removed = len(rows)
+    counts: dict[str, int] = {}
+    for _user_id, key in rows:
+        counts[key] = counts.get(key, 0) + 1
+    return {
+        "removed": removed,
+        "apply": apply,
+        "by_key": counts,
+        "sample": rows[:20],
+    }
 
 
 async def set_feature_enabled(conn, enabled: bool) -> None:
@@ -677,27 +747,27 @@ async def create_piece(conn, owner_id: int, piece, *, origin: str) -> dict:
     item = dict(row)
     item["modifiers"] = [{"modifier_id": modifier_id} for modifier_id in piece.modifier_ids]
     item["equipped"] = False
-    await record_discovery(conn, owner_id, piece.archetype, piece.rarity, piece_slot=slot)
+    if origin != "craft":
+        await record_discovery(conn, owner_id, piece.archetype, piece.rarity, piece_slot=slot)
     return item
 
 
 async def record_discovery(conn, user_id: int, archetype: str, rarity: str, piece_slot: str = "chest") -> None:
-    """Finding one piece teaches that line and rarity for every open slot."""
-    keys = [
-        recipe_key(archetype, rarity, slot)
-        for slot in OPEN_SLOTS
-        if recipe_key(archetype, rarity, slot) not in STARTER_RECIPES
-    ]
-    if not keys:
+    """Finding one piece teaches only that piece: its slot, line, and rarity."""
+    slot = str(piece_slot or "").lower()
+    if slot not in OPEN_SLOTS:
+        return
+    key = recipe_key(archetype, rarity, slot)
+    if key in STARTER_RECIPES:
         return
     await conn.execute(
         """
         INSERT INTO equipment_discoveries (user_id, recipe_key)
-        SELECT $1, key FROM unnest($2::text[]) AS key
+        VALUES ($1, $2)
         ON CONFLICT (user_id, recipe_key) DO NOTHING
         """,
         int(user_id),
-        keys,
+        key,
     )
 
 

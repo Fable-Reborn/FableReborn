@@ -79,6 +79,7 @@ from classes.equipment.repository import (
     gear_theme,
     grant_chest,
     list_piece,
+    prune_undiscovered_recipes,
     salvage_piece,
     set_gear_theme,
     spend_materials,
@@ -174,8 +175,9 @@ class Equipment(commands.Cog):
 
         `{prefix}gear available` lists only the patterns you have discovered.
         Everyone starts with the common helm, cuirass, greaves, and sabatons of each line. Finding a stronger
-        piece teaches that line and rarity for all four slots. `{prefix}gear craft <rarity> <line> [slot]` forges
-        a known pattern. Leave the slot out to forge a cuirass. Quality is rolled. The new piece can be traded.
+        piece teaches only that piece: its slot, line, and rarity. A legendary Slayer helm teaches the legendary
+        Slayer helm, not the cuirass, greaves, or sabatons. Crafting never teaches a pattern.
+        `{prefix}gear craft <rarity> <line> [slot]` forges a known pattern. Leave the slot out to forge a cuirass. Quality is rolled. The new piece can be traded.
 
         `{prefix}forge` takes you to Garron Thorne, who works the pieces you are
         wearing. Refining raises quality. Tempering adds stars, up to +5. Inscribing
@@ -735,7 +737,10 @@ class Equipment(commands.Cog):
         async with self.bot.pool.acquire() as conn:
             status, item = await craft_chest(conn, ctx.author.id, rarity, archetype, slot=piece_slot)
         if status == "unknown":
-            return await ctx.send("You have not discovered that pattern yet. Find one first.")
+            return await ctx.send(
+                "You have not discovered that pattern yet. Find that exact piece first; "
+                "each slot is learned on its own."
+            )
         if status == "poor":
             return await ctx.send(f"You need {self._material_text(cost)}.")
         await ctx.send(
@@ -990,6 +995,35 @@ class Equipment(commands.Cog):
             f"**{int(total or 0)}** events from **{int(players or 0)}** players.\n"
             f"Wrote `{path.as_posix()}`. Attach that file in Cursor next week for the balance pass.",
             file=discord.File(path, filename=path.name),
+        )
+
+    @is_gm()
+    @gear.command(name="recipesweep", brief="GM: drop recipes nobody found", hidden=True)
+    @locale_doc
+    async def gear_recipesweep(self, ctx, mode: str = "dry"):
+        _(
+            """`[dry|apply]` - dry lists extras. apply deletes them.
+
+            A recipe stays only if the player found that slot, line, and rarity
+            (owned a non-crafted piece, a crate event, or a crate grant). Crafted
+            copies and the old four-slot unlocks are removed. Common starters stay.
+            `$reload equipment` also applies this once on load.
+            """
+        )
+        if not getattr(self, "schema_ready", False):
+            return await ctx.send("The armory tables did not load. Check the bot log.")
+        apply = str(mode or "dry").lower() in {"apply", "yes", "on"}
+        async with self.bot.pool.acquire() as conn:
+            name = await database_name(conn)
+            result = await prune_undiscovered_recipes(conn, apply=apply)
+        action = "Removed" if apply else "Would remove"
+        top = ", ".join(
+            f"`{key}` ×{count}"
+            for key, count in sorted(result["by_key"].items(), key=lambda item: (-item[1], item[0]))[:8]
+        ) or "none"
+        await ctx.send(
+            f"{action} **{result['removed']}** extra recipe(s) on **{name}**.\n"
+            f"Most common: {top}."
         )
 
     @is_gm()

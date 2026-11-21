@@ -77,6 +77,22 @@ def preview_balances() -> dict[str, int]:
     return balances
 
 
+def extra_discovery_keys(stored: set[str], found: set[str]) -> set[str]:
+    """Discovery rows that are not starters and not backed by a found piece."""
+    extras = set()
+    for key in stored:
+        try:
+            _slot, _archetype, rarity = parse_recipe_key(key)
+        except ValueError:
+            extras.add(key)
+            continue
+        if key in STARTER_RECIPES or rarity == "common":
+            continue
+        if key not in found:
+            extras.add(key)
+    return extras
+
+
 def known_recipe_keys(discovered: set[str] | None = None) -> list[str]:
     """Starter patterns plus anything the character has found."""
     keys = set(STARTER_RECIPES)
