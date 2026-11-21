@@ -486,15 +486,51 @@ class ForgeTests(unittest.TestCase):
     def test_refine_cost_rises_and_chance_falls_with_quality(self):
         from classes.equipment.economy import refine_step
 
-        low = refine_step("slayer", 50)
-        high = refine_step("slayer", 97)
-        self.assertEqual(low["cost"], {"cinder_ore": 4})
-        self.assertEqual(low["chance"], 1.0)
-        self.assertEqual(high["cost"], {"cinder_ore": 10, "razorsteel": 3, "wyrmglass": 1})
-        self.assertEqual(high["chance"], 0.5)
-        self.assertGreater(high["gold"], low["gold"])
-        self.assertGreater(high["pity"], 0)
+        rough = refine_step("slayer", 20)
+        standard = refine_step("slayer", 50)
+        fine = refine_step("slayer", 75)
+        peak = refine_step("slayer", 98)
+        self.assertEqual(rough["cost"], {"cinder_ore": 3})
+        self.assertEqual(rough["chance"], 1.0)
+        self.assertEqual(rough["gold"], 1200)
+        self.assertEqual(standard["cost"], {"cinder_ore": 5})
+        self.assertEqual(standard["chance"], 0.9)
+        self.assertNotIn("ember_ore", standard["cost"])
+        self.assertIn("razorsteel", fine["cost"])
+        self.assertIn("ember_ore", fine["cost"])
+        self.assertNotIn("wyrmglass", fine["cost"])
+        self.assertEqual(peak["cost"]["wyrmglass"], 1)
+        self.assertEqual(peak["chance"], 0.4)
+        self.assertGreater(fine["gold"], standard["gold"])
+        self.assertGreater(peak["gold"], fine["gold"])
+        self.assertGreater(peak["pity"], 0)
         self.assertIsNone(refine_step("slayer", 100))
+
+    def test_refine_band_edges_match_the_quality_being_spent(self):
+        from classes.equipment.economy import refine_step, salvage_yield, craft_cost
+
+        self.assertEqual(refine_step("slayer", 39)["gold"], 1200)
+        self.assertEqual(refine_step("slayer", 40)["gold"], 4000)
+        self.assertEqual(refine_step("slayer", 69)["gold"], 4000)
+        self.assertEqual(refine_step("slayer", 70)["gold"], 8000)
+        self.assertEqual(refine_step("slayer", 84)["gold"], 8000)
+        self.assertEqual(refine_step("slayer", 85)["gold"], 16000)
+        self.assertNotIn("wyrmglass", refine_step("slayer", 96)["cost"])
+        self.assertIn("wyrmglass", refine_step("slayer", 97)["cost"])
+        golds = [refine_step("slayer", quality)["gold"] for quality in range(1, 100)]
+        self.assertEqual(golds, sorted(golds))
+        salvage = salvage_yield("legendary", "slayer", 100)
+        craft = craft_cost("legendary", "slayer")
+        self.assertTrue(salvage)
+        for material_id, amount in salvage.items():
+            self.assertLess(amount, craft[material_id])
+
+    def test_refine_does_not_ask_legendary_goods_before_the_last_points(self):
+        from classes.equipment.economy import refine_step
+
+        at_96 = refine_step("guardian", 96)
+        self.assertNotIn("aegisheart", at_96["cost"])
+        self.assertIn("aegisheart", refine_step("guardian", 97)["cost"])
 
     def test_temper_stars_work_like_starforge(self):
         from classes.equipment.economy import temper_step

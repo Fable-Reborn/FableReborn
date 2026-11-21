@@ -274,7 +274,7 @@ class Equipment(commands.Cog):
             """Visit Garron Thorne at Thorne's Anvil.
 
             Pick one of the armor pieces you are wearing. Only worn pieces appear.
-            **Refine** raises quality by 1. **Temper** adds a star, up to +5, or +7 once the piece is fully attuned.
+            **Refine** raises quality by 1. Gold and materials rise with the piece's quality; Rough and Standard stay on common goods, Fine and above cost rarer goods. **Temper** adds a star, up to +5, or +7 once the piece is fully attuned.
             **Inscribe** sets one enchantment from the piece's own line on a Magic or Legendary piece. A success replaces its current enchantment. Two enchantments only come from a fully rolled Legendary crate drop.
             Every attempt costs that line's materials and gold, even when it fails. Failures build pity, and after enough failures in a row the next attempt succeeds.
             The first refine, temper, or inscription binds the piece. Garron asks you to confirm before he does.

@@ -27,6 +27,11 @@ All **dates and times are UTC** unless stated otherwise.
 - `$inventory` category/item selects and consume modals are owner-only. Loadout select/rename modals are owner-only.
 - A second player clicking a public menu gets an ephemeral **This armory isn't yours.** (or the inventory/loadout equivalent). No equip, merch, sell, drink, or preset apply runs.
 
+### Forge refine costs
+
+- Refining quality now scales with the piece: Rough (≤39) stays cheap and certain. Standard (crate-typical, ≤69) is extra common goods and gold only. Fine adds uncommon and rare. Exceptional adds magic. Only quality 97–99 spends a legendary good.
+- Gold per attempt: 1,200 → 4,000 → 8,000 → 16,000 → 24,000 → 36,000. Success chance falls 100% → 40% with pity. Temper and inscribe are unchanged.
+
 ### `$alt` gear menus
 
 - The linked main can use forge, shop (preview/buy/unlist), craft, `$preset` loadouts, crate vault, and `$gear` / `$gearlab` screens opened as the alt (`$alt forge`, `$alt gear shop`, and so on). Same `alt_invoker_id` rule as `$armory`.

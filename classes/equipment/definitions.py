@@ -174,11 +174,16 @@ ARMORY_DAILY_ROLLS = {
 #
 # Refining raises quality by 1. Material amounts are common, uncommon, rare,
 # magic, legendary, then gold, success chance, pity.
+# Bands follow the quality labels. Catch-up (Rough) stays cheap and certain.
+# Crate-typical quality (about 45–62) is Standard: extra common and gold only.
+# Uncommon/rare start at Fine (70+). Legendary material only on 97–99.
 REFINE_QUALITY_BANDS = (
-    (69, 4, 0, 0, 0, 0, 2_000, 1.00, 0),
-    (84, 6, 0, 1, 0, 0, 5_000, 0.85, 2),
-    (94, 8, 0, 2, 0, 0, 10_000, 0.65, 3),
-    (99, 10, 0, 3, 0, 1, 25_000, 0.50, 3),
+    (39, 3, 0, 0, 0, 0, 1_200, 1.00, 0),
+    (69, 5, 0, 0, 0, 0, 4_000, 0.90, 2),
+    (84, 6, 2, 1, 0, 0, 8_000, 0.75, 2),
+    (94, 8, 3, 2, 1, 0, 16_000, 0.60, 3),
+    (96, 9, 3, 3, 2, 0, 24_000, 0.50, 3),
+    (99, 10, 4, 3, 2, 1, 36_000, 0.40, 4),
 )
 # Tempering adds a star, +1 to +7. Materials are TEMPER_STAR_COSTS in economy.py.
 TEMPER_STAR_CHANCE = {1: 0.90, 2: 0.80, 3: 0.70, 4: 0.60, 5: 0.50, 6: 0.40, 7: 0.30}
