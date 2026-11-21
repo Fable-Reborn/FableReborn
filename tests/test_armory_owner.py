@@ -142,6 +142,20 @@ class ArmoryOwnerTests(unittest.IsolatedAsyncioTestCase):
         helper = FakeInteraction(333)
         self.assertTrue(await _require_armory_owner(ctx, helper))
 
+    async def test_alt_invoker_can_use_loadout_manager_stranger_cannot(self):
+        ctx = owner_ctx(111)
+        ctx.alt_invoker_id = 333
+        main = FakeInteraction(333)
+        self.assertTrue(
+            await _require_armory_owner(ctx, main, "This loadout manager is not yours.")
+        )
+        stranger = FakeInteraction(222)
+        self.assertFalse(
+            await _require_armory_owner(ctx, stranger, "This loadout manager is not yours.")
+        )
+        self.assertEqual(stranger.response.sent, ["This loadout manager is not yours."])
+        self.assertEqual(_armory_owner_ids(ctx), {111, 333})
+
     def test_shop_will_not_charge_the_old_price(self):
         self.assertTrue(listing_price_changed(9000, 5000))
         self.assertFalse(listing_price_changed(5000, 5000))

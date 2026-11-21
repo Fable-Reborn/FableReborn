@@ -5,6 +5,7 @@ import io
 
 import discord
 
+from classes.equipment.access import require_menu_actor
 from classes.equipment.card import render_armory
 from classes.equipment.chronicle import THEMES, theme_for
 
@@ -25,10 +26,7 @@ class GearSheetView(discord.ui.View):
         self._paint()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("This sheet belongs to someone else.", ephemeral=True)
-            return False
-        return True
+        return await require_menu_actor(self.ctx, interaction, "This sheet belongs to someone else.")
 
     def _cover_options(self) -> list[discord.SelectOption]:
         return [
@@ -37,8 +35,7 @@ class GearSheetView(discord.ui.View):
         ]
 
     async def _choose_cover(self, interaction: discord.Interaction) -> None:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("This sheet belongs to someone else.", ephemeral=True)
+        if not await require_menu_actor(self.ctx, interaction, "This sheet belongs to someone else."):
             return
         from classes.equipment.repository import set_gear_theme
 
@@ -85,8 +82,7 @@ class GearSheetView(discord.ui.View):
         return discord.File(io.BytesIO(png), filename="armory.png")
 
     async def _show(self, interaction: discord.Interaction, focus: str) -> None:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("This sheet belongs to someone else.", ephemeral=True)
+        if not await require_menu_actor(self.ctx, interaction, "This sheet belongs to someone else."):
             return
         self.focus = focus
         self._paint()

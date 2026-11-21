@@ -1704,8 +1704,10 @@ class PresetSelect(discord.ui.Select):
         self.manager = manager
 
     async def callback(self, interaction: discord.Interaction):
-        if int(interaction.user.id) != int(self.manager.author_id):
-            return await interaction.response.send_message("This loadout manager is not yours.", ephemeral=True)
+        if not await _require_armory_owner(
+            self.manager.ctx, interaction, "This loadout manager is not yours."
+        ):
+            return
         if self.values[0] == "__none__":
             return await interaction.response.defer()
         self.manager.selected_id = self.values[0]
@@ -1730,8 +1732,10 @@ class PresetNameModal(discord.ui.Modal):
         self.add_item(self.name_input)
 
     async def on_submit(self, interaction: discord.Interaction):
-        if int(interaction.user.id) != int(self.manager.author_id):
-            return await interaction.response.send_message("This loadout manager is not yours.", ephemeral=True)
+        if not await _require_armory_owner(
+            self.manager.ctx, interaction, "This loadout manager is not yours."
+        ):
+            return
         name = str(self.name_input.value).strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]+", name):
             return await interaction.response.send_message(
@@ -1779,10 +1783,9 @@ class PresetDeleteConfirmView(discord.ui.View):
         self.preset_id = preset_id
 
     async def interaction_check(self, interaction):
-        if interaction.user.id != self.manager.author_id:
-            await interaction.response.send_message("This confirmation is not yours.", ephemeral=True)
-            return False
-        return True
+        return await _require_armory_owner(
+            self.manager.ctx, interaction, "This confirmation is not yours."
+        )
 
     @discord.ui.button(label="Delete Loadout", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction, button):
@@ -1902,10 +1905,9 @@ class PresetManagerView(discord.ui.View):
             self.add_item(button)
 
     async def interaction_check(self, interaction):
-        if interaction.user.id != self.author_id:
-            await interaction.response.send_message("This loadout manager is not yours.", ephemeral=True)
-            return False
-        return True
+        return await _require_armory_owner(
+            self.ctx, interaction, "This loadout manager is not yours."
+        )
 
     async def _apply(self, interaction, mode):
         if not self.selected_id:

@@ -5,6 +5,7 @@ import io
 
 import discord
 
+from classes.equipment.access import menu_actor_ids
 from classes.equipment.card import modifier_effect, piece_numbers, render_armory
 from classes.equipment.definitions import (
     ARCHETYPE_NOUN,
@@ -151,7 +152,7 @@ class ShopBuyConfirm(discord.ui.View):
         self.name = listing["name"]
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.shop.author_id:
+        if int(interaction.user.id) not in self.shop.allowed_ids:
             await interaction.response.send_message("This stall is not yours.", ephemeral=True)
             return False
         return True
@@ -208,7 +209,7 @@ class ShopUnlistConfirm(discord.ui.View):
         self.name = listing["name"]
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.shop.author_id:
+        if int(interaction.user.id) not in self.shop.allowed_ids:
             await interaction.response.send_message("This stall is not yours.", ephemeral=True)
             return False
         return True
@@ -311,6 +312,7 @@ class GearShopView(discord.ui.View):
         self.ctx = ctx
         self.bot = ctx.bot
         self.author_id = ctx.author.id
+        self.allowed_ids = menu_actor_ids(ctx)
         self.listings = listings
         self.gold = int(gold or 0)
         self.theme = theme
@@ -328,7 +330,7 @@ class GearShopView(discord.ui.View):
         return next((item for item in self.visible() if int(item["id"]) == self.selected_id), None)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
+        if int(interaction.user.id) not in self.allowed_ids:
             await interaction.response.send_message("This stall is not yours.", ephemeral=True)
             return False
         return True

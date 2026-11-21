@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import discord
 
+from classes.equipment.access import require_menu_actor
 from classes.equipment.definitions import (
     ARCHETYPE_NOUN,
     MATERIAL_LINES,
@@ -150,10 +151,7 @@ class GearCraftView(discord.ui.View):
         return None
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("This crafting menu is not yours.", ephemeral=True)
-            return False
-        return True
+        return await require_menu_actor(self.ctx, interaction, "This crafting menu is not yours.")
 
     def summary_embed(self) -> discord.Embed:
         ready, close = _counts(self.recipes)

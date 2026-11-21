@@ -43,15 +43,21 @@ def _piece_line(title: str, item: dict | None, *, weapon: bool) -> str:
     )
 
 
-def parse_layout_id(custom_id: str, user_id: int) -> tuple[str, str] | None:
+def parse_layout_id(custom_id: str, user_id: int | None = None) -> tuple[int, str, str] | None:
     parts = str(custom_id or "").split(":")
-    if len(parts) != 5 or parts[0] != PREFIX or parts[1] != str(user_id):
+    if len(parts) != 5 or parts[0] != PREFIX:
+        return None
+    try:
+        owner_id = int(parts[1])
+    except (TypeError, ValueError):
+        return None
+    if user_id is not None and int(user_id) != owner_id:
         return None
     _prefix, _owner, kind, value, other = parts
     if kind == "focus" and value in FOCUSES and other in THEMES:
-        return value, other
+        return owner_id, value, other
     if kind == "theme" and value in THEMES and other in FOCUSES:
-        return other, value
+        return owner_id, other, value
     return None
 
 

@@ -43,6 +43,7 @@ from classes.classes import (
 )
 from classes.classes import from_string as class_from_string
 
+from classes.equipment.access import require_menu_actor
 from classes.equipment.generation import describe_reward, summarize_rewards
 from classes.equipment.definitions import ARMORY_DAILY_ROLLS
 from classes.equipment.repository import apply_crate_opening, armory_rolls_left
@@ -136,6 +137,8 @@ class CrateAmountModal(discord.ui.Modal, title="Open Crates"):
         self.vault = vault
 
     async def on_submit(self, interaction):
+        if not await require_menu_actor(self.vault.ctx, interaction, "This crate vault is not yours."):
+            return
         try:
             amount = int(str(self.amount.value))
         except ValueError:
@@ -208,10 +211,7 @@ class CrateVaultView(discord.ui.View):
         self.add_item(close)
 
     async def interaction_check(self, interaction):
-        if interaction.user.id != self.ctx.author.id:
-            await interaction.response.send_message("This crate vault is not yours.", ephemeral=True)
-            return False
-        return True
+        return await require_menu_actor(self.ctx, interaction, "This crate vault is not yours.")
 
     async def open_selected(self, interaction):
         owned = int(self.counts.get(self.rarity, 0))

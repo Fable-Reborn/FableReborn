@@ -27,6 +27,11 @@ All **dates and times are UTC** unless stated otherwise.
 - `$inventory` category/item selects and consume modals are owner-only. Loadout select/rename modals are owner-only.
 - A second player clicking a public menu gets an ephemeral **This armory isn't yours.** (or the inventory/loadout equivalent). No equip, merch, sell, drink, or preset apply runs.
 
+### `$alt` gear menus
+
+- The linked main can use forge, shop (preview/buy/unlist), craft, `$preset` loadouts, crate vault, and `$gear` / `$gearlab` screens opened as the alt (`$alt forge`, `$alt gear shop`, and so on). Same `alt_invoker_id` rule as `$armory`.
+- Buys, listings, forge work, and loadouts still run as the alt character. Another player still gets the ephemeral refusal.
+
 ### Gear shop stale price
 
 - Relisting the same piece no longer lets a buyer confirm the old gold amount on an open stall.

@@ -7,6 +7,7 @@ import random
 
 import discord
 
+from classes.equipment.access import menu_actor_ids
 from classes.equipment.attunement import ATTUNEMENT_CAP, refinement_cap
 from classes.equipment.definitions import (
     INSCRIBE_RARITIES,
@@ -95,6 +96,12 @@ class BindConfirm(discord.ui.View):
         self.forge = forge
         self.action = action
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if int(interaction.user.id) not in self.forge.allowed_ids:
+            await interaction.response.send_message("Garron is working on someone else's armor.", ephemeral=True)
+            return False
+        return True
+
     @discord.ui.button(label="Yes, bind it", style=discord.ButtonStyle.danger)
     async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
         self.stop()
@@ -125,10 +132,12 @@ class BindConfirm(discord.ui.View):
 
 
 class ForgeView(discord.ui.View):
-    def __init__(self, bot, author, loadout: dict, balances: dict, money: int, slot: str | None = None, prefix: str = "$"):
+    def __init__(self, bot, ctx, loadout: dict, balances: dict, money: int, slot: str | None = None, prefix: str = "$"):
         super().__init__(timeout=300)
         self.bot = bot
-        self.author = author
+        self.ctx = ctx
+        self.author = ctx.author
+        self.allowed_ids = menu_actor_ids(ctx)
         self.prefix = prefix
         self.loadout = loadout
         self.balances = balances
@@ -279,7 +288,7 @@ class ForgeView(discord.ui.View):
             self._build_selects()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author.id:
+        if int(interaction.user.id) not in self.allowed_ids:
             await interaction.response.send_message("Garron is working on someone else's armor.", ephemeral=True)
             return False
         return True

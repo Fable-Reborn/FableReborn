@@ -28,6 +28,7 @@ _SUPPORT_MODULES = (
     "classes.equipment.character_card_v2",
     "classes.equipment.balance_log",
     "classes.equipment.repository",
+    "classes.equipment.access",
     "cogs.equipment.layout",
     "cogs.equipment.sheet",
     "cogs.equipment.available",
@@ -302,7 +303,7 @@ class Equipment(commands.Cog):
                 return await ctx.send(
                     f"Garron only works armor you are wearing. Equip it with `{ctx.clean_prefix}gear equip {equipment_id}` first."
                 )
-        view = ForgeView(self.bot, ctx.author, loadout, balances, money, slot=slot, prefix=ctx.clean_prefix)
+        view = ForgeView(self.bot, ctx, loadout, balances, money, slot=slot, prefix=ctx.clean_prefix)
         view.message = await ctx.send(embed=view.embed(), file=anvil_file(), view=view)
 
     @has_char()
@@ -378,22 +379,27 @@ class Equipment(commands.Cog):
             custom_id = str(interaction.data.get("custom_id") or "")
         if not custom_id.startswith("glb:"):
             return
+        from classes.equipment.access import actor_may_use_character
         from cogs.equipment.layout import build_layout, edit_layout, parse_layout_id, render_lab
 
-        parsed = parse_layout_id(custom_id, interaction.user.id)
+        parsed = parse_layout_id(custom_id)
         if parsed is None:
-            if not interaction.response.is_done():
-                await interaction.response.send_message("This screen belongs to someone else.", ephemeral=True)
             return
+        owner_id, focus, theme = parsed
         if not getattr(self.bot, "equipment_combat_enabled", False):
             return
-        focus, theme = parsed
         async with self.bot.pool.acquire() as conn:
-            loadout = await fetch_loadout(conn, interaction.user.id)
-            weapons = await fetch_equipped_weapons(conn, interaction.user.id)
-        title = f"{interaction.user.display_name}'s Gear Lab"
+            if not await actor_may_use_character(conn, interaction.user.id, owner_id):
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("This screen belongs to someone else.", ephemeral=True)
+                return
+            loadout = await fetch_loadout(conn, owner_id)
+            weapons = await fetch_equipped_weapons(conn, owner_id)
+        owner = interaction.guild.get_member(owner_id) if interaction.guild else None
+        owner_name = owner.display_name if owner is not None else str(owner_id)
+        title = f"{owner_name}'s Gear Lab"
         png = render_lab(loadout, weapons, focus=focus, theme=theme, title=title)
-        components = build_layout(interaction.user.id, loadout, weapons, focus=focus, theme=theme, title=title)
+        components = build_layout(owner_id, loadout, weapons, focus=focus, theme=theme, title=title)
         try:
             await edit_layout(self.bot, interaction, png, components)
         except discord.HTTPException:
