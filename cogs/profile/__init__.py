@@ -176,6 +176,34 @@ def armory_gear_filter_labels(filters) -> str:
     return " · ".join(labels) or "All armor"
 
 
+def armory_salvage_prompt(item, materials_text: str) -> str:
+    """Confirmation text for salvaging a Gear tab piece. Lists what is lost."""
+    lines = [
+        f"**Salvage {item['name']}** (ID `{item['id']}`)?",
+        f"You will recover about: {materials_text}.",
+        "The piece is destroyed. This cannot be undone.",
+    ]
+    if item.get("equipped"):
+        lines.append("You are wearing it. It comes off first.")
+    refinement = int(item.get("refinement") or 0)
+    if refinement > 0:
+        lines.append(f"Its +{refinement} temper is lost. Materials spent tempering are not returned.")
+    if item.get("fully_rolled"):
+        lines.append("It is a fully rolled discovery. Crafting cannot make another one like it.")
+    return "\n".join(lines)
+
+
+def armory_salvage_result(status: str, result) -> str:
+    """Player-facing message for each `salvage_piece` outcome."""
+    if status == "salvaged" and result:
+        return f"You break down **{result['name']}** and recover {result['materials_text']}."
+    if status == "listed":
+        return "Take it off the gear shop before salvaging it."
+    if status == "closed":
+        return "The armory is closed on this realm."
+    return "You no longer own that piece. Your armory was refreshed."
+
+
 class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
     item_type = discord.ui.TextInput(
         label="Item type",
@@ -297,6 +325,12 @@ class ArmoryActionSelect(discord.ui.Select):
             options = [
                 discord.SelectOption(label="Unequip" if equipped else "Equip", value="unequip" if equipped else "equip", emoji="⚔️"),
                 discord.SelectOption(label="Compare with Equipped", value="compare", emoji="📊"),
+                discord.SelectOption(
+                    label="Salvage",
+                    value="salvage",
+                    emoji="🔨",
+                    description="Break down into materials. Asks first.",
+                ),
             ]
         else:
             options = [
@@ -443,6 +477,52 @@ class ArmoryGearFilterSelect(discord.ui.Select):
             embed=self.armory_view.embeds[self.armory_view.current_page],
             view=self.armory_view,
         )
+
+
+def _armory_material_text(amounts: dict) -> str:
+    from classes.equipment.definitions import MATERIALS, format_material
+
+    parts = [
+        format_material(material_id, amount)
+        for material_id, amount in (amounts or {}).items()
+        if int(amount) > 0 and material_id in MATERIALS
+    ]
+    return ", ".join(parts) or "nothing"
+
+
+class ArmorySalvageConfirmView(discord.ui.View):
+    """One-shot Salvage / Cancel prompt for a Gear tab piece."""
+
+    def __init__(self, armory_view: "ArmoryPaginatorView", item_id: int):
+        super().__init__(timeout=45)
+        self.armory_view = armory_view
+        self.item_id = int(item_id)
+        self.used = False
+
+    async def interaction_check(self, interaction):
+        return await _require_armory_owner(
+            self.armory_view.ctx, interaction, "This confirmation is not yours."
+        )
+
+    @discord.ui.button(label="Salvage", style=discord.ButtonStyle.danger, emoji="🔨")
+    async def confirm(self, interaction, button):
+        if self.used:
+            return await interaction.response.send_message("Already handled.", ephemeral=True)
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(content="Salvaging…", view=None)
+        try:
+            message = await self.armory_view.salvage_armor(self.item_id)
+        except Exception:
+            _log.exception("Armory salvage failed for piece %s", self.item_id)
+            message = "Salvage failed. Nothing was changed."
+        await interaction.edit_original_response(content=message)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(content="Salvage cancelled.", view=None)
 
 
 class ArmoryPaginatorView(discord.ui.View):
@@ -645,6 +725,25 @@ class ArmoryPaginatorView(discord.ui.View):
                 embed.add_field(name="Equipped", value="Nothing is worn in that slot.", inline=False)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
+        if action == "salvage":
+            if not self._equipment_open():
+                return await interaction.response.send_message(
+                    armory_salvage_result("closed", None), ephemeral=True
+                )
+            from classes.equipment.economy import salvage_yield
+
+            preview = salvage_yield(
+                str(item.get("rarity") or "common").lower(),
+                str(item.get("archetype") or "").lower(),
+                int(item.get("value") or 0),
+            )
+            confirm = ArmorySalvageConfirmView(self, item_id)
+            return await interaction.response.send_message(
+                armory_salvage_prompt(item, _armory_material_text(preview)),
+                view=confirm,
+                ephemeral=True,
+            )
+
         await interaction.response.defer()
         async with self.ctx.bot.pool.acquire() as conn:
             if action == "equip":
@@ -663,6 +762,27 @@ class ArmoryPaginatorView(discord.ui.View):
         await self.refresh_from_db()
         await self.redraw_message()
         await interaction.followup.send(message)
+
+    def _equipment_open(self) -> bool:
+        cog = self.ctx.bot.get_cog("Equipment")
+        return bool(cog and getattr(cog, "available", False))
+
+    async def salvage_armor(self, item_id: int) -> str:
+        """Destroy one owned armor piece for materials, then refresh this menu."""
+        from classes.equipment.repository import salvage_piece
+
+        if not self._equipment_open():
+            return armory_salvage_result("closed", None)
+        async with self.ctx.bot.pool.acquire() as conn:
+            status, result = await salvage_piece(conn, self.ctx.author.id, item_id)
+        if status == "salvaged" and result:
+            result = {**result, "materials_text": _armory_material_text(result["materials"])}
+        try:
+            await self.refresh_from_db()
+            await self.redraw_message()
+        except Exception:
+            _log.exception("Armory refresh after salvage failed for piece %s", item_id)
+        return armory_salvage_result(status, result)
 
     def _is_allowed_user(self, user_id: int) -> bool:
         return int(user_id) in _armory_owner_ids(self.ctx)
