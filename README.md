@@ -45,3 +45,5 @@ systemctl start "podman-*"
 IdleRPG uses [black](https://github.com/ambv/black), [flake8](https://github.com/PyCQA/flake8) and [isort](https://github.com/timothycrosley/isort) for code style. Please always run `./scripts/format.sh` before submitting a pull request and fix any problems.
 
 `./scripts/dumpdb.sh db_name` will update the database scheme from the postgres container.
+
+<!-- git push test 2026-11-21 -->
