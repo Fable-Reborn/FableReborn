@@ -23,6 +23,9 @@ _armory_owner_ids = HELPERS["_armory_owner_ids"]
 armory_item_still_listed = HELPERS["armory_item_still_listed"]
 resolve_armory_invoke_outcome = HELPERS["resolve_armory_invoke_outcome"]
 invoke_callback_succeeded = HELPERS["invoke_callback_succeeded"]
+armory_item_matches_gear_filters = HELPERS["armory_item_matches_gear_filters"]
+armory_gear_filter_labels = HELPERS["armory_gear_filter_labels"]
+ARMORY_GEAR_FILTER_OPTIONS = HELPERS["ARMORY_GEAR_FILTER_OPTIONS"]
 
 
 class FakeResponse:
@@ -179,6 +182,24 @@ class ArmoryOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(invoke_callback_succeeded(None))
         self.assertTrue(invoke_callback_succeeded("ok"))
         self.assertFalse(invoke_callback_succeeded(False))
+
+    def test_gear_tab_filters_match_shop_style_without_enchantments(self):
+        helm = {
+            "archetype": "guardian",
+            "slot": "head",
+            "rarity": "Rare",
+            "enchantments": "Fortified",
+        }
+        cuirass = {"archetype": "slayer", "slot": "chest", "rarity": "legendary"}
+        self.assertTrue(armory_item_matches_gear_filters(helm, set()))
+        self.assertTrue(armory_item_matches_gear_filters(helm, {"line:guardian", "slot:head"}))
+        self.assertFalse(armory_item_matches_gear_filters(helm, {"line:slayer"}))
+        self.assertTrue(armory_item_matches_gear_filters(helm, {"rarity:rare", "rarity:legendary"}))
+        self.assertTrue(armory_item_matches_gear_filters(cuirass, {"rarity:rare", "rarity:legendary"}))
+        self.assertFalse(armory_item_matches_gear_filters(helm, {"line:guardian", "slot:chest"}))
+        self.assertTrue(armory_item_matches_gear_filters(helm, {"enchant:fortified"}))
+        self.assertFalse(any(value.startswith("enchant") for value, _label, _emoji in ARMORY_GEAR_FILTER_OPTIONS))
+        self.assertEqual(armory_gear_filter_labels({"line:guardian", "slot:head"}), "Aegis · Helm")
 
 
 if __name__ == "__main__":

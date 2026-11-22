@@ -134,6 +134,48 @@ async def _require_armory_owner(ctx, interaction: discord.Interaction, message: 
     return False
 
 
+ARMORY_GEAR_FILTER_OPTIONS = (
+    ("line:guardian", "Aegis", "🛡️"),
+    ("line:slayer", "Razor", "⚔️"),
+    ("line:vanguard", "Oath", "⚖️"),
+    ("slot:head", "Helm", None),
+    ("slot:chest", "Cuirass", None),
+    ("slot:legs", "Greaves", None),
+    ("slot:feet", "Sabatons", None),
+    ("rarity:common", "Common", "⚪"),
+    ("rarity:uncommon", "Uncommon", "🟢"),
+    ("rarity:rare", "Rare", "🔵"),
+    ("rarity:magic", "Magic", "🟣"),
+    ("rarity:legendary", "Legendary", "🟡"),
+)
+
+
+def armory_item_matches_gear_filters(item, filters) -> bool:
+    """Shop-style AND across groups, OR within a group. Enchantments are not filtered."""
+    if not filters:
+        return True
+    lines = {value.split(":", 1)[1] for value in filters if value.startswith("line:")}
+    slots = {value.split(":", 1)[1] for value in filters if value.startswith("slot:")}
+    rarities = {value.split(":", 1)[1] for value in filters if value.startswith("rarity:")}
+    archetype = str(item.get("archetype") or item.get("element") or "").lower()
+    slot = str(item.get("slot") or "").lower()
+    rarity = str(item.get("rarity") or "").lower()
+    if lines and archetype not in lines:
+        return False
+    if slots and slot not in slots:
+        return False
+    if rarities and rarity not in rarities:
+        return False
+    return True
+
+
+def armory_gear_filter_labels(filters) -> str:
+    if not filters:
+        return "All armor"
+    labels = [label for value, label, _emoji in ARMORY_GEAR_FILTER_OPTIONS if value in filters]
+    return " · ".join(labels) or "All armor"
+
+
 class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
     item_type = discord.ui.TextInput(
         label="Item type",
@@ -231,7 +273,8 @@ class ArmoryItemSelect(discord.ui.Select):
                     default=key == armory_view.selected_item_id,
                 )
             )
-        super().__init__(placeholder="Select an item for actions", options=options, row=2)
+        row = 3 if armory_view.catalog == "armor" else 2
+        super().__init__(placeholder="Select an item for actions", options=options, row=row)
         self.armory_view = armory_view
 
     async def callback(self, interaction):
@@ -272,7 +315,7 @@ class ArmoryActionSelect(discord.ui.Select):
             placeholder="Choose an action for the selected item",
             options=options,
             disabled=item is None,
-            row=3,
+            row=4 if armory_view.catalog == "armor" else 3,
         )
         self.armory_view = armory_view
 
@@ -367,6 +410,41 @@ class ArmorySortSelect(discord.ui.Select):
         )
 
 
+class ArmoryGearFilterSelect(discord.ui.Select):
+    """Same multi-pick as `$gear shop`, without listings or enchantments."""
+
+    def __init__(self, armory_view: "ArmoryPaginatorView"):
+        options = []
+        for value, label, emoji in ARMORY_GEAR_FILTER_OPTIONS:
+            kwargs = {
+                "label": label,
+                "value": value,
+                "default": value in armory_view.gear_filters,
+            }
+            if emoji:
+                kwargs["emoji"] = emoji
+            options.append(discord.SelectOption(**kwargs))
+        super().__init__(
+            placeholder="Filter by line, rarity, or slot",
+            min_values=0,
+            max_values=len(options),
+            options=options,
+            row=2,
+        )
+        self.armory_view = armory_view
+
+    async def callback(self, interaction):
+        if not await _require_armory_owner(self.armory_view.ctx, interaction):
+            return
+        self.armory_view.gear_filters = set(self.values)
+        self.armory_view.rebuild_armor_pages()
+        self.armory_view.sync_dynamic_components()
+        await interaction.response.edit_message(
+            embed=self.armory_view.embeds[self.armory_view.current_page],
+            view=self.armory_view,
+        )
+
+
 class ArmoryPaginatorView(discord.ui.View):
     def __init__(
         self,
@@ -394,6 +472,8 @@ class ArmoryPaginatorView(discord.ui.View):
         )
         self.lowest = lowest
         self.highest = highest
+        self.gear_filters = {f"slot:{armor_slot}"} if catalog == "armor" and armor_slot else set()
+        self.armor_source = [item for page in pages for item in page] if catalog == "armor" else []
         self.cached_pages = {catalog: pages}
         self.cached_embeds = {catalog: embeds}
         self.current_page = 0
@@ -402,6 +482,8 @@ class ArmoryPaginatorView(discord.ui.View):
         ) if pages and pages[0] else None
         self.sort_mode = "strength"
         self.message = None
+        if catalog == "armor" and self.gear_filters:
+            self.rebuild_armor_pages()
         if not getattr(ctx.bot, "equipment_combat_enabled", False):
             self.remove_item(self.gear_tab)
         else:
@@ -422,8 +504,20 @@ class ArmoryPaginatorView(discord.ui.View):
 
     def sync_dynamic_components(self):
         for child in list(self.children):
-            if isinstance(child, (ArmoryItemSelect, ArmoryActionSelect, ArmorySortSelect)):
+            if isinstance(
+                child,
+                (ArmoryItemSelect, ArmoryActionSelect, ArmorySortSelect, ArmoryGearFilterSelect),
+            ):
                 self.remove_item(child)
+        if self.catalog == "armor":
+            self.add_item(ArmoryGearFilterSelect(self))
+            if self.pages and self.pages[self.current_page]:
+                if self.selected_item() is None:
+                    first = self.pages[self.current_page][0]
+                    self.selected_item_id = first.get("armory_key") or f"weapon:{first['id']}"
+                self.add_item(ArmoryItemSelect(self))
+                self.add_item(ArmoryActionSelect(self))
+            return
         if self.pages and self.pages[self.current_page]:
             if self.selected_item() is None:
                 first = self.pages[self.current_page][0]
@@ -454,6 +548,49 @@ class ArmoryPaginatorView(discord.ui.View):
         self.current_page = 0
         first = self.pages[0][0] if self.pages and self.pages[0] else None
         self.selected_item_id = (first.get("armory_key") or f"weapon:{first['id']}") if first else None
+        if self.catalog == "armor":
+            self._stamp_armor_filter_footer()
+
+    def rebuild_armor_pages(self) -> None:
+        title = self.embed_title or _("{user}'s armor").format(user=self.ctx.disp)
+        self.embed_title = title
+        rows = [
+            item
+            for item in self.armor_source
+            if armory_item_matches_gear_filters(item, self.gear_filters)
+        ]
+        if not rows:
+            empty = discord.Embed(
+                title=title,
+                description="No armor matches these filters. Clear the filter menu to see everything.",
+                colour=discord.Colour.blurple(),
+            )
+            empty.set_footer(text=armory_gear_filter_labels(self.gear_filters))
+            self.pages = []
+            self.embeds = [empty]
+            self.current_page = 0
+            self.selected_item_id = None
+            return
+        previous_key = self.selected_item_id
+        self.pages = list(chunks(rows, 5))
+        self.apply_sort(self.sort_mode)
+        if previous_key and armory_item_still_listed(self.pages, previous_key):
+            self.selected_item_id = previous_key
+            for index, page in enumerate(self.pages):
+                for item in page:
+                    key = item.get("armory_key") or f"weapon:{item['id']}"
+                    if key == previous_key:
+                        self.current_page = index
+                        return
+
+    def _stamp_armor_filter_footer(self) -> None:
+        label = armory_gear_filter_labels(self.gear_filters)
+        for embed in self.embeds:
+            page = embed.footer.text if embed.footer and embed.footer.text else ""
+            if page and " · " not in page:
+                embed.set_footer(text=f"{page} · {label}")
+            elif not page:
+                embed.set_footer(text=label)
 
     async def handle_armor_action(self, interaction, item, action):
         if not await _require_armory_owner(self.ctx, interaction):
@@ -564,9 +701,13 @@ class ArmoryPaginatorView(discord.ui.View):
         self.cached_embeds.clear()
         if self.catalog == "armor":
             rows = await self.cog._fetch_armory_armor(
-                self.ctx.author.id, self.lowest, self.highest, self.armor_slot
+                self.ctx.author.id, self.lowest, self.highest
             )
+            self.armor_source = rows
             title = self.embed_title or _("{user}'s armor").format(user=self.ctx.disp)
+            self.embed_title = title
+            self.rebuild_armor_pages()
+            return
         else:
             rows = await self.cog._fetch_armory_weapons(
                 self.ctx.author.id, self.itemtype or "All", self.lowest, self.highest
@@ -723,6 +864,11 @@ class ArmoryPaginatorView(discord.ui.View):
     async def filters_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await _require_armory_owner(self.ctx, interaction):
             return
+        if self.catalog == "armor":
+            return await interaction.response.send_message(
+                "Use the filter menu on this embed to pick line, rarity, or slot.",
+                ephemeral=True,
+            )
         await interaction.response.send_modal(ArmoryFilterModal(self))
 
     @discord.ui.button(label="Inventory", style=discord.ButtonStyle.secondary, row=1)
@@ -746,22 +892,34 @@ class ArmoryPaginatorView(discord.ui.View):
             await interaction.response.send_message(ARMORY_OWNER_ONLY, ephemeral=True)
             return
         target = "weapons" if self.catalog == "armor" else "armor"
-        if target not in self.cached_pages:
-            if target == "armor":
+        if target == "armor":
+            if not self.armor_source:
                 rows = await self.cog._fetch_armory_armor(
                     self.ctx.author.id, self.lowest, self.highest
                 )
-                empty = "You do not have any armor yet."
-                title = _("{user}'s armor").format(user=self.ctx.disp)
-            else:
-                rows = await self.cog._fetch_armory_weapons(
-                    self.ctx.author.id, "All", self.lowest, self.highest
-                )
-                empty = "Your weapon inventory is empty."
-                title = None
-            self.embed_title = title
+                if not rows:
+                    return await interaction.response.send_message(
+                        "You do not have any armor yet.", ephemeral=True
+                    )
+                self.armor_source = rows
+            self.catalog = "armor"
+            self.embed_title = _("{user}'s armor").format(user=self.ctx.disp)
+            self.rebuild_armor_pages()
+            self._style_gear_button()
+            self.sync_dynamic_components()
+            return await interaction.response.edit_message(
+                embed=self.embeds[self.current_page], view=self
+            )
+        if target not in self.cached_pages:
+            rows = await self.cog._fetch_armory_weapons(
+                self.ctx.author.id, "All", self.lowest, self.highest
+            )
             if not rows:
-                return await interaction.response.send_message(empty, ephemeral=True)
+                return await interaction.response.send_message(
+                    "Your weapon inventory is empty.", ephemeral=True
+                )
+            title = None
+            self.embed_title = title
             pages = list(chunks(rows, 5))
             embeds = [
                 self.cog.invembed(self.ctx, page, index, len(pages) - 1, title=title)
@@ -770,9 +928,7 @@ class ArmoryPaginatorView(discord.ui.View):
             self.cached_pages[target] = pages
             self.cached_embeds[target] = embeds
         self.catalog = target
-        self.embed_title = (
-            _("{user}'s armor").format(user=self.ctx.disp) if target == "armor" else None
-        )
+        self.embed_title = None
         self.pages = self.cached_pages[target]
         self.embeds = self.cached_embeds[target]
         self.current_page = 0
@@ -5098,6 +5254,7 @@ class Profile(commands.Cog):
             "locked": False,
             "bound": bool(item.get("bound")),
             "fully_rolled": bool(item.get("fully_rolled")),
+            "archetype": str(item.get("archetype") or "").lower(),
             "element": str(item.get("archetype") or "").title(),
             "rarity": str(item.get("rarity") or "common").title(),
             "type": SLOT_NOUN.get(slot, slot.title()),
@@ -6107,15 +6264,9 @@ class Profile(commands.Cog):
 
         # Perform the database query
         if itemtype == "Armor":
-            ret = await self._fetch_armory_armor(ctx.author.id, lowest, highest, armor_slot)
+            ret = await self._fetch_armory_armor(ctx.author.id, lowest, highest)
             catalog = "armor"
-            if armor_slot:
-                from classes.equipment.definitions import SLOT_NOUN
-
-                piece = SLOT_NOUN[armor_slot].lower()
-                embed_title = _("{user}'s {piece}").format(user=ctx.disp, piece=piece)
-            else:
-                embed_title = _("{user}'s armor").format(user=ctx.disp)
+            embed_title = _("{user}'s armor").format(user=ctx.disp)
         else:
             ret = await self._fetch_armory_weapons(ctx.author.id, itemtype, lowest, highest)
             catalog = "weapons"

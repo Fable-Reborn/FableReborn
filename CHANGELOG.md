@@ -21,6 +21,11 @@ All **dates and times are UTC** unless stated otherwise.
 - `$merge` upgrade + destroy runs in one transaction. Trader purchases drop the bought offer even if the success embed fails to send.
 - Market buy is only treated as done if the buyer now owns the item. A listing vanishing because someone else bought it is still a failure.
 
+### `$armory` Gear filters
+
+- The Gear tab has the same multi-select as `$gear shop`: line, slot, and rarity. Pick several at once. Enchantments are not in the list yet.
+- `$arm helm` (and the other slot names) still opens on that slot; you can add or clear filters from the embed.
+
 ### `$armory` / `$inventory` owner lock
 
 - Only the player who opened `$armory` can use its buttons, item/action/sort selects, Filters, Inventory, Loadouts, Gear tab, and filter/market modals.
