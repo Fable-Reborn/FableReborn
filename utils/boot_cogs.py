@@ -34,6 +34,7 @@ EXTRA_COGS = (
     "cogs.statcalc",     # slider calculator for raid attack, defense, and health
     "cogs.wish",         # birthday wishes: $wish, staff approval, $wish redeem, the card
     "cogs.equipment",    # armory. Stays closed until a GM runs `$gear switch on`
+    "cogs.supporterboard",  # Hall of Supporters: $supporters setup #channel, refreshed hourly
 )
 # Quest campaigns, faction-aware conversations and shops share the Factions service, so it loads
 # ahead of Quests even on older configs.
