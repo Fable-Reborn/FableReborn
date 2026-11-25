@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 
 from collections import defaultdict
@@ -14,7 +15,9 @@ import discord
 from discord.ext import commands, tasks
 
 from cogs.shard_communication import user_on_cooldown as user_cooldown
-from utils.checks import is_gm, user_is_patron
+from utils.checks import is_gm
+
+log = logging.getLogger(__name__)
 
 
 class SetupCancelled(Exception):
@@ -1404,55 +1407,89 @@ class PatreonCore(commands.Cog):
     @commands.command()
     @user_cooldown(2764800)  # 32 days
     async def redeemweapontokens(self, ctx):
-        """Redeem 5 weapon tokens if user has Patreon tier 1 or higher."""
-        async with self.bot.pool.acquire() as conn:
-            patron_tier = await conn.fetchval(
-                'SELECT "tier" FROM profile WHERE "user"=$1',
+        """Redeem 5 weapon tokens if you are a patron (tier 1+) or a server booster."""
+        # Every path must answer. The global error handler stays silent on
+        # Discord errors, which is how boosters ended up with no reply at all.
+        try:
+            has_profile = await self.bot.pool.fetchval(
+                'SELECT 1 FROM profile WHERE "user"=$1', ctx.author.id
+            )
+        except Exception:
+            log.exception("redeemweapontokens profile lookup failed for %s", ctx.author.id)
+            await self.bot.reset_cooldown(ctx)
+            return await self._reply(ctx, "Could not reach your profile right now. Please try again in a minute.")
+        if not has_profile:
+            await self.bot.reset_cooldown(ctx)
+            return await self._reply(ctx, f"You need a character first. Use `{ctx.clean_prefix}create` to start.")
+
+        try:
+            # Counts saved tiers, Patreon roles and the server booster role.
+            effective_tier = int(await self.bot.get_effective_donator_tier(ctx.author.id, sync_profile=True) or 0)
+        except Exception:
+            log.exception("redeemweapontokens tier lookup failed for %s", ctx.author.id)
+            await self.bot.reset_cooldown(ctx)
+            return await self._reply(
+                ctx, "Could not check your supporter status right now. Please try again in a minute."
+            )
+
+        if effective_tier < 1:
+            await self.bot.reset_cooldown(ctx)
+            return await self._reply(
+                ctx,
+                "You need to be a patron (tier 1 or higher) or a server booster to redeem weapon tokens.",
+            )
+
+        try:
+            new_balance = await self.bot.pool.fetchval(
+                'UPDATE profile SET "weapontoken"="weapontoken"+5 WHERE "user"=$1 RETURNING "weapontoken"',
                 ctx.author.id,
             )
-            effective_tier = int(patron_tier or 0)
-            if effective_tier < 1 and await user_is_patron(self.bot, ctx.author, "basic"):
-                effective_tier = 1
+        except Exception:
+            log.exception("redeemweapontokens update failed for %s", ctx.author.id)
+            await self.bot.reset_cooldown(ctx)
+            return await self._reply(ctx, "Could not add your weapon tokens. Nothing was changed, please try again.")
 
-            if effective_tier < 1:
-                await self.bot.reset_cooldown(ctx)
-                return await ctx.send(
-                    "You need to be a patron (tier 1 or higher) to redeem weapon tokens."
-                )
+        # Tokens are granted from here on: never reset the cooldown below.
+        if self.log_channel_id:
+            log_channel = self.bot.get_channel(self.log_channel_id)
+            if log_channel:
+                try:
+                    await log_channel.send(
+                        "Weapon Token Redemption: "
+                        f"{ctx.author.mention} ({ctx.author.id}) redeemed 5 weapon tokens as tier {effective_tier}.",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                except Exception:
+                    log.warning("redeemweapontokens log message failed", exc_info=True)
 
+        embed = discord.Embed(
+            title="Weapon Tokens Redeemed",
+            description="Thank you for supporting Fable.",
+            color=0x3CB371,
+        )
+        embed.add_field(name="Tokens Added", value="5", inline=True)
+        embed.add_field(name="New Balance", value=f"{int(new_balance or 0):,}", inline=True)
+        embed.add_field(name="Supporter Tier", value=f"Tier {effective_tier}", inline=True)
+        embed.set_footer(text="You can redeem this once every 32 days.")
+        try:
+            await ctx.send(embed=embed)
+        except discord.HTTPException:
+            # No Embed Links permission here: plain text still confirms it.
+            await self._reply(
+                ctx,
+                f"Redeemed **5** weapon tokens. New balance: **{int(new_balance or 0):,}**. "
+                "You can redeem again in 32 days.",
+            )
+
+    @staticmethod
+    async def _reply(ctx, text):
+        try:
+            return await ctx.send(text)
+        except discord.HTTPException:
             try:
-                await conn.execute(
-                    'UPDATE profile SET "weapontoken"="weapontoken"+5 WHERE "user"=$1',
-                    ctx.author.id,
-                )
-
-                new_balance = await conn.fetchval(
-                    'SELECT "weapontoken" FROM profile WHERE "user"=$1',
-                    ctx.author.id,
-                )
-
-                if self.log_channel_id:
-                    log_channel = self.bot.get_channel(self.log_channel_id)
-                    if log_channel:
-                        await log_channel.send(
-                            "Weapon Token Redemption: "
-                            f"{ctx.author.mention} ({ctx.author.id}) redeemed 5 weapon tokens as tier {effective_tier}."
-                        )
-
-                embed = discord.Embed(
-                    title="Weapon Tokens Redeemed",
-                    description="Thank you for supporting us on Patreon.",
-                    color=0x3CB371,
-                )
-                embed.add_field(name="Tokens Added", value="5", inline=True)
-                embed.add_field(name="New Balance", value=f"{new_balance:,}", inline=True)
-                embed.add_field(name="Patron Tier", value=f"Tier {effective_tier}", inline=True)
-                embed.set_footer(text="You can redeem this once every 32 days.")
-                await ctx.send(embed=embed)
-            except Exception as e:
-                await self.bot.reset_cooldown(ctx)
-                await ctx.send(f"Error updating weapon tokens: {e}")
-                print(f"[PatreonCore] redeemweapontokens error for {ctx.author.id}: {e}")
+                return await ctx.author.send(text)
+            except discord.HTTPException:
+                log.warning("redeemweapontokens could not reply to %s", ctx.author.id)
 
 
 async def setup(bot):
