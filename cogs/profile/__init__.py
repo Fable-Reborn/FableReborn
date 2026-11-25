@@ -2423,7 +2423,7 @@ class PresetManagerView(discord.ui.View):
         )
 
     async def unequip_all(self, interaction):
-        """Take off every worn weapon, shield, and armor piece. Saved loadouts are not touched."""
+        """Take off every worn weapon, shield, amulet, and armor piece. Saved loadouts are not touched."""
         await interaction.response.defer(ephemeral=True, thinking=True)
         try:
             result = await self.cog.unequip_everything(self.author_id)
@@ -7440,10 +7440,10 @@ class Profile(commands.Cog):
             await ctx.send(f"Preset **{preset_id}** has been deleted.")
 
     async def unequip_everything(self, user_id: int) -> dict:
-        """Take off every worn weapon and shield, and every worn armor piece.
+        """Take off every worn weapon, shield, amulet, and armor piece.
 
-        One transaction, so it is all or nothing. Amulets and pets are left alone.
-        Returns {"weapons": n, "armor": n}.
+        One transaction, so it is all or nothing. Pets are left alone.
+        Returns {"weapons": n, "amulets": n, "armor": n}.
         """
         async with self.bot.pool.acquire() as conn:
             async with conn.transaction():
@@ -7459,6 +7459,16 @@ class Profile(commands.Cog):
                     """,
                     int(user_id),
                 )
+                amulets = await conn.fetch(
+                    """
+                    UPDATE amulets
+                       SET equipped = FALSE
+                     WHERE user_id = $1
+                       AND equipped = TRUE
+                    RETURNING id
+                    """,
+                    int(user_id),
+                )
                 armor = 0
                 if self._armory_open():
                     from classes.equipment.repository import unequip_item
@@ -7466,32 +7476,37 @@ class Profile(commands.Cog):
                     status, removed = await unequip_item(conn, int(user_id), None)
                     if status == "removed" and removed:
                         armor = len(removed) if isinstance(removed, list) else 1
-        return {"weapons": len(weapons), "armor": armor}
+        return {"weapons": len(weapons), "amulets": len(amulets), "armor": armor}
 
     @staticmethod
     def unequip_everything_text(result: dict) -> str:
-        weapons, armor = int(result.get("weapons") or 0), int(result.get("armor") or 0)
-        if not weapons and not armor:
+        weapons = int(result.get("weapons") or 0)
+        amulets = int(result.get("amulets") or 0)
+        armor = int(result.get("armor") or 0)
+        if not weapons and not amulets and not armor:
             return "You are not wearing anything to take off."
         parts = []
         if weapons:
             parts.append(f"{weapons} weapon{'s' if weapons != 1 else ''}/shield{'s' if weapons != 1 else ''}")
+        if amulets:
+            parts.append(f"{amulets} amulet{'s' if amulets != 1 else ''}")
         if armor:
             parts.append(f"{armor} armor piece{'s' if armor != 1 else ''}")
-        return f"🧺 Unequipped {' and '.join(parts)}. Use a loadout to gear up again."
+        listed = parts[0] if len(parts) == 1 else ", ".join(parts[:-1]) + f" and {parts[-1]}"
+        return f"🧺 Unequipped {listed}. Use a loadout to gear up again."
 
     @checks.has_char()
     @commands.command(
         name="unequipall",
         aliases=["unequip_all", "stripgear"],
-        brief=_("Take off every worn weapon, shield, and armor piece"),
+        brief=_("Take off every worn weapon, shield, amulet, and armor piece"),
     )
     @locale_doc
     async def unequipall(self, ctx):
         _(
-            """Take off everything you are wearing at once: weapons, shields, and armor from `{prefix}gear`.
+            """Take off everything you are wearing at once: weapons, shields, amulets, and armor from `{prefix}gear`.
 
-            Amulets and pets stay equipped. Use `{prefix}loadout` to put a saved set back on.
+            Pets stay equipped. Use `{prefix}loadout` to put a saved set back on.
             This is also the **Unequip All** button in `{prefix}loadout`."""
         )
         result = await self.unequip_everything(ctx.author.id)

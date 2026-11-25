@@ -21,8 +21,9 @@ OWNER = 111
 class FakeConn:
     """Worn weapons in `inventory`, worn armor in `equipment_loadout`."""
 
-    def __init__(self, weapons=(), armor=(), others_weapons=()):
+    def __init__(self, weapons=(), armor=(), others_weapons=(), amulets=()):
         self.weapons = set(weapons)
+        self.amulets = set(amulets)
         self.others_weapons = set(others_weapons)
         self.armor = set(armor)
         self.transactions = 0
@@ -37,6 +38,11 @@ class FakeConn:
             assert int(args[0]) == OWNER
             taken = [{"item": item} for item in sorted(self.weapons)]
             self.weapons.clear()
+            return taken
+        if "UPDATE amulets" in sql:
+            assert int(args[0]) == OWNER
+            taken = [{"id": item} for item in sorted(self.amulets)]
+            self.amulets.clear()
             return taken
         if "DELETE FROM equipment_loadout" in sql:
             taken = [{"equipment_id": item} for item in sorted(self.armor)]
@@ -64,9 +70,10 @@ def fake_cog(conn, *, armory_open=True):
 
 class UnequipEverythingTests(unittest.IsolatedAsyncioTestCase):
     async def test_takes_off_weapons_and_armor_together(self):
-        conn = FakeConn(weapons={1, 2}, armor={10, 11, 12}, others_weapons={99})
+        conn = FakeConn(weapons={1, 2}, armor={10, 11, 12}, others_weapons={99}, amulets={7})
         result = await fake_cog(conn).unequip_everything(OWNER)
-        self.assertEqual({"weapons": 2, "armor": 3}, result)
+        self.assertEqual({"weapons": 2, "amulets": 1, "armor": 3}, result)
+        self.assertEqual(set(), conn.amulets)
         self.assertEqual(set(), conn.weapons)
         self.assertEqual(set(), conn.armor)
         self.assertEqual({99}, conn.others_weapons)
@@ -75,12 +82,12 @@ class UnequipEverythingTests(unittest.IsolatedAsyncioTestCase):
     async def test_armor_left_alone_when_armory_is_closed(self):
         conn = FakeConn(weapons={1}, armor={10})
         result = await fake_cog(conn, armory_open=False).unequip_everything(OWNER)
-        self.assertEqual({"weapons": 1, "armor": 0}, result)
+        self.assertEqual({"weapons": 1, "amulets": 0, "armor": 0}, result)
         self.assertEqual({10}, conn.armor)
 
     async def test_nothing_worn(self):
         result = await fake_cog(FakeConn()).unequip_everything(OWNER)
-        self.assertEqual({"weapons": 0, "armor": 0}, result)
+        self.assertEqual({"weapons": 0, "amulets": 0, "armor": 0}, result)
 
     def test_messages(self):
         text = profile.Profile.unequip_everything_text
@@ -88,6 +95,11 @@ class UnequipEverythingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("2 weapons/shields and 1 armor piece", text({"weapons": 2, "armor": 1}))
         self.assertIn("1 weapon/shield", text({"weapons": 1, "armor": 0}))
         self.assertIn("4 armor pieces", text({"weapons": 0, "armor": 4}))
+        self.assertIn("1 amulet", text({"amulets": 1}))
+        self.assertIn(
+            "2 weapons/shields, 1 amulet and 3 armor pieces",
+            text({"weapons": 2, "amulets": 1, "armor": 3}),
+        )
 
 
 class LoadoutButtonTests(unittest.IsolatedAsyncioTestCase):
@@ -104,7 +116,7 @@ class LoadoutButtonTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(buttons["Unequip All"].disabled)
 
     async def test_button_unequips_and_replies_privately(self):
-        conn = FakeConn(weapons={1}, armor={10})
+        conn = FakeConn(weapons={1}, armor={10}, amulets={5})
         cog = fake_cog(conn)
         cog._split_preset_saved_ids = lambda ids: (list(ids), False, None)
         view = self.view(cog)
@@ -115,9 +127,9 @@ class LoadoutButtonTests(unittest.IsolatedAsyncioTestCase):
         await view.unequip_all(interaction)
         interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         message = interaction.followup.send.await_args.args[0]
-        self.assertIn("1 weapon/shield and 1 armor piece", message)
+        self.assertIn("1 weapon/shield, 1 amulet and 1 armor piece", message)
         self.assertTrue(interaction.followup.send.await_args.kwargs["ephemeral"])
-        self.assertEqual(set(), conn.weapons | conn.armor)
+        self.assertEqual(set(), conn.weapons | conn.armor | conn.amulets)
 
     async def test_button_failure_is_reported(self):
         cog = fake_cog(FakeConn())
