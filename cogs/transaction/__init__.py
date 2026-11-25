@@ -68,6 +68,7 @@ class TradeOfferEditModal(discord.ui.Modal):
                 "crates": ("Crate rarity", "common"),
                 "resources": ("Resource name", "dragon scales"),
                 "consumables": ("Consumable type", "pet_age_potion"),
+                "materials": ("Armor material", "Bog Iron, Cinder Ore, River Bronze..."),
             }
             label, placeholder = labels[component]
             self.name_input = discord.ui.TextInput(label=label, placeholder=placeholder, max_length=80)
@@ -143,6 +144,10 @@ class TradeOfferEditorView(discord.ui.View):
     @discord.ui.button(label="Consumables", style=discord.ButtonStyle.primary)
     async def consumables(self, interaction, button):
         await self.open_modal(interaction, "consumables")
+
+    @discord.ui.button(label="Armor Materials", style=discord.ButtonStyle.primary, row=1)
+    async def armor_materials(self, interaction, button):
+        await self.open_modal(interaction, "materials")
 
     @discord.ui.button(label="Close Editor", style=discord.ButtonStyle.secondary, row=1)
     async def close(self, interaction, button):
@@ -538,7 +543,7 @@ class Transaction(commands.Cog):
         ]
         blocks.append(
             "Use **Edit My Offer** to add, replace, or remove money, gear, crates, "
-            "resources, and consumables. Existing `trade add/set/remove` commands still work."
+            "resources, consumables, and armor materials. Existing `trade add/set/remove` commands still work."
         )
         return "\n\n".join(blocks)[:1500]
 
@@ -672,7 +677,52 @@ class Transaction(commands.Cog):
             offer.setdefault("consumables", defaultdict(lambda: 0))[normalized_name] = parsed_amount
             return True, f"Set {normalized_name.replace('_', ' ')} to {parsed_amount}."
 
+        if component == "materials":
+            return await self._set_offer_materials(offer, participant_id, name, parsed_amount)
+
         return False, "Unknown trade component."
+
+    def _is_amulet_resource(self, name) -> bool:
+        amulet_cog = self.bot.get_cog("AmuletCrafting") if hasattr(self.bot, "get_cog") else None
+        if amulet_cog is None:
+            return False
+        known = getattr(amulet_cog, "ALL_RESOURCES", {})
+        text = " ".join(str(name or "").strip().lower().split())
+        for candidate in (text, text.replace(" ", "_")):
+            try:
+                if amulet_cog.normalize_resource_name(candidate) in known:
+                    return True
+            except Exception:
+                return False
+        return False
+
+    def _not_armor_material_text(self, name, prefix: str = "$", *, editor: bool = False) -> str:
+        """Armor materials and amulet crafting materials are separate. Point players to the right one."""
+        if self._is_amulet_resource(name):
+            where = "the **Resources** button" if editor else f"`{prefix}trade add resources`"
+            return f"That is an amulet crafting material, not an armor material. Use {where} for it."
+        return "That is not an armor material. Try Bog Iron, Cinder Ore, or River Bronze."
+
+    async def _set_offer_materials(self, offer: dict, participant_id: int, name, amount: int):
+        """Set one armor material stack in a trade offer. 0 removes it."""
+        if not getattr(self.bot, "equipment_combat_enabled", False):
+            return False, "The armory is closed on this realm."
+        from classes.equipment.definitions import format_material, resolve_material
+        from classes.equipment.repository import fetch_materials
+
+        material_id = resolve_material(name)
+        if material_id is None:
+            return False, self._not_armor_material_text(name, "$", editor=True)
+        stacks = offer.setdefault("armory", defaultdict(lambda: 0))
+        if amount == 0:
+            stacks[material_id] = 0
+            return True, f"Removed {format_material(material_id)} from your offer."
+        async with self.bot.pool.acquire() as conn:
+            owned = (await fetch_materials(conn, participant_id)).get(material_id, 0)
+        if amount > int(owned or 0):
+            return False, f"You only own {int(owned or 0)} {format_material(material_id)}."
+        stacks[material_id] = amount
+        return True, f"Set {format_material(material_id, amount)} in your offer."
 
     def get_transaction(self, user, return_id=False):
         id_ = str(user.id)
@@ -975,10 +1025,14 @@ class Transaction(commands.Cog):
                     for piece in pieces:
                         owned = await conn.fetchrow(
                             """
-                            SELECT bound, fully_rolled, refinement, modification_state, owner_id
-                              FROM equipment_items
-                             WHERE id = $1
-                             FOR UPDATE
+                            SELECT i.bound, i.fully_rolled, i.refinement, i.modification_state,
+                                   i.owner_id, i.locked,
+                                   EXISTS (
+                                       SELECT 1 FROM equipment_loadout l WHERE l.equipment_id = i.id
+                                   ) AS equipped
+                              FROM equipment_items i
+                             WHERE i.id = $1
+                             FOR UPDATE OF i
                             """,
                             int(piece["id"]),
                         )
@@ -987,11 +1041,14 @@ class Transaction(commands.Cog):
                             or int(owned["owner_id"]) != int(giver.id)
                             or owned["bound"]
                             or owned["fully_rolled"]
+                            or owned["locked"]
+                            or owned["equipped"]
                             or int(owned["refinement"] or 0) > 0
                             or str(owned["modification_state"] or "pristine") != "pristine"
                         ):
                             return await chan.send(
-                                "Trade cancelled. A piece can no longer be traded."
+                                "Trade cancelled. A piece can no longer be traded "
+                                "(it was locked, worn, bound, or is gone)."
                             )
                 for giver, offered in (
                     (user1, user1_gives.get("armory") or {}),
@@ -1328,11 +1385,17 @@ class Transaction(commands.Cog):
             return await ctx.send("You do not own that piece.")
         if not is_tradable(item):
             return await ctx.send("That piece is bound and cannot be traded.")
+        if item.get("locked"):
+            return await ctx.send(
+                f"That piece is locked. Use `{ctx.clean_prefix}armorunlock {equipment_id}` first."
+            )
+        if item.get("equipped"):
+            return await ctx.send("You are wearing that piece. Take it off before you trade it.")
         offer.append(item)
         await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
 
     @has_transaction()
-    @add.command(name="armory", brief=_("Adds armory materials to a trade."))
+    @add.command(name="armory", aliases=["armormaterials", "gearmaterials"], brief=_("Adds armory materials to a trade."))
     async def add_armory(self, ctx, amount: IntGreaterThan(0), *, material: str):
         """`<amount>` and `<material>` - for example `12 Bog Iron`."""
         if not getattr(self.bot, "equipment_combat_enabled", False):
@@ -1342,7 +1405,7 @@ class Transaction(commands.Cog):
 
         material_id = resolve_material(material)
         if material_id is None:
-            return await ctx.send("That is not an armory material. Try Bog Iron, Fen Iron, or Cinder Ore.")
+            return await ctx.send(self._not_armor_material_text(material, ctx.clean_prefix))
         offer = ctx.transaction.setdefault("armory", defaultdict(lambda: 0))
         async with self.bot.pool.acquire() as conn:
             owned = await fetch_materials(conn, ctx.author.id)
@@ -1778,7 +1841,7 @@ class Transaction(commands.Cog):
         await ctx.message.add_reaction("<:blackcheck:441826948919066625>")
 
     @has_transaction()
-    @remove.command(name="armory", brief=_("Removes armory materials from a trade."))
+    @remove.command(name="armory", aliases=["armormaterials", "gearmaterials"], brief=_("Removes armory materials from a trade."))
     async def remove_armory(self, ctx, amount: IntGreaterThan(0), *, material: str):
         """`<amount>` and `<material>` - remove smithing goods from your offer."""
         from classes.equipment.definitions import resolve_material

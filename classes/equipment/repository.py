@@ -18,6 +18,7 @@ from classes.equipment.economy import (
     salvage_yield,
 )
 from classes.equipment.generation import roll_crate, roll_quality
+from classes.equipment.protection import MASS_SALVAGE_LIMIT, mass_salvage_skip_reason
 from classes.equipment.stats import contribution
 
 LOGGER = logging.getLogger(__name__)
@@ -124,6 +125,7 @@ SCHEMA_STATEMENTS = (
     "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS temper_fails INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS refine_fails INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS inscribe_fails INTEGER NOT NULL DEFAULT 0",
+    "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE",
     "ALTER TABLE equipment_items DROP CONSTRAINT IF EXISTS equipment_items_refinement_chk",
     "ALTER TABLE equipment_items ADD CONSTRAINT equipment_items_refinement_chk CHECK (refinement BETWEEN 0 AND 7)",
     "ALTER TABLE equipment_items DROP CONSTRAINT IF EXISTS equipment_items_attunement_chk",
@@ -1093,7 +1095,7 @@ async def temper_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
         result = dict(updated)
         result.update(step)
         result["success"] = success
-        result["pity_used"] = success and fails >= step["pity"]
+        result["pity_used"] = success and step["pity"] > 0 and fails >= step["pity"]
         result["refinement_cap"] = refinement_cap(item["attunement"])
         result["newly_bound"] = not bool(item["bound"])
         await log_event(
@@ -1108,9 +1110,13 @@ async def temper_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
                 "success": success,
                 "pity_used": result["pity_used"],
                 "star": stars if success else current,
+                "target_star": next_star,
                 "refinement": stars,
                 "quality": int(item["quality"]),
                 "fails_before": fails,
+                "pity_threshold": int(step["pity"]),
+                "cost": dict(step["cost"]),
+                "gold": int(step["gold"]),
             },
         )
         return "tempered", result
@@ -1158,7 +1164,7 @@ async def refine_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
         result = dict(updated)
         result.update(step)
         result["success"] = success
-        result["pity_used"] = success and fails >= step["pity"]
+        result["pity_used"] = success and step["pity"] > 0 and fails >= step["pity"]
         result["newly_bound"] = not bool(item["bound"])
         await log_event(
             conn,
@@ -1175,6 +1181,9 @@ async def refine_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
                 "quality_before": int(item["quality"]),
                 "refinement": int(item["refinement"] or 0),
                 "fails_before": fails,
+                "pity_threshold": int(step["pity"]),
+                "cost": dict(step["cost"]),
+                "gold": int(step["gold"]),
             },
         )
         return "refined", result
@@ -1233,7 +1242,7 @@ async def inscribe_piece(conn, owner_id: int, equipment_id: int, modifier_id: st
         result = {
             **step,
             "success": success,
-            "pity_used": success and fails >= step["pity"],
+            "pity_used": success and step["pity"] > 0 and fails >= step["pity"],
             "replaced": replaced if success else [],
             "fails": 0 if success else fails + 1,
             "newly_bound": not bool(item["bound"]),
@@ -1252,6 +1261,9 @@ async def inscribe_piece(conn, owner_id: int, equipment_id: int, modifier_id: st
                 "modifier_id": modifier_id,
                 "replaced": result["replaced"],
                 "fails_before": fails,
+                "pity_threshold": int(step["pity"]),
+                "cost": dict(step["cost"]),
+                "gold": int(step["gold"]),
             },
         )
         return "inscribed", result
@@ -1284,8 +1296,175 @@ async def trade_materials(conn, user_id: int, material_id: str, target_line: str
     return "traded", {"spent_id": material_id, "spent": spent, "received_id": received_id, "received": received}
 
 
+async def piece_protection(conn, row, *, check_listed: bool = True) -> str | None:
+    """Why a piece may not leave the owner's armory right now, or None.
+
+    Locked and worn pieces cannot be salvaged, listed, given, or traded.
+    Call this after reading `row` with FOR UPDATE so the answer holds.
+    """
+    if row.get("locked"):
+        return "locked"
+    equipment_id = int(row["id"])
+    worn = await conn.fetchval(
+        "SELECT 1 FROM equipment_loadout WHERE equipment_id = $1",
+        equipment_id,
+    )
+    if worn:
+        return "equipped"
+    if check_listed:
+        listed = await conn.fetchval(
+            "SELECT 1 FROM equipment_market WHERE equipment_id = $1",
+            equipment_id,
+        )
+        if listed:
+            return "listed"
+    return None
+
+
+async def set_piece_lock(conn, owner_id: int, equipment_id: int, locked: bool) -> tuple[str, dict | None]:
+    """Lock or unlock a piece the player owns. A listed piece must come off the shop first."""
+    async with conn.transaction():
+        row = await conn.fetchrow(
+            """
+            SELECT *
+              FROM equipment_items
+             WHERE id = $1
+               AND owner_id = $2
+             FOR UPDATE
+            """,
+            int(equipment_id),
+            int(owner_id),
+        )
+        if row is None:
+            return "missing", None
+        if bool(row["locked"]) == bool(locked):
+            return "already", dict(row)
+        if locked:
+            listed = await conn.fetchval(
+                "SELECT 1 FROM equipment_market WHERE equipment_id = $1",
+                int(equipment_id),
+            )
+            if listed:
+                return "listed", dict(row)
+        await conn.execute(
+            "UPDATE equipment_items SET locked = $2, updated_at = NOW() WHERE id = $1",
+            int(equipment_id),
+            bool(locked),
+        )
+        await log_event(
+            conn,
+            owner_id,
+            "lock" if locked else "unlock",
+            equipment_id=int(equipment_id),
+            rarity=row["rarity"],
+            archetype=row["archetype"],
+            slot=row["slot"],
+        )
+        result = dict(row)
+        result["locked"] = bool(locked)
+        return ("locked" if locked else "unlocked"), result
+
+
+async def salvage_many(conn, owner_id: int, equipment_ids) -> dict:
+    """Salvage every listed id the player owns that is not protected. One transaction.
+
+    Returns {"salvaged": [names], "materials": {id: n}, "skipped": {reason: n}}.
+    Ids that are gone or belong to someone else count as "missing".
+    """
+    ids = list(dict.fromkeys(int(value) for value in equipment_ids))[:MASS_SALVAGE_LIMIT]
+    summary = {"salvaged": [], "materials": {}, "skipped": {}}
+    if not ids:
+        return summary
+    async with conn.transaction():
+        rows = await conn.fetch(
+            """
+            SELECT *
+              FROM equipment_items
+             WHERE id = ANY($1::bigint[])
+               AND owner_id = $2
+             ORDER BY id
+             FOR UPDATE
+            """,
+            ids,
+            int(owner_id),
+        )
+        found = {int(row["id"]) for row in rows}
+        missing = len([value for value in ids if value not in found])
+        if missing:
+            summary["skipped"]["missing"] = missing
+        if not rows:
+            return summary
+        worn = {
+            int(row["equipment_id"])
+            for row in await conn.fetch(
+                "SELECT equipment_id FROM equipment_loadout WHERE equipment_id = ANY($1::bigint[])",
+                list(found),
+            )
+        }
+        listed = {
+            int(row["equipment_id"])
+            for row in await conn.fetch(
+                "SELECT equipment_id FROM equipment_market WHERE equipment_id = ANY($1::bigint[])",
+                list(found),
+            )
+        }
+        doomed = []
+        for row in rows:
+            reason = mass_salvage_skip_reason(
+                row, equipped=int(row["id"]) in worn, listed=int(row["id"]) in listed
+            )
+            if reason:
+                summary["skipped"][reason] = summary["skipped"].get(reason, 0) + 1
+            else:
+                doomed.append(row)
+        if not doomed:
+            return summary
+        deleted = {
+            int(row["id"])
+            for row in await conn.fetch(
+                """
+                DELETE FROM equipment_items
+                 WHERE id = ANY($1::bigint[])
+                   AND owner_id = $2
+                RETURNING id
+                """,
+                [int(row["id"]) for row in doomed],
+                int(owner_id),
+            )
+        }
+        total: dict[str, int] = {}
+        for row in doomed:
+            if int(row["id"]) not in deleted:
+                continue
+            gained = salvage_yield(row["rarity"], row["archetype"], int(row["quality"]))
+            for material_id, amount in gained.items():
+                total[material_id] = total.get(material_id, 0) + int(amount)
+            summary["salvaged"].append(row["name"])
+            await log_event(
+                conn,
+                owner_id,
+                "salvage",
+                equipment_id=int(row["id"]),
+                rarity=row["rarity"],
+                archetype=row["archetype"],
+                slot=row["slot"],
+                payload={
+                    "quality": int(row["quality"]),
+                    "refinement": int(row["refinement"] or 0),
+                    "materials": gained,
+                    "bulk": True,
+                },
+            )
+        await add_materials(conn, owner_id, total)
+        summary["materials"] = total
+    return summary
+
+
 async def salvage_piece(conn, owner_id: int, equipment_id: int) -> tuple[str, dict | None]:
-    """Destroy a chest and pay less than it would cost to craft again."""
+    """Destroy a chest and pay less than it would cost to craft again.
+
+    Locked, worn, and listed pieces are refused.
+    """
     async with conn.transaction():
         item = await conn.fetchrow(
             """
@@ -1300,17 +1479,10 @@ async def salvage_piece(conn, owner_id: int, equipment_id: int) -> tuple[str, di
         )
         if item is None:
             return "missing", None
-        listed = await conn.fetchval(
-            "SELECT 1 FROM equipment_market WHERE equipment_id = $1",
-            int(equipment_id),
-        )
-        if listed:
-            return "listed", None
+        protected = await piece_protection(conn, item)
+        if protected:
+            return protected, None
         yield_amounts = salvage_yield(item["rarity"], item["archetype"], int(item["quality"]))
-        await conn.execute(
-            "DELETE FROM equipment_loadout WHERE equipment_id = $1",
-            int(equipment_id),
-        )
         deleted = await conn.fetchval(
             """
             DELETE FROM equipment_items
@@ -1358,10 +1530,9 @@ async def move_piece(
         return "missing"
     if not is_tradable(row):
         return "bound"
-    await conn.execute(
-        "DELETE FROM equipment_loadout WHERE equipment_id = $1",
-        int(equipment_id),
-    )
+    protected = await piece_protection(conn, row, check_listed=False)
+    if protected:
+        return protected
     await conn.execute(
         "DELETE FROM equipment_market WHERE equipment_id = $1",
         int(equipment_id),
@@ -1409,10 +1580,9 @@ async def list_piece(conn, owner_id: int, equipment_id: int, price: int) -> tupl
             return "missing", None
         if not is_tradable(row):
             return "bound", None
-        await conn.execute(
-            "DELETE FROM equipment_loadout WHERE equipment_id = $1",
-            int(equipment_id),
-        )
+        protected = await piece_protection(conn, row, check_listed=False)
+        if protected:
+            return protected, None
         await conn.execute(
             """
             INSERT INTO equipment_market (equipment_id, seller_id, price)
@@ -1483,7 +1653,12 @@ async def buy_listing(
             return "missing", None
         if int(listing["seller_id"]) == int(buyer_id):
             return "self", None
-        if not is_tradable(listing) or int(listing["owner_id"]) != int(listing["seller_id"]):
+        unavailable = (
+            not is_tradable(listing)
+            or int(listing["owner_id"]) != int(listing["seller_id"])
+            or await piece_protection(conn, listing, check_listed=False) is not None
+        )
+        if unavailable:
             await conn.execute(
                 "DELETE FROM equipment_market WHERE equipment_id = $1",
                 int(equipment_id),

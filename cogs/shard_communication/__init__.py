@@ -579,6 +579,8 @@ class Sharding(commands.Cog):
                 "upgradeweapon": _("Upgrade Weapon"),
                 "weaponlock": _("Weapon Lock"),
                 "weaponunlock": _("Weapon Unlock"),
+                "armorlock": _("Armor Lock"),
+                "armorunlock": _("Armor Unlock"),
                 "_buy": _("Seasonal Buy"),
                 "_class": _("Class"),
                 "_open": _("Seasonal Open"),
@@ -664,6 +666,8 @@ class Sharding(commands.Cog):
                 "trader",
                 "weaponlock",
                 "weaponunlock",
+                "armorlock",
+                "armorunlock",
             }
             progression_commands = {
                 "_class",

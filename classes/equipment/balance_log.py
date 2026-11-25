@@ -88,7 +88,313 @@ def _pct(part: int, whole: int) -> str:
     return f"{(100.0 * part / whole):.1f}%"
 
 
-def build_review_markdown(rows: list, *, days: int, database: str = "") -> str:
+def temper_target_star(payload: dict) -> int:
+    """The star an attempt was trying for.
+
+    Newer rows log `target_star`. Older rows log `star` as the star the piece
+    ended on, so a failure there means it was trying for the next one.
+    """
+    if payload.get("target_star") is not None:
+        return int(payload["target_star"])
+    star = int(payload.get("star") or payload.get("refinement") or 0)
+    return star if payload.get("success") else star + 1
+
+
+def _refine_band_pity(quality_before) -> int | None:
+    from classes.equipment.definitions import REFINE_QUALITY_BANDS
+
+    if quality_before is None:
+        return None
+    for band in REFINE_QUALITY_BANDS:
+        if int(quality_before) <= band[0]:
+            return int(band[-1])
+    return None
+
+
+def real_pity_used(action: str, payload: dict) -> bool:
+    """Pity that changed the outcome. A band with pity 0 always succeeds, so it is not pity.
+
+    Newer rows log `pity_threshold`. For older refine rows the band is read
+    from `quality_before`.
+    """
+    if not payload.get("pity_used"):
+        return False
+    threshold = payload.get("pity_threshold")
+    if threshold is None and action == "refine":
+        threshold = _refine_band_pity(payload.get("quality_before"))
+    return threshold is None or int(threshold) > 0
+
+
+def is_guaranteed_refine(payload: dict) -> bool:
+    threshold = payload.get("pity_threshold")
+    if threshold is None:
+        threshold = _refine_band_pity(payload.get("quality_before"))
+    return threshold == 0
+
+
+TIERS = ("common", "uncommon", "rare", "magic", "legendary")
+LINE_LABEL = {"guardian": "Aegis (Guardian)", "slayer": "Razor (Slayer)", "vanguard": "Oath (Vanguard)"}
+
+
+def _payload(row) -> dict:
+    payload = row["payload"] or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _tier(material_id: str) -> str:
+    from classes.equipment.definitions import material_rarity
+
+    try:
+        return material_rarity(str(material_id))
+    except Exception:
+        return "?"
+
+
+def _add_tiers(target: dict, materials) -> None:
+    for material_id, amount in (materials or {}).items():
+        if int(amount or 0) > 0:
+            tier = _tier(material_id)
+            target[tier] = target.get(tier, 0) + int(amount)
+
+
+def _tier_text(by_tier: dict) -> str:
+    parts = [f"{tier} {by_tier[tier]:,}" for tier in (*TIERS, "?") if by_tier.get(tier)]
+    return ", ".join(parts) or "none"
+
+
+def expected_quality_mean(rarity: str) -> float | None:
+    """Mean of triangular(1, 100, mode): what crate and craft quality should average."""
+    from classes.equipment.definitions import QUALITY_MODE
+
+    mode = QUALITY_MODE.get(str(rarity).lower())
+    return None if mode is None else (1 + 100 + mode) / 3
+
+
+def forge_cost(action: str, row, payload: dict) -> tuple[dict, int, bool]:
+    """(materials, gold, estimated) one forge attempt cost. Gold and goods are spent hit or miss.
+
+    Newer rows log the cost. Older rows are priced from today's cost tables.
+    """
+    if "cost" in payload or "gold" in payload:
+        return dict(payload.get("cost") or {}), int(payload.get("gold") or 0), False
+    from classes.equipment.economy import inscribe_step, refine_step, temper_step
+
+    archetype = str(row["archetype"] or "")
+    try:
+        if action == "temper":
+            step = temper_step(archetype, temper_target_star(payload))
+        elif action == "refine":
+            step = refine_step(archetype, int(payload.get("quality_before") or 0))
+        else:
+            step = inscribe_step(archetype)
+    except Exception:
+        step = None
+    if not step:
+        return {}, 0, True
+    return dict(step.get("cost") or {}), int(step.get("gold") or 0), True
+
+
+def build_extra_sections(rows: list, snapshot: dict | None = None) -> list[str]:
+    """Crate quality, salvage by rarity, material flow, and the worn-gear snapshot."""
+    crate_quality: dict[str, list[int]] = {}
+    fully_rolled = 0
+    salvage_rarity: dict[str, dict[str, int]] = {}
+    earned: dict[str, dict[str, int]] = {"crates": {}, "dragons": {}, "salvage": {}}
+    spent: dict[str, dict[str, int]] = {"craft": {}, "refine": {}, "temper": {}, "inscribe": {}}
+    forge_gold: dict[str, int] = {"refine": 0, "temper": 0, "inscribe": 0}
+    estimated = 0
+    market_gold = 0
+    equip_line: dict[str, int] = {}
+    equip_rarity: dict[str, int] = {}
+
+    for row in rows:
+        action = str(row["action"])
+        payload = _payload(row)
+        rarity = str(row["rarity"] or payload.get("rarity") or "?").lower()
+        if action == "crate":
+            _add_tiers(earned["crates"], payload.get("materials"))
+            if payload.get("has_piece") or payload.get("piece_id"):
+                if payload.get("fully_rolled"):
+                    fully_rolled += 1
+                elif payload.get("quality") is not None:
+                    crate_quality.setdefault(rarity, []).append(int(payload["quality"]))
+        elif action == "dragon_materials":
+            _add_tiers(earned["dragons"], payload.get("materials"))
+        elif action == "salvage":
+            bucket = salvage_rarity.setdefault(rarity, {"single": 0, "bulk": 0})
+            bucket["bulk" if payload.get("bulk") else "single"] += 1
+            _add_tiers(earned["salvage"], payload.get("materials"))
+        elif action == "craft":
+            _add_tiers(spent["craft"], payload.get("cost"))
+        elif action in forge_gold:
+            materials, gold, guessed = forge_cost(action, row, payload)
+            _add_tiers(spent[action], materials)
+            forge_gold[action] += gold
+            estimated += 1 if guessed else 0
+        elif action == "market_buy":
+            market_gold += int(payload.get("price") or 0)
+        elif action == "equip":
+            line = str(row["archetype"] or "?").lower()
+            equip_line[line] = equip_line.get(line, 0) + 1
+            equip_rarity[rarity] = equip_rarity.get(rarity, 0) + 1
+
+    lines = ["", "## Crate pieces", ""]
+    if crate_quality or fully_rolled:
+        for rarity in TIERS:
+            samples = crate_quality.get(rarity) or []
+            if not samples:
+                continue
+            expected = expected_quality_mean(rarity)
+            target = f" (expected about {expected:.1f})" if expected else ""
+            lines.append(
+                f"- **{rarity}**: {len(samples)} pieces, quality avg {sum(samples) / len(samples):.1f}{target}, "
+                f"min {min(samples)}, max {max(samples)}"
+            )
+        lines.append(f"- Fully rolled discoveries: {fully_rolled}")
+    else:
+        lines.append("- No crate pieces.")
+    craft_targets = ", ".join(f"{rarity} {expected_quality_mean(rarity):.1f}" for rarity in TIERS)
+    lines.append(f"- Expected craft and crate quality averages: {craft_targets}")
+
+    lines.extend(["", "## Salvage by rarity", ""])
+    if salvage_rarity:
+        for rarity in (*TIERS, "?"):
+            bucket = salvage_rarity.get(rarity)
+            if bucket:
+                lines.append(
+                    f"- **{rarity}**: {bucket['single'] + bucket['bulk']} "
+                    f"({bucket['single']} single, {bucket['bulk']} Salvage All)"
+                )
+    else:
+        lines.append("- No salvage.")
+
+    lines.extend(["", "## Material flow (by material tier)", ""])
+    total_in: dict[str, int] = {}
+    total_out: dict[str, int] = {}
+    for source, by_tier in earned.items():
+        lines.append(f"- Earned from {source}: {_tier_text(by_tier)}")
+        for tier, amount in by_tier.items():
+            total_in[tier] = total_in.get(tier, 0) + amount
+    for sink, by_tier in spent.items():
+        lines.append(f"- Spent on {sink}: {_tier_text(by_tier)}")
+        for tier, amount in by_tier.items():
+            total_out[tier] = total_out.get(tier, 0) + amount
+    net = []
+    for tier in TIERS:
+        if total_in.get(tier) or total_out.get(tier):
+            gained, used = total_in.get(tier, 0), total_out.get(tier, 0)
+            ratio = f" ({used / gained:.0%} of earned spent)" if gained else ""
+            net.append(f"{tier} {gained - used:+,}{ratio}")
+    lines.append(f"- **Net**: {', '.join(net) or 'none'}")
+    lines.append(
+        "- Forge gold spent: "
+        + ", ".join(f"{action} ${gold:,}" for action, gold in forge_gold.items())
+        + f" (total ${sum(forge_gold.values()):,})"
+    )
+    if estimated:
+        lines.append(f"  - {estimated} older forge rows were priced from today's cost tables.")
+    lines.append(f"- Gear shop gold traded: ${market_gold:,}")
+
+    lines.extend(["", "## Equips this window", ""])
+    if equip_line:
+        lines.append(
+            "- By line: "
+            + ", ".join(f"{LINE_LABEL.get(line, line)} {count}" for line, count in sorted(equip_line.items()))
+        )
+        lines.append(
+            "- By rarity: "
+            + ", ".join(f"{rarity} {equip_rarity[rarity]}" for rarity in (*TIERS, "?") if equip_rarity.get(rarity))
+        )
+    else:
+        lines.append("- No equips.")
+
+    lines.extend(_snapshot_lines(snapshot))
+    return lines
+
+
+def _snapshot_lines(snapshot: dict | None) -> list[str]:
+    lines = ["", "## Worn right now (snapshot at export)", ""]
+    if snapshot is None:
+        return lines + ["- Snapshot not available."]
+    worn = snapshot.get("worn") or []
+    if not worn:
+        lines.append("- Nobody is wearing armor.")
+    else:
+        wearers: dict[int, dict[str, int]] = {}
+        by_line: dict[str, int] = {}
+        by_rarity: dict[str, list] = {}
+        for piece in worn:
+            line = str(piece["archetype"]).lower()
+            rarity = str(piece["rarity"]).lower()
+            by_line[line] = by_line.get(line, 0) + 1
+            by_rarity.setdefault(rarity, []).append(piece)
+            counts = wearers.setdefault(int(piece["user_id"]), {})
+            counts[line] = counts.get(line, 0) + 1
+        main_line: dict[str, int] = {}
+        for counts in wearers.values():
+            top = max(sorted(counts), key=lambda name: counts[name])
+            main_line[top] = main_line.get(top, 0) + 1
+        lines.append(f"- Players wearing armor: {len(wearers)}, pieces worn: {len(worn)}")
+        lines.append(
+            "- Pieces by line: "
+            + ", ".join(f"{LINE_LABEL.get(line, line)} {count} ({count / len(worn):.0%})" for line, count in sorted(by_line.items()))
+        )
+        lines.append(
+            "- Players by main line: "
+            + ", ".join(f"{LINE_LABEL.get(line, line)} {count}" for line, count in sorted(main_line.items()))
+        )
+        for rarity in TIERS:
+            pieces = by_rarity.get(rarity)
+            if not pieces:
+                continue
+            quality = sum(int(p["quality"]) for p in pieces) / len(pieces)
+            temper = sum(int(p["refinement"] or 0) for p in pieces) / len(pieces)
+            lines.append(
+                f"  - {rarity}: {len(pieces)} worn, quality avg {quality:.1f}, temper avg +{temper:.1f}"
+            )
+    held = snapshot.get("materials") or []
+    lines.extend(["", "## Materials held right now", ""])
+    if not held:
+        lines.append("- Nobody holds armor materials.")
+    else:
+        by_tier: dict[str, int] = {}
+        holders: dict[str, int] = {}
+        for entry in held:
+            tier = _tier(entry["material_id"])
+            by_tier[tier] = by_tier.get(tier, 0) + int(entry["total"])
+            holders[tier] = max(holders.get(tier, 0), int(entry["holders"]))
+        for tier in (*TIERS, "?"):
+            if by_tier.get(tier):
+                lines.append(f"- **{tier}**: {by_tier[tier]:,} held (largest single good held by {holders[tier]} players)")
+    return lines
+
+
+async def fetch_snapshot(conn) -> dict:
+    """What is worn and held at export time. Not limited to the window."""
+    worn = await conn.fetch(
+        """
+        SELECT l.user_id, i.archetype, i.rarity, i.slot, i.quality, i.refinement
+          FROM equipment_loadout l
+          JOIN equipment_items i ON i.id = l.equipment_id AND i.owner_id = l.user_id
+        """
+    )
+    materials = await conn.fetch(
+        """
+        SELECT material_id, SUM(amount) AS total, COUNT(DISTINCT user_id) AS holders
+          FROM equipment_materials
+         WHERE amount > 0
+         GROUP BY material_id
+        """
+    )
+    return {"worn": [dict(row) for row in worn], "materials": [dict(row) for row in materials]}
+
+
+def build_review_markdown(rows: list, *, days: int, database: str = "", snapshot: dict | None = None) -> str:
     """Turn raw event rows into a short balance review for next week's pass."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     by_action: dict[str, int] = {}
@@ -101,6 +407,7 @@ def build_review_markdown(rows: list, *, days: int, database: str = "") -> str:
         "inscribe": {"ok": 0, "miss": 0, "pity": 0},
     }
     temper_star: dict[int, dict[str, int]] = {}
+    guaranteed_refines = 0
     crate_piece = 0
     crate_material_only = 0
     crate_by_rarity: dict[str, int] = {}
@@ -136,10 +443,12 @@ def build_review_markdown(rows: list, *, days: int, database: str = "") -> str:
                 bucket["ok"] += 1
             else:
                 bucket["miss"] += 1
-            if payload.get("pity_used"):
+            if real_pity_used(action, payload):
                 bucket["pity"] += 1
+            if action == "refine" and is_guaranteed_refine(payload):
+                guaranteed_refines += 1
             if action == "temper":
-                star = int(payload.get("star") or payload.get("refinement") or 0)
+                star = temper_target_star(payload)
                 temper_star.setdefault(star, {"ok": 0, "miss": 0})
                 temper_star[star]["ok" if payload.get("success") else "miss"] += 1
         elif action == "crate":
@@ -203,18 +512,31 @@ def build_review_markdown(rows: list, *, days: int, database: str = "") -> str:
         lines.append("- No crafts.")
 
     lines.extend(["", "## Forge", ""])
+    from classes.equipment.definitions import TEMPER_STAR_CHANCE
+
     for action, bucket in forge.items():
         total = bucket["ok"] + bucket["miss"]
         lines.append(
             f"- **{action}**: {total} attempts, success {_pct(bucket['ok'], total)}, "
             f"pity used {bucket['pity']}"
         )
+        if action == "refine" and guaranteed_refines:
+            chance_total = total - guaranteed_refines
+            chance_ok = bucket["ok"] - guaranteed_refines
+            lines.append(
+                f"  - {guaranteed_refines} were guaranteed (quality 39 or lower). "
+                f"The other {chance_total}: success {_pct(chance_ok, chance_total)}"
+            )
     if temper_star:
-        lines.append("- Temper by star reached:")
+        lines.append("- Temper by star attempted (published chance in brackets):")
         for star in sorted(temper_star):
             bucket = temper_star[star]
             total = bucket["ok"] + bucket["miss"]
-            lines.append(f"  - +{star}: {total} ({_pct(bucket['ok'], total)} success)")
+            published = TEMPER_STAR_CHANCE.get(star)
+            note = f" [{published:.0%}]" if published is not None else ""
+            lines.append(
+                f"  - +{star}: {bucket['ok']}/{total} ({_pct(bucket['ok'], total)} success){note}"
+            )
 
     lines.extend(["", "## Crates", ""])
     crate_total = crate_piece + crate_material_only
@@ -240,6 +562,11 @@ def build_review_markdown(rows: list, *, days: int, database: str = "") -> str:
             f"- First-bind attunements logged: {attune_binds}",
             f"- Dragon material payouts: {dragon_payouts}",
             f"- Garron material trades: {trade_mats}",
+        ]
+    )
+    lines.extend(build_extra_sections(rows, snapshot))
+    lines.extend(
+        [
             "",
             "## Notes for the next pass",
             "",
@@ -247,6 +574,9 @@ def build_review_markdown(rows: list, *, days: int, database: str = "") -> str:
             "- Check temper/refine success and pity usage against the published chances.",
             "- Watch whether Magic/Legendary crafts or crate pieces dominate wear.",
             "- Look for salvage or market volume that suggests dead rarities.",
+            "- Compare crate piece quality to the expected averages; a gap means the roll is off.",
+            "- Net material: a tier that keeps growing with little used is piling up.",
+            "- Worn by line: one line far above a third of wearers is the one to look at.",
             "",
             "## Raw action tally JSON",
             "",
@@ -261,7 +591,12 @@ def build_review_markdown(rows: list, *, days: int, database: str = "") -> str:
 
 async def write_review(conn, *, days: int = DEFAULT_DAYS, database: str = "") -> Path:
     rows = await fetch_review_rows(conn, days)
-    text = build_review_markdown(rows, days=days, database=database)
+    try:
+        snapshot = await fetch_snapshot(conn)
+    except Exception:
+        log.exception("gear balance snapshot failed")
+        snapshot = None
+    text = build_review_markdown(rows, days=days, database=database, snapshot=snapshot)
     path = review_path()
     path.write_text(text, encoding="utf-8")
     return path

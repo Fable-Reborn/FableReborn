@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import io
+import logging
 
 import discord
+from discord.http import handle_message_parameters
 
 from classes.equipment.access import menu_actor_ids
 from classes.equipment.card import modifier_effect, piece_numbers, render_armory
@@ -17,6 +19,7 @@ from classes.equipment.definitions import (
     SLOT_NOUN,
     quality_band,
 )
+from classes.equipment.protection import line_label
 from classes.equipment.repository import (
     buy_listing,
     fetch_market,
@@ -38,7 +41,7 @@ SORT_MODES = (
     ("name", "Name"),
 )
 FILTER_OPTIONS = (
-    *[("line:" + line, ARCHETYPE_NOUN[line], LINE_EMOJI[line]) for line in ARCHETYPES],
+    *[("line:" + line, line_label(line), LINE_EMOJI[line]) for line in ARCHETYPES],
     *[("slot:" + slot, SLOT_NOUN[slot], None) for slot in PAPER_DOLL_SLOTS],
     *[("rarity:" + rarity, rarity.title(), RARITY_DOTS[rarity]) for rarity in RARITIES],
     ("mine", "My listings", None),
@@ -47,6 +50,39 @@ FILTER_OPTIONS = (
 
 def _gold(amount: int) -> str:
     return f"${int(amount):,}"
+
+
+log = logging.getLogger(__name__)
+
+
+def gear_sale_dm_text(seller_id: int, name: str, price: int) -> str:
+    return (
+        f"<@{int(seller_id)}> 🛒 Your **{name}** sold in the gear shop for **{_gold(price)}**. "
+        "The gold is already in your balance."
+    )
+
+
+async def notify_gear_sale(bot, result: dict | None) -> bool:
+    """DM the seller after a gear shop sale. Never raises; the sale already happened.
+
+    Uses the raw HTTP DM route, like the weapon market, so it works from any cluster.
+    """
+    if not result or not result.get("seller_id"):
+        return False
+    try:
+        seller_id = int(result["seller_id"])
+        dm_channel = await bot.http.start_private_message(seller_id)
+        with handle_message_parameters(
+            content=gear_sale_dm_text(seller_id, result["name"], int(result["price"])),
+            allowed_mentions=discord.AllowedMentions(users=True, everyone=False, roles=False),
+        ) as params:
+            await bot.http.send_message(dm_channel.get("id"), params=params)
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    except Exception:
+        log.exception("Gear sale DM failed for seller %s", result.get("seller_id"))
+        return False
 
 
 def _trim(value: float) -> str:
@@ -166,7 +202,7 @@ class ShopBuyConfirm(discord.ui.View):
         messages = {
             "missing": "That listing is gone.",
             "self": "You cannot buy your own listing.",
-            "bound": "That listing was withdrawn because the piece can no longer be traded.",
+            "bound": "That listing was withdrawn because the piece can no longer be sold (bound, locked, or worn).",
             "poor": "You cannot afford that listing.",
         }
         try:
@@ -189,6 +225,7 @@ class ShopBuyConfirm(discord.ui.View):
                     view=None,
                 )
                 self.shop.selected_id = None
+                await notify_gear_sale(self.shop.bot, result)
         finally:
             await self.shop.reload()
             try:

@@ -48,6 +48,8 @@ class FakeConn:
         raise AssertionError(f"unexpected fetchrow: {sql}")
 
     async def fetchval(self, sql, *args):
+        if "FROM equipment_loadout WHERE equipment_id" in sql:
+            return 1 if int(args[0]) in self.loadout else None
         if "FROM equipment_market" in sql:
             return 1 if int(args[0]) in self.listed else None
         if "DELETE FROM equipment_items" in sql:
@@ -156,15 +158,21 @@ def fake_armory(conn, *, open_=True):
 
 
 class SalvageRepositoryTests(unittest.IsolatedAsyncioTestCase):
-    async def test_salvage_destroys_piece_unequips_and_pays_materials(self):
+    async def test_worn_piece_is_refused_and_kept(self):
         conn = FakeConn(items=[piece()], loadout={7})
+        self.assertEqual(("equipped", None), await salvage_piece(conn, OWNER, 7))
+        self.assertIn(7, conn.items)
+        self.assertIn(7, conn.loadout)
+        self.assertEqual({}, conn.materials)
+
+    async def test_salvage_destroys_piece_and_pays_materials(self):
+        conn = FakeConn(items=[piece()])
         status, result = await salvage_piece(conn, OWNER, 7)
         self.assertEqual("salvaged", status)
         expected = salvage_yield("rare", "slayer", 60)
         self.assertTrue(expected)
         self.assertEqual(expected, result["materials"])
         self.assertNotIn(7, conn.items)
-        self.assertNotIn(7, conn.loadout)
         self.assertEqual({(OWNER, k): v for k, v in expected.items()}, conn.materials)
         self.assertEqual(["salvage"], conn.events)
 
@@ -201,9 +209,8 @@ class SalvageMenuTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("wearing", plain)
         self.assertNotIn("temper", plain)
         risky = profile.armory_salvage_prompt(
-            armor_menu_item(equipped=True, refinement=3, fully_rolled=True), "stuff"
+            armor_menu_item(refinement=3, fully_rolled=True), "stuff"
         )
-        self.assertIn("You are wearing it", risky)
         self.assertIn("+3 temper is lost", risky)
         self.assertIn("fully rolled discovery", risky)
 

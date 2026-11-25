@@ -135,9 +135,9 @@ async def _require_armory_owner(ctx, interaction: discord.Interaction, message: 
 
 
 ARMORY_GEAR_FILTER_OPTIONS = (
-    ("line:guardian", "Aegis", "🛡️"),
-    ("line:slayer", "Razor", "⚔️"),
-    ("line:vanguard", "Oath", "⚖️"),
+    ("line:guardian", "Aegis (Guardian)", "🛡️"),
+    ("line:slayer", "Razor (Slayer)", "⚔️"),
+    ("line:vanguard", "Oath (Vanguard)", "⚖️"),
     ("slot:head", "Helm", None),
     ("slot:chest", "Cuirass", None),
     ("slot:legs", "Greaves", None),
@@ -147,11 +147,19 @@ ARMORY_GEAR_FILTER_OPTIONS = (
     ("rarity:rare", "Rare", "🔵"),
     ("rarity:magic", "Magic", "🟣"),
     ("rarity:legendary", "Legendary", "🟡"),
+    ("enchant:any", "Has enchantment", "✨"),
 )
 
 
+def armory_item_has_enchantment(item) -> bool:
+    if "has_enchantment" in item:
+        return bool(item["has_enchantment"])
+    text = str(item.get("enchantments") or "").strip().lower()
+    return text not in {"", "none", "no enchantment"}
+
+
 def armory_item_matches_gear_filters(item, filters) -> bool:
-    """Shop-style AND across groups, OR within a group. Enchantments are not filtered."""
+    """Shop-style AND across groups, OR within a group. `enchant:any` keeps enchanted pieces."""
     if not filters:
         return True
     lines = {value.split(":", 1)[1] for value in filters if value.startswith("line:")}
@@ -166,7 +174,16 @@ def armory_item_matches_gear_filters(item, filters) -> bool:
         return False
     if rarities and rarity not in rarities:
         return False
+    if "enchant:any" in filters and not armory_item_has_enchantment(item):
+        return False
     return True
+
+
+def armory_sort_equipped_first(items, *, catalog: str, filters) -> list:
+    """Gear tab with no filter: worn pieces lead, the chosen sort order is kept after them."""
+    if catalog != "armor" or filters:
+        return list(items)
+    return sorted(items, key=lambda item: not item.get("equipped"))
 
 
 def armory_gear_filter_labels(filters) -> str:
@@ -183,8 +200,6 @@ def armory_salvage_prompt(item, materials_text: str) -> str:
         f"You will recover about: {materials_text}.",
         "The piece is destroyed. This cannot be undone.",
     ]
-    if item.get("equipped"):
-        lines.append("You are wearing it. It comes off first.")
     refinement = int(item.get("refinement") or 0)
     if refinement > 0:
         lines.append(f"Its +{refinement} temper is lost. Materials spent tempering are not returned.")
@@ -199,9 +214,22 @@ def armory_salvage_result(status: str, result) -> str:
         return f"You break down **{result['name']}** and recover {result['materials_text']}."
     if status == "listed":
         return "Take it off the gear shop before salvaging it."
+    if status == "locked":
+        return "That piece is locked. Unlock it first if you really want to salvage it."
+    if status == "equipped":
+        return "You are wearing that piece. Take it off before salvaging it."
     if status == "closed":
         return "The armory is closed on this realm."
     return "You no longer own that piece. Your armory was refreshed."
+
+
+def armory_salvage_blocker(item) -> str | None:
+    """Fast refusal from the menu's copy of the piece. The database still re-checks."""
+    if item.get("locked"):
+        return "locked"
+    if item.get("equipped"):
+        return "equipped"
+    return None
 
 
 class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
@@ -324,12 +352,28 @@ class ArmoryActionSelect(discord.ui.Select):
         if item and item.get("armory_kind") == "armor":
             options = [
                 discord.SelectOption(label="Unequip" if equipped else "Equip", value="unequip" if equipped else "equip", emoji="⚔️"),
+                discord.SelectOption(
+                    label="Unlock" if locked else "Lock",
+                    value="armor_unlock" if locked else "armor_lock",
+                    emoji="🔓" if locked else "🔒",
+                    description=(
+                        "Allow salvage, selling, giving, and trading again"
+                        if locked
+                        else "Protect from salvage, selling, giving, and trading"
+                    ),
+                ),
                 discord.SelectOption(label="Compare with Equipped", value="compare", emoji="📊"),
                 discord.SelectOption(
                     label="Salvage",
                     value="salvage",
                     emoji="🔨",
-                    description="Break down into materials. Asks first.",
+                    description=(
+                        "Locked: unlock it first"
+                        if locked
+                        else "Worn: take it off first"
+                        if equipped
+                        else "Break down into materials. Asks first."
+                    ),
                 ),
             ]
         else:
@@ -525,6 +569,41 @@ class ArmorySalvageConfirmView(discord.ui.View):
         await interaction.response.edit_message(content="Salvage cancelled.", view=None)
 
 
+class ArmorySalvageAllConfirmView(discord.ui.View):
+    """One-shot Salvage All / Cancel prompt. The database re-checks every piece."""
+
+    def __init__(self, armory_view: "ArmoryPaginatorView", item_ids):
+        super().__init__(timeout=60)
+        self.armory_view = armory_view
+        self.item_ids = [int(value) for value in item_ids]
+        self.used = False
+
+    async def interaction_check(self, interaction):
+        return await _require_armory_owner(
+            self.armory_view.ctx, interaction, "This confirmation is not yours."
+        )
+
+    @discord.ui.button(label="Salvage All", style=discord.ButtonStyle.danger, emoji="🔨")
+    async def confirm(self, interaction, button):
+        if self.used:
+            return await interaction.response.send_message("Already handled.", ephemeral=True)
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(content="Salvaging…", view=None)
+        try:
+            message = await self.armory_view.salvage_all_armor(self.item_ids)
+        except Exception:
+            _log.exception("Armory Salvage All failed")
+            message = "Salvage All failed. Nothing was changed."
+        await interaction.edit_original_response(content=message)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction, button):
+        self.used = True
+        self.stop()
+        await interaction.response.edit_message(content="Salvage All cancelled.", view=None)
+
+
 class ArmoryPaginatorView(discord.ui.View):
     def __init__(
         self,
@@ -620,6 +699,7 @@ class ArmoryPaginatorView(discord.ui.View):
                 -float(item.get("sort_stat", (item.get("damage", 0) or 0) + (item.get("armor", 0) or 0)) or 0),
                 -int(item["id"]),
             ))
+        items = armory_sort_equipped_first(items, catalog=self.catalog, filters=self.gear_filters)
         self.pages = list(chunks(items, 5))
         self.embeds = [
             self.cog.invembed(self.ctx, page, index, len(self.pages) - 1, title=self.embed_title)
@@ -725,10 +805,34 @@ class ArmoryPaginatorView(discord.ui.View):
                 embed.add_field(name="Equipped", value="Nothing is worn in that slot.", inline=False)
             return await interaction.response.send_message(embed=embed, ephemeral=True)
 
+        if action in {"armor_lock", "armor_unlock"}:
+            if not self._equipment_open():
+                return await interaction.response.send_message(
+                    armory_salvage_result("closed", None), ephemeral=True
+                )
+            from classes.equipment.protection import lock_result_text
+            from classes.equipment.repository import set_piece_lock
+
+            await interaction.response.defer()
+            async with self.ctx.bot.pool.acquire() as conn:
+                status, result = await set_piece_lock(
+                    conn, self.ctx.author.id, item_id, action == "armor_lock"
+                )
+            await self.refresh_from_db()
+            await self.redraw_message()
+            return await interaction.followup.send(
+                lock_result_text(status, result, item_id, self.ctx.clean_prefix), ephemeral=True
+            )
+
         if action == "salvage":
             if not self._equipment_open():
                 return await interaction.response.send_message(
                     armory_salvage_result("closed", None), ephemeral=True
+                )
+            blocker = armory_salvage_blocker(item)
+            if blocker:
+                return await interaction.response.send_message(
+                    armory_salvage_result(blocker, None), ephemeral=True
                 )
             from classes.equipment.economy import salvage_yield
 
@@ -985,11 +1089,51 @@ class ArmoryPaginatorView(discord.ui.View):
         if not await _require_armory_owner(self.ctx, interaction):
             return
         if self.catalog == "armor":
-            return await interaction.response.send_message(
-                "Use the filter menu on this embed to pick line, rarity, or slot.",
-                ephemeral=True,
-            )
+            return await self.open_salvage_all(interaction)
         await interaction.response.send_modal(ArmoryFilterModal(self))
+
+    async def open_salvage_all(self, interaction: discord.Interaction):
+        """Gear tab: confirm, then salvage every unprotected piece the current filter shows."""
+        if not self._equipment_open():
+            return await interaction.response.send_message(
+                armory_salvage_result("closed", None), ephemeral=True
+            )
+        from classes.equipment.protection import (
+            mass_salvage_confirm_text,
+            mass_salvage_nothing_text,
+            plan_mass_salvage,
+        )
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        rows = await self.cog._fetch_salvage_candidates(self.ctx.author.id)
+        shown = {int(item["id"]) for item in self.armor_source if armory_item_matches_gear_filters(item, self.gear_filters)}
+        plan = plan_mass_salvage([row for row in rows if int(row["id"]) in shown])
+        if not plan["ids"]:
+            return await interaction.followup.send(
+                mass_salvage_nothing_text(plan["skipped"], self.ctx.clean_prefix), ephemeral=True
+            )
+        text = mass_salvage_confirm_text(plan, _armory_material_text(plan["materials"]))
+        scope = armory_gear_filter_labels(self.gear_filters)
+        await interaction.followup.send(
+            f"Scope: **{scope}**\n{text}",
+            view=ArmorySalvageAllConfirmView(self, plan["ids"]),
+            ephemeral=True,
+        )
+
+    async def salvage_all_armor(self, ids) -> str:
+        from classes.equipment.protection import mass_salvage_result_text
+        from classes.equipment.repository import salvage_many
+
+        if not self._equipment_open():
+            return armory_salvage_result("closed", None)
+        async with self.ctx.bot.pool.acquire() as conn:
+            summary = await salvage_many(conn, self.ctx.author.id, ids)
+        try:
+            await self.refresh_from_db()
+            await self.redraw_message()
+        except Exception:
+            _log.exception("Armory refresh after Salvage All failed")
+        return mass_salvage_result_text(summary, _armory_material_text(summary["materials"]))
 
     @discord.ui.button(label="Inventory", style=discord.ButtonStyle.secondary, row=1)
     async def inventory_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1064,9 +1208,15 @@ class ArmoryPaginatorView(discord.ui.View):
         if self.catalog == "armor":
             self.gear_tab.label = "Weapons"
             self.gear_tab.style = discord.ButtonStyle.blurple
+            self.filters_button.label = "Salvage All"
+            self.filters_button.style = discord.ButtonStyle.danger
+            self.filters_button.emoji = "🔨"
         else:
             self.gear_tab.label = "Gear"
             self.gear_tab.style = discord.ButtonStyle.secondary
+            self.filters_button.label = "Filters"
+            self.filters_button.style = discord.ButtonStyle.secondary
+            self.filters_button.emoji = None
 
 
 INVENTORY_HOME = "__home__"
@@ -5313,6 +5463,8 @@ class Profile(commands.Cog):
         marks = []
         if item.get("bound"):
             marks.append("(bound)")
+        if item.get("locked"):
+            marks.append("🔒")
         if item.get("equipped"):
             marks.append("(**Equipped**)")
         suffix = f" {' '.join(marks)}" if marks else ""
@@ -5371,7 +5523,7 @@ class Profile(commands.Cog):
             "id": int(item["id"]),
             "name": item["name"],
             "equipped": bool(item.get("equipped")),
-            "locked": False,
+            "locked": bool(item.get("locked")),
             "bound": bool(item.get("bound")),
             "fully_rolled": bool(item.get("fully_rolled")),
             "archetype": str(item.get("archetype") or "").lower(),
@@ -5427,9 +5579,28 @@ class Profile(commands.Cog):
             item = self._armory_armor_row(dict(row))
             names = names_by_id.get(item["id"], [])
             item["enchantments"] = ", ".join(names) if names else "None"
+            item["has_enchantment"] = bool(names)
             if item["equipped"] or lowest <= item["sort_stat"] <= highest:
                 visible.append(item)
         return visible
+
+    async def _fetch_salvage_candidates(self, user_id: int) -> list[dict]:
+        """Fresh rows for a Salvage All preview: worn, listed, and lock state from the database."""
+        rows = await self.bot.pool.fetch(
+            """
+            SELECT i.id, i.name, i.rarity, i.archetype, i.slot, i.quality,
+                   i.refinement, i.fully_rolled, i.locked,
+                   (l.equipment_id IS NOT NULL) AS equipped,
+                   (m.equipment_id IS NOT NULL) AS listed
+              FROM equipment_items i
+              LEFT JOIN equipment_loadout l ON l.equipment_id = i.id
+              LEFT JOIN equipment_market m ON m.equipment_id = i.id
+             WHERE i.owner_id = $1
+             ORDER BY i.id
+            """,
+            int(user_id),
+        )
+        return [dict(row) for row in rows]
 
     def invembed(self, ctx, ret, currentpage, maxpage, title=None):
         result = discord.Embed(

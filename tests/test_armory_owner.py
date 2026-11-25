@@ -183,7 +183,7 @@ class ArmoryOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(invoke_callback_succeeded("ok"))
         self.assertFalse(invoke_callback_succeeded(False))
 
-    def test_gear_tab_filters_match_shop_style_without_enchantments(self):
+    def test_gear_tab_filters_match_shop_style_with_has_enchantment(self):
         helm = {
             "archetype": "guardian",
             "slot": "head",
@@ -197,9 +197,11 @@ class ArmoryOwnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(armory_item_matches_gear_filters(helm, {"rarity:rare", "rarity:legendary"}))
         self.assertTrue(armory_item_matches_gear_filters(cuirass, {"rarity:rare", "rarity:legendary"}))
         self.assertFalse(armory_item_matches_gear_filters(helm, {"line:guardian", "slot:chest"}))
-        self.assertTrue(armory_item_matches_gear_filters(helm, {"enchant:fortified"}))
-        self.assertFalse(any(value.startswith("enchant") for value, _label, _emoji in ARMORY_GEAR_FILTER_OPTIONS))
-        self.assertEqual(armory_gear_filter_labels({"line:guardian", "slot:head"}), "Aegis · Helm")
+        self.assertTrue(armory_item_matches_gear_filters(helm, {"enchant:any"}))
+        self.assertFalse(armory_item_matches_gear_filters(cuirass, {"enchant:any"}))
+        enchant_values = [value for value, _label, _emoji in ARMORY_GEAR_FILTER_OPTIONS if value.startswith("enchant")]
+        self.assertEqual(["enchant:any"], enchant_values)
+        self.assertEqual(armory_gear_filter_labels({"line:guardian", "slot:head"}), "Aegis (Guardian) · Helm")
 
 
 if __name__ == "__main__":

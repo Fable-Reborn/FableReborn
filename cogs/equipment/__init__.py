@@ -27,6 +27,7 @@ _SUPPORT_MODULES = (
     "classes.equipment.character_card",
     "classes.equipment.character_card_v2",
     "classes.equipment.balance_log",
+    "classes.equipment.protection",
     "classes.equipment.repository",
     "classes.equipment.access",
     "cogs.equipment.layout",
@@ -81,11 +82,22 @@ from classes.equipment.repository import (
     grant_chest,
     list_piece,
     prune_undiscovered_recipes,
+    salvage_many,
     salvage_piece,
     set_gear_theme,
+    set_piece_lock,
     spend_materials,
     unequip_item,
     withdraw_listing,
+)
+from classes.equipment.protection import (
+    PROTECTED_MESSAGES,
+    lock_result_text,
+    mass_salvage_confirm_text,
+    mass_salvage_nothing_text,
+    mass_salvage_result_text,
+    parse_salvage_filters,
+    plan_mass_salvage,
 )
 from classes.equipment.card import preview_loadout, render_armory
 from utils.checks import has_char, is_gm
@@ -188,7 +200,11 @@ class Equipment(commands.Cog):
         That roll is independent of the ice-dragon weapon drop. Higher dragons
         are more likely to pay, and more likely to pay a higher good. Legendary
         materials only come from Legendary crates and the Abyssal Maw. `{prefix}gear salvage <id>` breaks one down for fewer
-        materials than it cost.
+        materials than it cost. `{prefix}gear salvageall [rarity/line/slot]`, or Salvage All on the Gear tab of
+        `{prefix}armory`, breaks many at once and always skips locked, worn, listed, tempered, and fully rolled pieces.
+
+        `{prefix}armorlock <id>` (or `{prefix}gear lock`) protects a piece: it cannot be salvaged, sold, given, or
+        traded until `{prefix}armorunlock <id>`. Worn pieces are protected the same way.
 
         Bound pieces and fully rolled discoveries cannot be given, traded, or
         sold. `{prefix}gear give`, `{prefix}gear pay`, `{prefix}trade add gear`,
@@ -798,11 +814,123 @@ class Equipment(commands.Cog):
             status, result = await salvage_piece(conn, ctx.author.id, equipment_id)
         if status == "missing":
             return await ctx.send("You do not own that piece.")
-        if status == "listed":
-            return await ctx.send("Take it off the gear shop before salvaging it.")
+        if status in PROTECTED_MESSAGES:
+            return await ctx.send(PROTECTED_MESSAGES[status].format(prefix=ctx.clean_prefix, verb="salvage"))
         await ctx.send(
             f"You break down **{result['name']}** and recover {self._material_text(result['materials'])}."
         )
+
+    @has_char()
+    @gear.command(
+        name="salvageall",
+        aliases=["salvage_all", "salvagemany"],
+        brief="Salvage every unprotected piece that matches",
+    )
+    @locale_doc
+    async def gear_salvageall(self, ctx, *, filters: str = ""):
+        _(
+            """`[filters]` - Optional words: rarities, lines, or slots
+
+            Break down many pieces at once, after a confirmation. Examples:
+            `{prefix}gear salvageall common uncommon`
+            `{prefix}gear salvageall razor helm`
+            `{prefix}gear salvageall` (every unprotected piece)
+
+            Lines are Aegis (Guardian), Razor (Slayer), and Oath (Vanguard). Salvage All always
+            skips pieces that are locked, worn, listed in the gear shop, tempered, or fully rolled.
+            Use `{prefix}armorlock <id>` to keep a piece safe.
+            """
+        )
+        if await self._closed(ctx):
+            return
+        wanted, unknown = parse_salvage_filters(filters)
+        if unknown:
+            shown = ", ".join(
+                f"`{discord.utils.escape_markdown(word[:24]).replace('`', '')}`" for word in unknown[:5]
+            )
+            return await ctx.send(
+                f"I do not know {shown}. "
+                "Use rarities (common, rare...), lines (aegis, razor, oath), or slots (helm, cuirass, greaves, sabatons).",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        async with self.bot.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT i.*,
+                       (l.equipment_id IS NOT NULL) AS equipped,
+                       (m.equipment_id IS NOT NULL) AS listed
+                  FROM equipment_items i
+                  LEFT JOIN equipment_loadout l ON l.equipment_id = i.id
+                  LEFT JOIN equipment_market m ON m.equipment_id = i.id
+                 WHERE i.owner_id = $1
+                 ORDER BY i.id
+                """,
+                ctx.author.id,
+            )
+        plan = plan_mass_salvage([dict(row) for row in rows], wanted)
+        if not plan["ids"]:
+            return await ctx.send(mass_salvage_nothing_text(plan["skipped"], ctx.clean_prefix))
+        if not await ctx.confirm(mass_salvage_confirm_text(plan, self._material_text(plan["materials"]))):
+            return await ctx.send("Salvage All cancelled. Nothing was broken down.")
+        async with self.bot.pool.acquire() as conn:
+            summary = await salvage_many(conn, ctx.author.id, plan["ids"])
+        await ctx.send(mass_salvage_result_text(summary, self._material_text(summary["materials"])))
+
+    async def _set_lock(self, ctx, equipment_id: int, locked: bool):
+        if await self._closed(ctx):
+            return
+        async with self.bot.pool.acquire() as conn:
+            status, item = await set_piece_lock(conn, ctx.author.id, equipment_id, locked)
+        await ctx.send(lock_result_text(status, item, equipment_id, ctx.clean_prefix))
+
+    @has_char()
+    @gear.command(name="lock", brief="Lock a piece so it cannot be salvaged, sold, given, or traded")
+    @locale_doc
+    async def gear_lock(self, ctx, equipment_id: int):
+        _(
+            """`<equipment_id>` - The piece id from the Gear tab of `{prefix}armory`
+
+            A locked piece cannot be salvaged (alone or by Salvage All), listed, given, or traded.
+            You can still wear, temper, and enchant it. Same as `{prefix}armorlock`.
+            """
+        )
+        await self._set_lock(ctx, equipment_id, True)
+
+    @has_char()
+    @gear.command(name="unlock", brief="Unlock a piece")
+    @locale_doc
+    async def gear_unlock(self, ctx, equipment_id: int):
+        _(
+            """`<equipment_id>` - The piece id from the Gear tab of `{prefix}armory`
+
+            Remove the lock so the piece can be salvaged, sold, given, or traded again. Same as `{prefix}armorunlock`.
+            """
+        )
+        await self._set_lock(ctx, equipment_id, False)
+
+    @has_char()
+    @commands.command(name="armorlock", brief="Lock an armor piece, like weaponlock")
+    @locale_doc
+    async def armorlock(self, ctx, equipment_id: int):
+        _(
+            """`<equipment_id>` - The piece id from the Gear tab of `{prefix}armory`
+
+            A locked piece cannot be salvaged (alone or by Salvage All), listed, given, or traded.
+            """
+        )
+        await self._set_lock(ctx, equipment_id, True)
+
+    @has_char()
+    @commands.command(name="armorunlock", brief="Unlock an armor piece, like weaponunlock")
+    @locale_doc
+    async def armorunlock(self, ctx, equipment_id: int):
+        _(
+            """`<equipment_id>` - The piece id from the Gear tab of `{prefix}armory`
+
+            Remove the lock from an armor piece.
+            """
+        )
+        await self._set_lock(ctx, equipment_id, False)
 
     @has_char()
     @gear.command(name="give", brief="Give a tradable piece to someone")
@@ -830,6 +958,8 @@ class Equipment(commands.Cog):
             return await ctx.send("You do not own that piece.")
         if status == "bound":
             return await ctx.send("That piece is bound and cannot be given.")
+        if status in PROTECTED_MESSAGES:
+            return await ctx.send(PROTECTED_MESSAGES[status].format(prefix=ctx.clean_prefix, verb="give"))
         await ctx.send(f"You give piece `{equipment_id}` to {member.mention}.")
 
     @has_char()
@@ -895,6 +1025,10 @@ class Equipment(commands.Cog):
             return await ctx.send("You do not own that piece.")
         if status == "bound":
             return await ctx.send("That piece is bound and cannot be listed.")
+        if status in PROTECTED_MESSAGES:
+            return await ctx.send(PROTECTED_MESSAGES[status].format(prefix=ctx.clean_prefix, verb="list"))
+        if status == "price":
+            return await ctx.send("Price must be from 1 to 100,000,000.")
         await ctx.send(f"You list **{item['name']}** for **${price:,}**. See `$gear shop`.")
 
     @gear.command(name="shop", brief="Browse the gear shop")
@@ -935,13 +1069,16 @@ class Equipment(commands.Cog):
         messages = {
             "missing": "That listing is gone.",
             "self": "You cannot buy your own listing.",
-            "bound": "That listing was withdrawn because the piece can no longer be traded.",
+            "bound": "That listing was withdrawn because the piece can no longer be sold (bound, locked, or worn).",
             "poor": "You cannot afford that listing.",
             "changed": "That listing's price changed. Open the shop again to see the new price.",
         }
         if status != "bought":
             return await ctx.send(messages.get(status, "The purchase did not complete."))
         await ctx.send(f"You buy **{result['name']}** for **${result['price']:,}**.")
+        from cogs.equipment.shop import notify_gear_sale
+
+        await notify_gear_sale(self.bot, result)
 
     @has_char()
     @gear.command(name="unsell", brief="Take your piece off the gear shop")
