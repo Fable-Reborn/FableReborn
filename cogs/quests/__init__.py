@@ -5450,7 +5450,7 @@ class Quests(commands.Cog):
             return False, "This quest is locked to support server boosters."
         patreon_tier = self._normalize_patreon_tier(access.get("patreon_tier"))
         if patreon_tier:
-            rank = await self.bot.get_donator_rank(user_id)
+            rank = await self.bot.get_donator_rank_safe(user_id)
             required_rank = getattr(DonatorRank, patreon_tier)
             if not rank or rank < required_rank:
                 return False, f"This quest requires Patreon tier **{patreon_tier}** or higher."

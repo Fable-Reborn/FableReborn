@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import sys
+import time
 import traceback
 
 from decimal import Decimal
@@ -85,6 +86,14 @@ CITY_VAULT_MULTIPLIERS = {
     3: (3, 1),
     4: (4, 1),
 }
+
+
+class TierLookupUnavailable(Exception):
+    """A donator rank lookup where Discord refused a guild. Carries the partial answer."""
+
+    def __init__(self, result):
+        super().__init__("donator rank lookup incomplete")
+        self.result = result
 
 
 class Bot(commands.AutoShardedBot):
@@ -1294,7 +1303,7 @@ class Bot(commands.AutoShardedBot):
 
         return sources
 
-    def _resolve_numeric_patreon_tier_from_role_ids(self, member_roles):
+    def _resolve_numeric_patreon_tier_from_role_ids(self, member_roles, *, include_booster: bool = True):
         highest_tier = 0
         member_role_ids = {int(role_id) for role_id in member_roles}
 
@@ -1303,11 +1312,60 @@ class Bot(commands.AutoShardedBot):
                 if role_id in member_role_ids:
                     highest_tier = max(highest_tier, int(tier))
 
-        _booster_guild_id, booster_role_id = self._get_patreon_booster_membership_config()
-        if booster_role_id and booster_role_id in member_role_ids:
-            highest_tier = max(highest_tier, 1)
+        if include_booster:
+            _booster_guild_id, booster_role_id = self._get_patreon_booster_membership_config()
+            if booster_role_id and booster_role_id in member_role_ids:
+                highest_tier = max(highest_tier, 1)
 
         return highest_tier
+
+    SUPPORTER_STATUS_TTL = 300
+
+    async def get_supporter_status(self, user_id) -> dict:
+        """{"tier": paid tier 0-4, "booster": bool} for profile flair. Cached 5 minutes.
+
+        Boosters count as tier 1 for perks, and that 1 gets saved on the
+        profile, where it stays after they stop boosting. For flair we only
+        want a paid tier, so a saved tier of 1 counts only when a paid Patreon
+        role backs it. Saved tiers of 2 and up always count. A tier-1 key
+        redeemer without the role shows no tier pill; perks are unaffected.
+        """
+        user_id = self._coerce_user_id(user_id)
+        cache = self.__dict__.setdefault("_supporter_status_cache", {})
+        now = time.monotonic()
+        hit = cache.get(user_id)
+        if hit and hit[0] > now:
+            return dict(hit[1])
+        status = await self._lookup_supporter_status(user_id)
+        if len(cache) > 5000:
+            cache.clear()
+        cache[user_id] = (now + self.SUPPORTER_STATUS_TTL, status)
+        return dict(status)
+
+    async def _lookup_supporter_status(self, user_id) -> dict:
+        stored = await self.pool.fetchval('SELECT "tier" FROM profile WHERE "user" = $1;', user_id)
+        try:
+            stored = int(stored or 0)
+        except (TypeError, ValueError):
+            stored = 0
+        booster_guild_id, booster_role_id = self._get_patreon_booster_membership_config()
+        paid_role_tier = 0
+        booster = False
+        for guild_id in self._get_patreon_tier_lookup_guild_ids():
+            member = await self._fetch_member_for_tier_lookup(guild_id, user_id)
+            if member is None:
+                continue
+            roles = {int(role) for role in member.get("roles", [])}
+            paid_role_tier = max(
+                paid_role_tier,
+                self._resolve_numeric_patreon_tier_from_role_ids(roles, include_booster=False),
+            )
+            if booster_role_id and int(booster_role_id) in roles and (
+                booster_guild_id is None or int(guild_id) == int(booster_guild_id)
+            ):
+                booster = True
+        paid = max(paid_role_tier, stored if stored >= 2 else 0)
+        return {"tier": max(0, min(int(paid), 4)), "booster": booster}
 
     def _get_patreon_tier_lookup_guild_ids(self):
         guild_ids = []
@@ -1322,6 +1380,33 @@ class Bot(commands.AutoShardedBot):
 
         return guild_ids
 
+    async def _fetch_member_for_tier_lookup(self, guild_id, user_id, errors=None):
+        """Raw member data from one tier guild, or None.
+
+        Not being in the guild is normal. Discord refusing the lookup (the bot
+        was removed from a configured server, missing access, an outage) must
+        not break every patron and booster command, so it is skipped and
+        logged once per guild.
+        """
+        try:
+            return await self.http.get_member(guild_id, user_id)
+        except discord.NotFound:
+            return None
+        except discord.HTTPException as exc:
+            if errors is not None:
+                errors.append(guild_id)
+            warned = self.__dict__.setdefault("_tier_lookup_warned_guilds", set())
+            if guild_id not in warned:
+                warned.add(guild_id)
+                logging.getLogger(__name__).warning(
+                    "Donator tier lookup skipped guild %s (HTTP %s: %s). "
+                    "Check that the bot is still in this server.",
+                    guild_id,
+                    getattr(exc, "status", "?"),
+                    getattr(exc, "text", exc),
+                )
+            return None
+
     @cache(maxsize=8096)
     async def get_donator_rank(self, user_id):
         booster_guild_id, _booster_role_id = self._get_patreon_booster_membership_config()
@@ -1334,10 +1419,10 @@ class Bot(commands.AutoShardedBot):
             return False
 
         found_member = False
+        errored = []
         for guild_id in guild_ids:
-            try:
-                member = await self.http.get_member(guild_id, user_id)
-            except discord.NotFound:
+            member = await self._fetch_member_for_tier_lookup(guild_id, user_id, errors=errored)
+            if member is None:
                 continue
 
             found_member = True
@@ -1345,7 +1430,19 @@ class Bot(commands.AutoShardedBot):
             if rank := self._resolve_donator_rank_from_role_ids(member_roles):
                 return rank
 
-        return None if found_member else False
+        result = None if found_member else False
+        if errored:
+            # Raising keeps this answer out of the cache; a Discord blip must not
+            # stick a supporter as "not a donator" until restart.
+            raise TierLookupUnavailable(result)
+        return result
+
+    async def get_donator_rank_safe(self, user_id):
+        """`get_donator_rank`, but a lookup Discord refused reads as no rank instead of raising."""
+        try:
+            return await self.get_donator_rank(user_id)
+        except TierLookupUnavailable as exc:
+            return exc.result
 
     async def get_effective_donator_tier(self, user_id, *, sync_profile: bool = False) -> int:
         user_id = self._coerce_user_id(user_id)
@@ -1363,9 +1460,8 @@ class Bot(commands.AutoShardedBot):
         role_tier = 0
         found_member = False
         for guild_id in self._get_patreon_tier_lookup_guild_ids():
-            try:
-                member = await self.http.get_member(guild_id, user_id)
-            except discord.NotFound:
+            member = await self._fetch_member_for_tier_lookup(guild_id, user_id)
+            if member is None:
                 continue
 
             found_member = True
@@ -1373,7 +1469,7 @@ class Bot(commands.AutoShardedBot):
             role_tier = max(role_tier, self._resolve_numeric_patreon_tier_from_role_ids(member_roles))
 
         if role_tier < 1 and not found_member:
-            role_rank = await self.get_donator_rank(user_id)
+            role_rank = await self.get_donator_rank_safe(user_id)
             if role_rank:
                 role_tier = max(role_tier, min(int(role_rank.value), 4))
 

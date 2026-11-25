@@ -43,25 +43,39 @@ async def log_event(
     slot: str | None = None,
     payload: dict | None = None,
 ) -> None:
-    """Append one gear event. Never raises into gameplay."""
+    """Append one gear event. Never raises into gameplay.
+
+    The insert runs in its own savepoint. Without it, a failed insert inside
+    the caller's transaction aborts that transaction, and the lock, listing,
+    or salvage the player was told about silently rolls back at COMMIT.
+    """
     try:
-        await conn.execute(
-            """
-            INSERT INTO equipment_events (
-                user_id, action, equipment_id, rarity, archetype, slot, payload
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-            """,
-            int(user_id),
-            str(action),
-            int(equipment_id) if equipment_id is not None else None,
-            str(rarity).lower() if rarity else None,
-            str(archetype).lower() if archetype else None,
-            str(slot).lower() if slot else None,
-            json.dumps(_jsonable(payload or {})),
-        )
+        transaction = getattr(conn, "transaction", None)
+        if transaction is None:
+            await _insert_event(conn, user_id, action, equipment_id, rarity, archetype, slot, payload)
+            return
+        async with transaction():
+            await _insert_event(conn, user_id, action, equipment_id, rarity, archetype, slot, payload)
     except Exception:
         log.exception("equipment balance log failed for %s", action)
+
+
+async def _insert_event(conn, user_id, action, equipment_id, rarity, archetype, slot, payload) -> None:
+    await conn.execute(
+        """
+        INSERT INTO equipment_events (
+            user_id, action, equipment_id, rarity, archetype, slot, payload
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        """,
+        int(user_id),
+        str(action),
+        int(equipment_id) if equipment_id is not None else None,
+        str(rarity).lower() if rarity else None,
+        str(archetype).lower() if archetype else None,
+        str(slot).lower() if slot else None,
+        json.dumps(_jsonable(payload or {})),
+    )
 
 
 def review_path() -> Path:

@@ -195,6 +195,39 @@ class SalvageAllLogTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(args[1] == "salvage" for args in logged))
 
 
+class LogSavepointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_insert_is_contained_in_a_savepoint(self):
+        from contextlib import asynccontextmanager
+        from classes.equipment.balance_log import log_event
+
+        entered = []
+
+        class Conn:
+            @asynccontextmanager
+            async def transaction(self):
+                entered.append("savepoint")
+                yield
+
+            async def execute(self, sql, *args):
+                raise RuntimeError("events table locked")
+
+        with self.assertLogs("classes.equipment.balance_log", level="ERROR"):
+            await log_event(Conn(), 1, "lock")
+        self.assertEqual(["savepoint"], entered)
+
+    async def test_conn_without_transactions_still_logs(self):
+        from classes.equipment.balance_log import log_event
+
+        seen = []
+
+        class Bare:
+            async def execute(self, sql, *args):
+                seen.append(args[1])
+
+        await log_event(Bare(), 1, "salvage")
+        self.assertEqual(["salvage"], seen)
+
+
 class ForgePityFlagTests(unittest.TestCase):
     def test_writer_no_longer_flags_pity_zero_bands(self):
         from pathlib import Path

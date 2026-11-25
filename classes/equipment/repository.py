@@ -126,6 +126,11 @@ SCHEMA_STATEMENTS = (
     "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS refine_fails INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS inscribe_fails INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS locked BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE equipment_market ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ",
+    # Listings made before expiry existed get a full week from the first boot that adds it.
+    "UPDATE equipment_market SET expires_at = NOW() + INTERVAL '7 days' WHERE expires_at IS NULL",
+    "CREATE INDEX IF NOT EXISTS equipment_market_expires_idx ON equipment_market (expires_at)",
+    "CREATE INDEX IF NOT EXISTS equipment_market_seller_idx ON equipment_market (seller_id)",
     "ALTER TABLE equipment_items DROP CONSTRAINT IF EXISTS equipment_items_refinement_chk",
     "ALTER TABLE equipment_items ADD CONSTRAINT equipment_items_refinement_chk CHECK (refinement BETWEEN 0 AND 7)",
     "ALTER TABLE equipment_items DROP CONSTRAINT IF EXISTS equipment_items_attunement_chk",
@@ -1560,7 +1565,21 @@ async def move_piece(
     return "moved"
 
 
-async def list_piece(conn, owner_id: int, equipment_id: int, price: int) -> tuple[str, dict | None]:
+async def list_piece(
+    conn,
+    owner_id: int,
+    equipment_id: int,
+    price: int,
+    *,
+    max_listings: int | None = None,
+    duration_days: int = 7,
+) -> tuple[str, dict | None]:
+    """List a piece, or relist it at a new price. Relisting renews the timer.
+
+    `max_listings` caps how many live listings the seller may have. A relist
+    of a piece already on the stall does not need a free slot.
+    Returns "full" with {"used", "max"} when the stall is full.
+    """
     # equipment_market.price is INTEGER, so a larger number would fail in the database.
     if not 1 <= int(price) <= MAX_LISTING_PRICE:
         return "price", None
@@ -1583,16 +1602,41 @@ async def list_piece(conn, owner_id: int, equipment_id: int, price: int) -> tupl
         protected = await piece_protection(conn, row, check_listed=False)
         if protected:
             return protected, None
+        # One seller at a time, so two quick listings cannot both take the last slot.
+        await conn.fetchval('SELECT 1 FROM profile WHERE "user" = $1 FOR UPDATE', int(owner_id))
+        relist = bool(
+            await conn.fetchval(
+                "SELECT 1 FROM equipment_market WHERE equipment_id = $1 AND seller_id = $2",
+                int(equipment_id),
+                int(owner_id),
+            )
+        )
+        used = int(
+            await conn.fetchval(
+                """
+                SELECT COUNT(*)
+                  FROM equipment_market
+                 WHERE seller_id = $1
+                   AND (expires_at IS NULL OR expires_at > NOW())
+                """,
+                int(owner_id),
+            )
+            or 0
+        )
+        if max_listings is not None and not relist and used >= int(max_listings):
+            return "full", {"used": used, "max": int(max_listings)}
+        days = max(1, int(duration_days))
         await conn.execute(
             """
-            INSERT INTO equipment_market (equipment_id, seller_id, price)
-            VALUES ($1, $2, $3)
+            INSERT INTO equipment_market (equipment_id, seller_id, price, expires_at)
+            VALUES ($1, $2, $3, NOW() + make_interval(days => $4))
             ON CONFLICT (equipment_id)
-            DO UPDATE SET price = EXCLUDED.price, published = NOW()
+            DO UPDATE SET price = EXCLUDED.price, published = NOW(), expires_at = EXCLUDED.expires_at
             """,
             int(equipment_id),
             int(owner_id),
             int(price),
+            days,
         )
         await log_event(
             conn,
@@ -1602,9 +1646,18 @@ async def list_piece(conn, owner_id: int, equipment_id: int, price: int) -> tupl
             rarity=row["rarity"],
             archetype=row["archetype"],
             slot=row["slot"],
-            payload={"price": int(price), "quality": int(row["quality"])},
+            payload={"price": int(price), "quality": int(row["quality"]), "days": days, "relist": relist},
         )
-        return "listed", dict(row)
+        listed = dict(row)
+        listed.update(
+            {
+                "days": days,
+                "relist": relist,
+                "used": used if relist else used + 1,
+                "max": None if max_listings is None else int(max_listings),
+            }
+        )
+        return "listed", listed
 
 
 async def withdraw_listing(conn, owner_id: int, equipment_id: int) -> str:
@@ -1641,7 +1694,7 @@ async def buy_listing(
     async with conn.transaction():
         listing = await conn.fetchrow(
             """
-            SELECT m.price, m.seller_id, i.*
+            SELECT m.price, m.seller_id, COALESCE(m.expires_at <= NOW(), FALSE) AS expired, i.*
               FROM equipment_market m
               JOIN equipment_items i ON i.id = m.equipment_id
              WHERE m.equipment_id = $1
@@ -1651,6 +1704,12 @@ async def buy_listing(
         )
         if listing is None:
             return "missing", None
+        if listing.get("expired"):
+            await conn.execute(
+                "DELETE FROM equipment_market WHERE equipment_id = $1",
+                int(equipment_id),
+            )
+            return "expired", None
         if int(listing["seller_id"]) == int(buyer_id):
             return "self", None
         unavailable = (
@@ -1707,17 +1766,18 @@ async def buy_listing(
         return "bought", {"name": listing["name"], "price": price, "seller_id": int(listing["seller_id"])}
 
 
-async def fetch_market(conn, limit: int = 25) -> list[dict]:
+async def fetch_market(conn, limit: int = 400) -> list[dict]:
     rows = await conn.fetch(
         """
         SELECT i.id, i.name, i.slot, i.rarity, i.archetype, i.quality, i.refinement,
                i.offense_value, i.defense_value, i.origin, i.bound, i.fully_rolled,
-               m.price, m.seller_id, m.published
+               m.price, m.seller_id, m.published, m.expires_at
           FROM equipment_market m
           JOIN equipment_items i ON i.id = m.equipment_id
          WHERE i.owner_id = m.seller_id
            AND i.bound = FALSE
            AND i.fully_rolled = FALSE
+           AND (m.expires_at IS NULL OR m.expires_at > NOW())
          ORDER BY m.published DESC
          LIMIT $1
         """,
@@ -1729,6 +1789,47 @@ async def fetch_market(conn, limit: int = 25) -> list[dict]:
         item["modifiers"] = modifiers.get(int(item["id"]), [])
         item["equipped"] = False
     return items
+
+
+async def expire_listings(conn, limit: int = 200) -> list[dict]:
+    """Take expired listings off the stall. The pieces never left the seller's armory.
+
+    DELETE ... RETURNING hands each row to exactly one caller, so every
+    cluster can run this and a seller is told once.
+    """
+    rows = await conn.fetch(
+        """
+        WITH gone AS (
+            DELETE FROM equipment_market
+             WHERE equipment_id IN (
+                   SELECT equipment_id
+                     FROM equipment_market
+                    WHERE expires_at <= NOW()
+                    ORDER BY expires_at
+                    LIMIT $1
+                      FOR UPDATE SKIP LOCKED
+             )
+            RETURNING equipment_id, seller_id, price
+        )
+        SELECT g.equipment_id, g.seller_id, g.price, i.name, i.rarity, i.archetype, i.slot
+          FROM gone g
+          LEFT JOIN equipment_items i ON i.id = g.equipment_id
+        """,
+        int(limit),
+    )
+    expired = [dict(row) for row in rows]
+    for row in expired:
+        await log_event(
+            conn,
+            int(row["seller_id"]),
+            "market_expire",
+            equipment_id=int(row["equipment_id"]),
+            rarity=row.get("rarity"),
+            archetype=row.get("archetype"),
+            slot=row.get("slot"),
+            payload={"price": int(row["price"])},
+        )
+    return expired
 
 
 async def gear_theme(conn, user_id: int) -> str:

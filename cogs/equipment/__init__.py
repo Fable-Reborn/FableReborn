@@ -63,7 +63,7 @@ from classes.equipment.definitions import (
     resolve_material,
     resolve_slot,
 )
-from classes.equipment.economy import craft_cost
+from classes.equipment.economy import craft_cost, listing_rules
 from classes.equipment.repository import (
     add_materials,
     buy_listing,
@@ -71,6 +71,7 @@ from classes.equipment.repository import (
     database_name,
     ensure_schema,
     equip_item,
+    expire_listings,
     feature_enabled,
     set_feature_enabled,
     fetch_equipped_weapons,
@@ -129,10 +130,42 @@ class Equipment(commands.Cog):
         self.bot.equipment_combat_enabled = self.available
         if self.schema_ready:
             self.refresh_switch.start()
+            self.expire_listing_sweep.start()
 
     async def cog_unload(self):
         if self.refresh_switch.is_running():
             self.refresh_switch.cancel()
+        if self.expire_listing_sweep.is_running():
+            self.expire_listing_sweep.cancel()
+
+    @tasks.loop(minutes=10)
+    async def expire_listing_sweep(self):
+        """Take expired gear shop listings down and tell each seller once."""
+        try:
+            async with self.bot.pool.acquire() as conn:
+                expired = await expire_listings(conn)
+        except Exception:
+            log.exception("Gear listing expiry sweep failed")
+            return
+        if not expired:
+            return
+        from cogs.equipment.shop import notify_listing_expired
+
+        for row in expired:
+            await notify_listing_expired(self.bot, row)
+
+    @expire_listing_sweep.before_loop
+    async def _before_expire_listing_sweep(self):
+        await self.bot.wait_until_ready()
+
+    async def _listing_rules_for(self, user_id: int) -> dict:
+        """Stall size and listing length for this player's donator tier."""
+        try:
+            tier = await self.bot.get_effective_donator_tier(user_id)
+        except Exception:
+            log.exception("Donator tier lookup failed for gear listing rules")
+            tier = 0
+        return listing_rules(tier)
 
     @tasks.loop(seconds=60)
     async def refresh_switch(self):
@@ -1012,15 +1045,28 @@ class Equipment(commands.Cog):
             """`<equipment_id>` - The piece id from the Gear tab of `{prefix}armory`
             `<price>` - The price in gold, from 1 to 100,000,000
 
-            List a tradable piece on `{prefix}gear shop`. Bound pieces cannot be listed.
+            List a tradable piece on `{prefix}gear shop`. Bound, locked, and worn pieces cannot be listed.
+
+            Everyone can keep 8 listings up for 7 days. Supporters get more room and longer
+            listings, up to 20 listings for 30 days. Listing a piece that is already up changes
+            its price and restarts its timer. When a listing runs out it comes down, the piece
+            stays in your armory, and you get a DM.
             """
         )
         if await self._closed(ctx):
             return
         if price < 1 or price > 100_000_000:
             return await ctx.send("Price must be from 1 to 100,000,000.")
+        rules = await self._listing_rules_for(ctx.author.id)
         async with self.bot.pool.acquire() as conn:
-            status, item = await list_piece(conn, ctx.author.id, equipment_id, price)
+            status, item = await list_piece(
+                conn,
+                ctx.author.id,
+                equipment_id,
+                price,
+                max_listings=rules["slots"],
+                duration_days=rules["days"],
+            )
         if status == "missing":
             return await ctx.send("You do not own that piece.")
         if status == "bound":
@@ -1029,7 +1075,16 @@ class Equipment(commands.Cog):
             return await ctx.send(PROTECTED_MESSAGES[status].format(prefix=ctx.clean_prefix, verb="list"))
         if status == "price":
             return await ctx.send("Price must be from 1 to 100,000,000.")
-        await ctx.send(f"You list **{item['name']}** for **${price:,}**. See `$gear shop`.")
+        if status == "full":
+            return await ctx.send(
+                f"Your stall is full (**{item['used']}/{item['max']}** listings). "
+                f"Take one down with `{ctx.clean_prefix}gear unsell <id>`, or wait for one to sell or expire."
+            )
+        verb = "relist" if item.get("relist") else "list"
+        await ctx.send(
+            f"You {verb} **{item['name']}** for **${price:,}**. It stays up for **{item['days']} days** "
+            f"(stall **{item['used']}/{item['max']}**). See `{ctx.clean_prefix}gear shop`."
+        )
 
     @gear.command(name="shop", brief="Browse the gear shop")
     @locale_doc
@@ -1072,6 +1127,7 @@ class Equipment(commands.Cog):
             "bound": "That listing was withdrawn because the piece can no longer be sold (bound, locked, or worn).",
             "poor": "You cannot afford that listing.",
             "changed": "That listing's price changed. Open the shop again to see the new price.",
+            "expired": "That listing has expired and was taken off the stall.",
         }
         if status != "bought":
             return await ctx.send(messages.get(status, "The purchase did not complete."))

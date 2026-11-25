@@ -294,6 +294,28 @@ CRAFT_COSTS = {
 }
 
 
+# Gear shop stall size and listing length by donator tier.
+# 0 is everyone; 1-4 are Adventurer, Warrior, Hero, Legendary Hero.
+# Everyone starts at a full week so listings are never a chore to keep up.
+LISTING_RULES = {
+    0: {"slots": 8, "days": 7},
+    1: {"slots": 10, "days": 10},
+    2: {"slots": 12, "days": 14},
+    3: {"slots": 15, "days": 21},
+    4: {"slots": 20, "days": 30},
+}
+
+
+def listing_rules(tier) -> dict:
+    """{"slots": n, "days": n} for a donator tier. Higher tiers use the top row."""
+    try:
+        tier = int(tier or 0)
+    except (TypeError, ValueError):
+        tier = 0
+    tier = max(0, min(tier, max(LISTING_RULES)))
+    return dict(LISTING_RULES[tier])
+
+
 def is_tradable(item) -> bool:
     """Equipping does not bind. Enhancement, a bound flag, or a discovery does."""
     if item.get("bound") or item.get("fully_rolled"):

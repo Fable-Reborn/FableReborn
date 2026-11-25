@@ -58,6 +58,7 @@ from utils.okapi import CLASSES as OKAPI_CLASS_ASSETS
 from .themes import THEMES, resolve_theme, theme_font, theme_background, add_theme_banner, draw_ornament, render_transcendent, render_fable, render_wishlight
 from .theme_contract import is_contract_alias, start_trade_in
 from .theme_picker import ProfileThemePicker
+from .supporter_pills import draw_supporter_pills, pills_for
 from .theme_unlocks import ThemeLocked, ensure_theme_schema, sync_theme_unlocks, save_theme, grant_theme, grant_random_theme, theme_drop_message
 from .themes import ASSET_ROOT as THEME_ASSET_ROOT
 
@@ -858,6 +859,8 @@ class ArmoryPaginatorView(discord.ui.View):
                     message = "That piece is already worn."
                 elif status == "closed":
                     message = "That armor slot is not open yet."
+                elif status == "listed":
+                    message = "That piece is listed in the gear shop. Take it down before wearing it."
                 else:
                     message = f"You wear **{worn['name']}**. Equipping does not bind it."
             else:
@@ -3157,6 +3160,18 @@ class Profile(commands.Cog):
         rw = tw(ribbon, label_font) + 34
         draw.rounded_rectangle((name_x, 250, name_x + rw, 294), radius=16, fill=((164, 120, 64, 245) if theme.classic else theme.background), outline=colors["border"], width=2)
         draw.text((name_x + 16, 260), ribbon, font=label_font, fill=colors["text"])
+        # Patron tier and Server Booster pills. Nothing is drawn for everyone else.
+        supporter_pills = pills_for(profile.get("supporter"))
+        if supporter_pills:
+            draw_supporter_pills(
+                draw,
+                supporter_pills,
+                name_x + rw,
+                250,
+                44,
+                header_rect[2] - 22,
+                card_font(21, "heading"),
+            )
         draw.text((name_x, 310), clip(f"Power {power:,}", value_font, 390), font=value_font, fill=colors["border"])
         draw.text((844, 310), clip(f"Luck Blessing {luck_percent:.2f}%", value_font, 390), font=value_font, fill=colors["muted"])
 
@@ -5303,6 +5318,12 @@ class Profile(commands.Cog):
                 profile_data["marriage"],
                 return_none=True,
             )
+
+        try:
+            profile_data["supporter"] = await self.bot.get_supporter_status(user.id)
+        except Exception:
+            _log.exception("Supporter status lookup failed for %s", user.id)
+            profile_data["supporter"] = None
 
         # Ordinary profiles also use permanent ownership when others view them.
         if theme_key is None:

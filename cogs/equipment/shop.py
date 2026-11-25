@@ -85,6 +85,62 @@ async def notify_gear_sale(bot, result: dict | None) -> bool:
         return False
 
 
+def expires_text(expires_at, now=None) -> str:
+    """`Expires in 2d 5h` for a listing, or `Expires soon` in the last hour."""
+    if expires_at is None:
+        return "No expiry"
+    import datetime as _dt
+
+    now = now or _dt.datetime.now(_dt.timezone.utc)
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=_dt.timezone.utc)
+    left = int((expires_at - now).total_seconds())
+    if left <= 3600:
+        return "Expires soon"
+    days, rest = divmod(left, 86400)
+    hours = rest // 3600
+    return f"Expires in {days}d {hours}h" if days else f"Expires in {hours}h"
+
+
+def listing_expired_dm_text(row: dict, prefix: str = "$") -> str:
+    name = row.get("name") or f"piece {int(row['equipment_id'])}"
+    return (
+        f"<@{int(row['seller_id'])}> ⌛ Your **{name}** listing in the gear shop expired and was taken down. "
+        f"It is still in your armory. Relist it with `{prefix}gear sell {int(row['equipment_id'])} <price>`."
+    )
+
+
+def _dm_prefix(bot) -> str:
+    """The prefix commands use in DMs, from config."""
+    try:
+        return str(bot.config.bot.global_prefix) or "$"
+    except Exception:
+        return "$"
+
+
+async def _send_dm(bot, user_id: int, content: str) -> bool:
+    try:
+        dm_channel = await bot.http.start_private_message(int(user_id))
+        with handle_message_parameters(
+            content=content,
+            allowed_mentions=discord.AllowedMentions(users=True, everyone=False, roles=False),
+        ) as params:
+            await bot.http.send_message(dm_channel.get("id"), params=params)
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    except Exception:
+        log.exception("Gear shop DM failed for %s", user_id)
+        return False
+
+
+async def notify_listing_expired(bot, row: dict | None) -> bool:
+    """DM the seller when a listing runs out. Never raises."""
+    if not row or not row.get("seller_id"):
+        return False
+    return await _send_dm(bot, int(row["seller_id"]), listing_expired_dm_text(row, _dm_prefix(bot)))
+
+
 def _trim(value: float) -> str:
     text = f"{value:.2f}".rstrip("0").rstrip(".")
     return text or "0"
@@ -204,6 +260,7 @@ class ShopBuyConfirm(discord.ui.View):
             "self": "You cannot buy your own listing.",
             "bound": "That listing was withdrawn because the piece can no longer be sold (bound, locked, or worn).",
             "poor": "You cannot afford that listing.",
+            "expired": "That listing has expired and was taken off the stall.",
         }
         try:
             if status == "changed":
@@ -431,6 +488,8 @@ class GearShopView(discord.ui.View):
             )
         if start > 0 or end < len(shown):
             lines.append(f"Showing {start + 1}–{end} of {len(shown)}")
+        if len(shown) > 25:
+            lines.append("The menu lists 25 at a time. Use filters or sorting to find the rest.")
         return "\n".join(lines)
 
     def selected_text(self) -> str:
@@ -458,6 +517,7 @@ class GearShopView(discord.ui.View):
             f"Blessing +{_trim(numbers['blessing'] * 100)}% · Ward +{_trim(numbers['ward'])}\n"
             f"Enchantment: {_enchant_line(item)[:180]}\n"
             f"Seller: <@{int(item['seller_id'])}>\n"
+            f"{expires_text(item.get('expires_at'))}\n"
             f"Price: **{_gold(price)}**\n"
             f"Your gold: {_gold(self.gold)}\n"
             f"{purse}"

@@ -38,7 +38,9 @@ class FakeArmoryDB:
     def __init__(self, items=(), *, worn=(), market=None, money=None):
         self.items = {int(item["id"]): dict(item) for item in items}
         self.worn = set(worn)
-        self.market = dict(market or {})  # equipment_id -> (seller_id, price)
+        # equipment_id -> (seller_id, price) or (seller_id, price, expired)
+        self.market = {int(k): tuple(v) for k, v in (market or {}).items()}
+        self.listing_days: dict[int, int] = {}
         self.money = dict(money or {})
         self.materials: dict[tuple[int, str], int] = {}
         self.events: list[str] = []
@@ -59,7 +61,8 @@ class FakeArmoryDB:
             item = self.items.get(int(args[0]))
             if entry is None or item is None:
                 return None
-            return {**item, "seller_id": entry[0], "price": entry[1]}
+            expired = bool(entry[2]) if len(entry) > 2 else False
+            return {**item, "seller_id": entry[0], "price": entry[1], "expired": expired}
         if "FROM equipment_items" in sql:
             item = self._owned(args[0], args[1] if len(args) > 1 else None)
             return dict(item) if item else None
@@ -68,8 +71,19 @@ class FakeArmoryDB:
     async def fetchval(self, sql, *args):
         if "FROM equipment_loadout WHERE equipment_id" in sql:
             return 1 if int(args[0]) in self.worn else None
+        if "FROM equipment_market WHERE equipment_id = $1 AND seller_id = $2" in sql:
+            entry = self.market.get(int(args[0]))
+            return 1 if entry and int(entry[0]) == int(args[1]) else None
         if "FROM equipment_market WHERE equipment_id" in sql:
             return 1 if int(args[0]) in self.market else None
+        if "SELECT COUNT(*)" in sql and "FROM equipment_market" in sql:
+            return sum(
+                1
+                for entry in self.market.values()
+                if int(entry[0]) == int(args[0]) and not (len(entry) > 2 and entry[2])
+            )
+        if 'FROM profile WHERE "user" = $1 FOR UPDATE' in sql:
+            return 1
         if "DELETE FROM equipment_items" in sql:
             if self._owned(args[0], args[1]):
                 del self.items[int(args[0])]
@@ -109,7 +123,9 @@ class FakeArmoryDB:
         elif "UPDATE equipment_items SET locked" in sql:
             self.items[int(args[0])]["locked"] = bool(args[1])
         elif "INSERT INTO equipment_market" in sql:
-            self.market[int(args[0])] = (int(args[1]), int(args[2]))
+            self.market[int(args[0])] = (int(args[1]), int(args[2]), False)
+            if len(args) > 3:
+                self.listing_days[int(args[0])] = int(args[3])
         elif "DELETE FROM equipment_market" in sql:
             self.market.pop(int(args[0]), None)
         elif "SET owner_id" in sql:
