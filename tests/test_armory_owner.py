@@ -26,6 +26,8 @@ invoke_callback_succeeded = HELPERS["invoke_callback_succeeded"]
 armory_item_matches_gear_filters = HELPERS["armory_item_matches_gear_filters"]
 armory_gear_filter_labels = HELPERS["armory_gear_filter_labels"]
 ARMORY_GEAR_FILTER_OPTIONS = HELPERS["ARMORY_GEAR_FILTER_OPTIONS"]
+armory_name_matches = HELPERS["armory_name_matches"]
+armory_clean_search = HELPERS["armory_clean_search"]
 
 
 class FakeResponse:
@@ -202,6 +204,42 @@ class ArmoryOwnerTests(unittest.IsolatedAsyncioTestCase):
         enchant_values = [value for value, _label, _emoji in ARMORY_GEAR_FILTER_OPTIONS if value.startswith("enchant")]
         self.assertEqual(["enchant:any"], enchant_values)
         self.assertEqual(armory_gear_filter_labels({"line:guardian", "slot:head"}), "Aegis (Guardian) · Helm")
+
+
+class ArmoryNameSearchTests(unittest.TestCase):
+    sword = {"name": "Dragonbone Blade", "type": "Sword", "element": "Fire"}
+    axe = {"name": "Frost Cleaver", "type": "Axe", "element": "Water"}
+    renamed = {"name": "Mr Pointy", "original_name": "Ancient Spear", "type": "Spear"}
+
+    def test_plain_text_matches_anywhere_ignoring_case(self):
+        self.assertTrue(armory_name_matches(self.sword, "dragon"))
+        self.assertTrue(armory_name_matches(self.sword, "BONE"))
+        self.assertTrue(armory_name_matches(self.sword, "sword"))
+        self.assertTrue(armory_name_matches(self.sword, "fire"))
+        self.assertFalse(armory_name_matches(self.axe, "dragon"))
+
+    def test_wildcards(self):
+        self.assertTrue(armory_name_matches(self.sword, "*blade"))
+        self.assertFalse(armory_name_matches(self.sword, "blade*"))
+        self.assertTrue(armory_name_matches(self.sword, "dragon*"))
+        self.assertTrue(armory_name_matches(self.axe, "fr?st*"))
+        self.assertTrue(armory_name_matches(self.axe, "*clea*"))
+        self.assertFalse(armory_name_matches(self.axe, "*blade"))
+
+    def test_renamed_weapons_still_found_by_original_name(self):
+        self.assertTrue(armory_name_matches(self.renamed, "pointy"))
+        self.assertTrue(armory_name_matches(self.renamed, "ancient"))
+
+    def test_empty_search_matches_everything_and_input_is_tidied(self):
+        self.assertTrue(armory_name_matches(self.axe, ""))
+        self.assertTrue(armory_name_matches(self.axe, None))
+        self.assertEqual("frost cleaver", armory_clean_search("  Frost   CLEAVER "))
+        self.assertEqual(40, len(armory_clean_search("x" * 99)))
+
+    def test_brackets_are_literal_not_patterns(self):
+        odd = {"name": "Blade [Old]", "type": "Sword"}
+        self.assertTrue(armory_name_matches(odd, "*[old]"))
+        self.assertTrue(armory_name_matches(odd, "[old"))
 
 
 if __name__ == "__main__":

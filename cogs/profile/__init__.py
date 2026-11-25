@@ -152,6 +152,36 @@ ARMORY_GEAR_FILTER_OPTIONS = (
 )
 
 
+ARMORY_SEARCH_MAX = 40
+
+
+def armory_clean_search(query) -> str:
+    """Lowercase, single spaces, at most ARMORY_SEARCH_MAX characters. Empty means no search."""
+    return " ".join(str(query or "").lower().split())[:ARMORY_SEARCH_MAX]
+
+
+def armory_name_matches(item, query) -> bool:
+    """Weapon name search. Plain text matches anywhere in the name, type, or element.
+
+    `*` (any run of letters) and `?` (one letter) work as wildcards, so `*blade`
+    finds names ending in blade and `fire*` finds names starting with fire.
+    """
+    query = armory_clean_search(query)
+    if not query:
+        return True
+    haystack = [
+        str(item.get(key) or "").lower()
+        for key in ("name", "original_name", "type", "element")
+        if item.get(key)
+    ]
+    if "*" in query or "?" in query:
+        import fnmatch
+
+        pattern = query.replace("[", "[[]")
+        return any(fnmatch.fnmatchcase(text, pattern) for text in haystack)
+    return any(query in text for text in haystack)
+
+
 def armory_item_has_enchantment(item) -> bool:
     if "has_enchantment" in item:
         return bool(item["has_enchantment"])
@@ -242,10 +272,18 @@ class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
     )
     lowest = discord.ui.TextInput(label="Minimum total stat", default="0", max_length=4)
     highest = discord.ui.TextInput(label="Maximum total stat", default="201", max_length=4)
+    search = discord.ui.TextInput(
+        label="Name search (optional)",
+        required=False,
+        placeholder="dragon, *blade, fire*  (* and ? are wildcards)",
+        max_length=40,
+    )
 
     def __init__(self, armory_view: "ArmoryPaginatorView"):
         super().__init__()
         self.armory_view = armory_view
+        if armory_view.search:
+            self.search.default = armory_view.search
 
     async def on_submit(self, interaction: discord.Interaction):
         if not await _require_armory_owner(self.armory_view.ctx, interaction):
@@ -266,6 +304,7 @@ class ArmoryFilterModal(discord.ui.Modal, title="Filter Armory"):
             itemtype=str(self.item_type.value).strip() or "All",
             lowest=low,
             highest=high,
+            search=armory_clean_search(self.search.value) or None,
         )
 
 
@@ -618,10 +657,12 @@ class ArmoryPaginatorView(discord.ui.View):
         highest: int = 201,
         itemtype: str = "All",
         armor_slot: str | None = None,
+        search: str | None = None,
     ):
         super().__init__(timeout=timeout)
         self.ctx = ctx
         self.cog = cog
+        self.search = armory_clean_search(search) or None
         self.pages = pages  # Each element is a list of items for that page
         self.embeds = embeds
         self.catalog = catalog
@@ -703,7 +744,10 @@ class ArmoryPaginatorView(discord.ui.View):
         items = armory_sort_equipped_first(items, catalog=self.catalog, filters=self.gear_filters)
         self.pages = list(chunks(items, 5))
         self.embeds = [
-            self.cog.invembed(self.ctx, page, index, len(self.pages) - 1, title=self.embed_title)
+            self.cog.invembed(
+                self.ctx, page, index, len(self.pages) - 1, title=self.embed_title,
+                search=self.search if self.catalog == "weapons" else None,
+            )
             for index, page in enumerate(self.pages)
         ]
         self.current_page = 0
@@ -939,6 +983,7 @@ class ArmoryPaginatorView(discord.ui.View):
             rows = await self.cog._fetch_armory_weapons(
                 self.ctx.author.id, self.itemtype or "All", self.lowest, self.highest
             )
+            rows = [row for row in rows if armory_name_matches(row, self.search)]
             title = None
         self.embed_title = title
         if not rows:
@@ -946,7 +991,11 @@ class ArmoryPaginatorView(discord.ui.View):
             self.embeds = [
                 discord.Embed(
                     title=title or _("{user}'s inventory includes").format(user=self.ctx.disp),
-                    description="Nothing in this range right now. Use Filters or Gear to look elsewhere.",
+                    description=(
+                        f"No weapons match `{self.search}`. Use Filters to change or clear the search."
+                        if self.search
+                        else "Nothing in this range right now. Use Filters or Gear to look elsewhere."
+                    ),
                     colour=discord.Colour.blurple(),
                 )
             ]
@@ -1181,15 +1230,17 @@ class ArmoryPaginatorView(discord.ui.View):
             rows = await self.cog._fetch_armory_weapons(
                 self.ctx.author.id, "All", self.lowest, self.highest
             )
+            rows = [row for row in rows if armory_name_matches(row, self.search)]
             if not rows:
                 return await interaction.response.send_message(
-                    "Your weapon inventory is empty.", ephemeral=True
+                    f"No weapons match `{self.search}`." if self.search else "Your weapon inventory is empty.",
+                    ephemeral=True,
                 )
             title = None
             self.embed_title = title
             pages = list(chunks(rows, 5))
             embeds = [
-                self.cog.invembed(self.ctx, page, index, len(pages) - 1, title=title)
+                self.cog.invembed(self.ctx, page, index, len(pages) - 1, title=title, search=self.search)
                 for index, page in enumerate(pages)
             ]
             self.cached_pages[target] = pages
@@ -5623,7 +5674,7 @@ class Profile(commands.Cog):
         )
         return [dict(row) for row in rows]
 
-    def invembed(self, ctx, ret, currentpage, maxpage, title=None):
+    def invembed(self, ctx, ret, currentpage, maxpage, title=None, search=None):
         result = discord.Embed(
             title=title or _("{user}'s inventory includes").format(user=ctx.disp),
             colour=discord.Colour.blurple(),
@@ -5688,11 +5739,10 @@ class Profile(commands.Cog):
                 inline=False,
             )
 
-        result.set_footer(
-            text=_("Page {page} of {maxpages}").format(
-                page=currentpage + 1, maxpages=maxpage + 1
-            )
-        )
+        footer = _("Page {page} of {maxpages}").format(page=currentpage + 1, maxpages=maxpage + 1)
+        if search:
+            footer += f" · Search: {search}"
+        result.set_footer(text=footer)
         return result
 
     def _inventory_chunk_lines(self, lines: list[str], *, limit: int = 950) -> list[str]:
@@ -6528,11 +6578,14 @@ class Profile(commands.Cog):
             itemtype: str | None = "All",
             lowest: IntFromTo(0, 201) = 0,
             highest: IntFromTo(0, 201) = 201,
+            *,
+            search: str | None = None,
     ):
         _(
             """`[itemtype]` - The type of item to show; defaults to all items. Armor filters are `armor`, `helm`, `cuirass`, `greaves`, and `sabatons`
             `[lowest]` - The lower boundary of items to show; defaults to 0
             `[highest]` - The upper boundary of items to show; defaults to 101
+            `[search]` - Optional weapon name search, e.g. `{prefix}armory all 0 201 dragon`. `*` and `?` work as wildcards (`*blade`, `fire*`)
 
             Show your gear items. Items that are in the market will not be shown.
 
@@ -6583,6 +6636,14 @@ class Profile(commands.Cog):
             ret = await self._fetch_armory_weapons(ctx.author.id, itemtype, lowest, highest)
             catalog = "weapons"
             embed_title = None
+            search = armory_clean_search(search) or None
+            if search:
+                ret = [item for item in ret if armory_name_matches(item, search)]
+                if not ret:
+                    return await ctx.send(
+                        f"No weapons match `{search}`. Try fewer letters, or `*` as a wildcard.",
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
 
         if not ret:
             if armor_slot:
@@ -6596,7 +6657,10 @@ class Profile(commands.Cog):
         maxpage = len(allitems) - 1
 
         embeds = [
-            self.invembed(ctx, chunk, idx, maxpage, title=embed_title)
+            self.invembed(
+                ctx, chunk, idx, maxpage, title=embed_title,
+                search=search if catalog == "weapons" else None,
+            )
             for idx, chunk in enumerate(allitems)
         ]
 
@@ -6610,6 +6674,7 @@ class Profile(commands.Cog):
             highest=highest,
             itemtype=itemtype if catalog == "weapons" else "All",
             armor_slot=armor_slot if catalog == "armor" else None,
+            search=search if catalog == "weapons" else None,
         )
         await view.start()
 
