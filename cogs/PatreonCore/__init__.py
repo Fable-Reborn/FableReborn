@@ -1404,8 +1404,8 @@ class PatreonCore(commands.Cog):
         else:
             await ctx.send("Token refresh failed. Check logs/config.")
 
-    @commands.command()
-    @user_cooldown(2764800)  # 32 days
+    @commands.command(aliases=["redeemweapontoken", "redeemtokens", "redeemtoken"])
+    @user_cooldown(2764800, identifier="redeemweapontokens")  # 32 days, shared by every alias
     async def redeemweapontokens(self, ctx):
         """Redeem 5 weapon tokens if you are a patron (tier 1+) or a server booster."""
         # Every path must answer. The global error handler stays silent on

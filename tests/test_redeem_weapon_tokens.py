@@ -108,5 +108,10 @@ class RedeemTests(unittest.IsolatedAsyncioTestCase):
         cog.bot.reset_cooldown.assert_not_awaited()
 
 
+class WiringTests(unittest.TestCase):
+    def test_singular_spelling_works(self):
+        self.assertIn("redeemweapontoken", PatreonCore.redeemweapontokens.aliases)
+
+
 if __name__ == "__main__":
     unittest.main()
