@@ -538,6 +538,50 @@ class GMEvents(commands.Cog):
             allowed_mentions=NO_PINGS,
         )
 
+    @commands.command(name="silentbid", hidden=True, brief=_("Place a sealed bid"))
+    @locale_doc
+    async def silentbid(self, ctx, amount: str):
+        _(
+            """`<amount>` - your bid, e.g. `5000`, `5,000`, `5k`, `1.5m`
+            Places or raises your sealed bid on the live silent auction.
+            Your message is deleted straight away and the confirmation is sent to your DMs.
+            For full privacy, use this command in a DM with the bot or use the auction's button."""
+        )
+        deleted = True
+        if ctx.guild is not None:
+            try:
+                await ctx.message.delete()
+            except discord.HTTPException:
+                deleted = False
+        try:
+            parsed = logic.parse_amount(amount)
+        except ValueError as exc:
+            message = _(str(exc))
+        else:
+            auction_id = await self.bot.pool.fetchval(
+                "SELECT id FROM silent_auctions WHERE status = 'open' ORDER BY id DESC LIMIT 1"
+            )
+            if auction_id is None:
+                message = _("There is no live silent auction.")
+            else:
+                _ok, message = await self.place_silent_bid(ctx.author.id, auction_id, parsed)
+        if not deleted:
+            message += "\n" + _(
+                "⚠️ I couldn't delete your command, so your bid may have been visible. "
+                "Use the auction's button or DM me next time."
+            )
+        try:
+            await ctx.author.send(message)
+        except discord.HTTPException:
+            if ctx.guild is not None:  # no amounts in the public reply
+                await ctx.send(
+                    _("{user}, I couldn't DM you the result. Open your DMs and use the auction's button to check your bid.").format(
+                        user=ctx.author.mention
+                    ),
+                    delete_after=15,
+                    allowed_mentions=discord.AllowedMentions(users=[ctx.author]),
+                )
+
     # ==================================================================== RAFFLE
 
     def _raffle_embed(self, row, tickets: int = 0, entrants: int = 0) -> discord.Embed:
