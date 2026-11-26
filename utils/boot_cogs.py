@@ -35,6 +35,7 @@ EXTRA_COGS = (
     "cogs.wish",         # birthday wishes: $wish, staff approval, $wish redeem, the card
     "cogs.equipment",    # armory. Stays closed until a GM runs `$gear switch on`
     "cogs.supporterboard",  # Hall of Supporters: $supporters setup #channel, refreshed hourly
+    "cogs.gm_events",    # GM silent (sealed-bid) auctions and raffles: $gmsilent, $gmraffle, $raffle buy
 )
 # Quest campaigns, faction-aware conversations and shops share the Factions service, so it loads
 # ahead of Quests even on older configs.

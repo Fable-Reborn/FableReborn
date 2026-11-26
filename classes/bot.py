@@ -1668,8 +1668,13 @@ class Bot(commands.AutoShardedBot):
             gear_armor,
         )
 
-    async def log_transaction(self, ctx, from_, to, subject, data, conn=None):
-        """Logs a transaction."""
+    async def log_transaction(
+        self, ctx, from_, to, subject, data, conn=None, command_name=None
+    ):
+        """Logs a transaction.
+
+        ``ctx`` may be ``None`` (button/modal interactions have no context); pass
+        ``command_name`` then so the log still says where the money moved."""
         from_ = from_.id if isinstance(from_, (discord.Member, discord.User)) else from_
         to = to.id if isinstance(to, (discord.Member, discord.User)) else to
         timestamp = datetime.datetime.now()
@@ -1690,6 +1695,7 @@ class Bot(commands.AutoShardedBot):
             "trade",
             "alliance",
             "raid",
+            "raffle",
         ]
 
         id_map = {
@@ -1707,7 +1713,7 @@ class Bot(commands.AutoShardedBot):
         From: {from_readable}
         To: {to_readable}
         Subject: {subject}
-        Command: {ctx.command.qualified_name}
+        Command: {command_name or (ctx.command.qualified_name if ctx is not None and getattr(ctx, "command", None) else "unknown")}
         Data: {data_}
         """
 
@@ -1728,6 +1734,8 @@ class Bot(commands.AutoShardedBot):
                 timestamp,
             )
         except Exception as e:
+            if ctx is None:
+                raise
             await ctx.send(e)
         if subject == "shop":
             await conn.execute(
