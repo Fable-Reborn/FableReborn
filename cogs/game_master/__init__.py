@@ -51,6 +51,12 @@ from cogs.shard_communication import user_on_cooldown as user_cooldown
 from utils import random
 from utils.checks import has_char, is_gm
 from utils.i18n import _, locale_doc
+from cogs.gm_events.announce import (
+    EventAlreadyLive,
+    allowed_mentions_for,
+    build_announcement,
+    pings_enabled,
+)
 
 import copy
 import io
@@ -246,6 +252,8 @@ class GameMaster(commands.Cog):
         self._last_result = None
         self.auction_entry = None
         self.isbid = False
+        self._classic_bid_lock = asyncio.Lock()
+        self._classic_last_activity = None
         self.event_flags = {}
         self.april_fools_flags = {}
         if not hasattr(self.bot, "birthday_assistant_state"):
@@ -3881,25 +3889,6 @@ class GameMaster(commands.Cog):
                 params=params,
             )
 
-    async def end_auction(self, channel):
-        """Helper method to handle auction ending"""
-        if self.top_auction[0]:  # If there was at least one bid
-            winner, winning_bid = self.top_auction
-            await channel.send(
-                f"🔨 No more bids for **{self.current_item}**.\n"
-                f"Auction ended! **{winner.mention}** wins with a bid of **${winning_bid:,}**!"
-            )
-        else:
-            await channel.send(
-                f"🔨 No bids were made for **{self.current_item}**.\n"
-                f"Auction ended with no winner."
-            )
-
-        self.top_auction = None
-        self.current_item = None
-        self.isbid = False
-        self.auction_entry.clear()
-
     @is_gm()
     @commands.command()
     async def impersonate(self, ctx, user: discord.Member, *, message):
@@ -3918,15 +3907,72 @@ class GameMaster(commands.Cog):
         except Exception as e:
             await ctx.send(e)
 
+    async def start_classic_auction(
+        self, *, gm, channel, role, item, announcement=None, ping=True, title=None, prefix="$"
+    ) -> discord.Message:
+        """Starts the classic auction and returns right away (the 12h timer runs as a task).
+
+        Shared by ``$gmauction`` and the GM auction builder. Raises ``EventAlreadyLive`` if an
+        auction is already running.
+        """
+        if self.top_auction is not None:
+            raise EventAlreadyLive("There's still an auction running.")
+        ping = pings_enabled(self.bot) and ping
+
+        # Initialize auction state
+        self.current_item = item
+        self.top_auction = (None, 0)  # Start with no bidder and 0 bid
+        self.auction_entry = asyncio.Event()
+        self.auction_task = None
+        self._classic_last_activity = datetime.datetime.now(datetime.timezone.utc)
+
+        content, embeds = build_announcement(
+            "classic",
+            name=item,
+            title=title,
+            message=announcement,
+            gm_name=gm.display_name,
+            prefix=prefix,
+            role_mention=role.mention if (ping and role is not None) else None,
+        )
+        try:
+            message = await channel.send(
+                content, embeds=embeds, allowed_mentions=allowed_mentions_for(role, ping)
+            )
+        except Exception:
+            self.cleanup_auction()
+            raise
+
+        task = asyncio.create_task(self.run_auction(channel))
+        self.auction_task = task
+        self._classic_task_ref = task
+        task.add_done_callback(self._classic_auction_done)
+        return message
+
+    def _classic_auction_done(self, task) -> None:
+        """Log a crashed auction task and free the auction slot (only for that same task)."""
+        import logging
+
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logging.getLogger(__name__).error("classic auction task failed", exc_info=exc)
+            if getattr(self, "_classic_task_ref", None) is task:
+                self.cleanup_auction()
+        if getattr(self, "_classic_task_ref", None) is task:
+            self._classic_task_ref = None
+
     @is_gm()
     @commands.command(hidden=True, brief=_("Start an auction"))
     @locale_doc
     async def gmauction(self, ctx, *, item: str):
         _(
             """`<item>` - a description of what is being auctioned
-            Starts an auction on the support server. Users are able to bid. The auction timeframe extends by 30 minutes if users keep betting.
-            The auction ends when no user bids in a 30 minute timeframe.
+            Starts an auction on the support server. Users are able to bid with `bid <amount>`.
+            The auction ends when no user bids for 12 hours.
             The item is not given automatically and needs to be given manually.
+            The command returns as soon as the auction is announced.
             Only Game Masters can use this command."""
         )
         if self.top_auction is not None:
@@ -3943,28 +3989,21 @@ class GameMaster(commands.Cog):
         if not role:
             return await ctx.send(_("Auction role wasn't found."))
 
-        # Initialize auction state
-        self.current_item = item
-        self.top_auction = (None, 0)  # Start with no bidder and 0 bid
-        self.auction_entry = asyncio.Event()
-        self.auction_task = None  # Store the auction task
-
-        # Send initial auction message
-        await channel.send(
-            f"{ctx.author.mention} started auction on **{item}**!\n\n"
-            f"Current bid: **$0**\n\n"
-            f"Please use `{ctx.clean_prefix}bid amount` to raise the bid from any channel.\n\n"
-            f"If no more bids are sent within 12 hours of the highest bid, the auction will end.\n"
-            f"{role.mention}", allowed_mentions=discord.AllowedMentions(roles=True)
-        )
-
-        # Create and start the auction task
-        self.auction_task = asyncio.create_task(self.run_auction(channel))
         try:
-            await self.auction_task
-        except Exception as e:
-            await channel.send(f"Error in auction: {str(e)}")
-            self.cleanup_auction()
+            message = await self.start_classic_auction(
+                gm=ctx.author,
+                channel=channel,
+                role=role,
+                item=item,
+                announcement=None,
+                ping=True,
+                prefix=ctx.clean_prefix,
+            )
+        except EventAlreadyLive:
+            return await ctx.send(_("There's still an auction running."))
+        except discord.HTTPException as exc:
+            return await ctx.send(f"Couldn't post the auction: {exc}")
+        await ctx.send(_("Auction started: {link}").format(link=message.jump_url))
 
     async def run_auction(self, channel):
         """Separate method to handle the auction loop"""
@@ -3975,11 +4014,20 @@ class GameMaster(commands.Cog):
                     await asyncio.wait_for(self.auction_entry.wait(), timeout=43200)  # 12 hours
                     self.auction_entry.clear()
                 except asyncio.TimeoutError:
-                    # No bids received within timeout period
-                    await self.end_auction(channel)
+                    # No bids received within timeout period. Take the bid lock so a bid can't
+                    # land half way through the ending, and honour one that just slipped in.
+                    async with self._classic_bid_lock:
+                        if self.auction_entry is not None and self.auction_entry.is_set():
+                            self.auction_entry.clear()
+                            continue
+                        await self.end_auction(channel)
+                        self.cleanup_auction()
                     break
         finally:
-            self.cleanup_auction()
+            # Only touch the state if it still belongs to this task (a new auction may have
+            # started since).
+            if self.auction_task is asyncio.current_task():
+                self.cleanup_auction()
 
     def cleanup_auction(self):
         """Clean up auction state"""
@@ -4007,54 +4055,63 @@ class GameMaster(commands.Cog):
             Bid on an ongoing auction.
             The amount is removed from you as soon as you bid and given back if someone outbids you."""
         )
-        if self.top_auction is None:
-            return await ctx.send(_("No auction running."))
+        if amount > 10**15:
+            return await ctx.send(_("That bid is too large."))
 
-        if self.top_auction[0] and self.top_auction[0].id == ctx.author.id:
-            return await ctx.send(_("You cannot outbid yourself."))
+        # One bid at a time: the checks, the gold movement and the state change below must not
+        # interleave with another bid or with the auction ending.
+        async with self._classic_bid_lock:
+            if self.top_auction is None:
+                return await ctx.send(_("No auction running."))
 
-        if amount <= self.top_auction[1]:
-            return await ctx.send(_("Bid too low. Current bid is ${:,}.".format(self.top_auction[1])))
+            old_top, old_bid = self.top_auction
+            if old_top and old_top.id == ctx.author.id:
+                return await ctx.send(_("You cannot outbid yourself."))
 
-        if ctx.character_data["money"] < amount:
-            return await ctx.send(_("You are too poor."))
-
-        async with self.bot.pool.acquire() as conn:
-            # If there was a previous bidder, refund their money
-            if self.top_auction[0]:
-                await conn.execute(
-                    'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
-                    self.top_auction[1],
-                    self.top_auction[0].id,
-                )
-                await self.bot.log_transaction(
-                    ctx,
-                    from_=1,
-                    to=self.top_auction[0].id,
-                    subject="bid_refund",
-                    data={"Gold": self.top_auction[1]},
-                    conn=conn,
+            if amount <= old_bid:
+                return await ctx.send(
+                    _("Bid too low. Current bid is ${bid:,}.").format(bid=old_bid)
                 )
 
-            # Take money from new bidder
-            await conn.execute(
-                'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2;',
-                amount,
-                ctx.author.id,
-            )
-            await self.bot.log_transaction(
-                ctx,
-                from_=ctx.author.id,
-                to=2,
-                subject="bid",
-                data={"Gold": amount},
-                conn=conn,
-            )
+            async with self.bot.pool.acquire() as conn:
+                async with conn.transaction():
+                    # Guarded debit: succeeds only if the money is really there right now.
+                    paid = await conn.execute(
+                        'UPDATE profile SET "money"="money"-$1 WHERE "user"=$2 AND "money">=$1;',
+                        amount,
+                        ctx.author.id,
+                    )
+                    if paid == "UPDATE 1":
+                        # Give the previous top bidder their gold back.
+                        if old_top:
+                            await conn.execute(
+                                'UPDATE profile SET "money"="money"+$1 WHERE "user"=$2;',
+                                old_bid,
+                                old_top.id,
+                            )
+                            await self.bot.log_transaction(
+                                ctx,
+                                from_=1,
+                                to=old_top.id,
+                                subject="bid_refund",
+                                data={"Gold": old_bid},
+                                conn=conn,
+                            )
+                        await self.bot.log_transaction(
+                            ctx,
+                            from_=ctx.author.id,
+                            to=2,
+                            subject="bid",
+                            data={"Gold": amount},
+                            conn=conn,
+                        )
 
-            # Update auction state
-            old_top = self.top_auction[0]
-            old_bid = self.top_auction[1]
+            if paid != "UPDATE 1":
+                return await ctx.send(_("You are too poor."))
+
+            # The money has moved for good, so only now change the auction state.
             self.top_auction = (ctx.author, amount)
+            self._classic_last_activity = datetime.datetime.now(datetime.timezone.utc)
             self.auction_entry.set()
 
         # Send bid notifications

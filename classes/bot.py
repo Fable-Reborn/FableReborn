@@ -1687,6 +1687,7 @@ class Bot(commands.AutoShardedBot):
             "guild pay",
             "gambling",
             "bid",
+            "bid_refund",
             "item",
             "adventure",
             "merch",

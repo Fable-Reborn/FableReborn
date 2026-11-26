@@ -22,11 +22,13 @@ from classes.converters import IntGreaterThan
 from utils.checks import has_char, is_gm
 from utils.i18n import _, locale_doc
 
-from . import logic, views
+from . import announce, builder, logic, views
+from .announce import EventAlreadyLive
 
 log = logging.getLogger(__name__)
 
 NO_PINGS = discord.AllowedMentions.none()
+STATUS_USER_ID = 273652235588599808  # the only user who may run $eventstatus
 EMBED_REFRESH_SECONDS = 15
 # Channel for silent auctions and raffles unless ids.game_master sets silent_auction_channel_id /
 # raffle_channel_id.
@@ -89,6 +91,15 @@ CREATE INDEX IF NOT EXISTS raffle_purchases_by_raffle ON raffle_purchases (raffl
 """
 
 
+# The GM's announcement text is stored so that every later edit rebuilds the full post.
+MIGRATIONS = """
+ALTER TABLE silent_auctions ADD COLUMN IF NOT EXISTS announcement TEXT;
+ALTER TABLE silent_auctions ADD COLUMN IF NOT EXISTS announcement_title TEXT;
+ALTER TABLE raffles ADD COLUMN IF NOT EXISTS announcement TEXT;
+ALTER TABLE raffles ADD COLUMN IF NOT EXISTS announcement_title TEXT;
+"""
+
+
 class _Abort(Exception):
     """Raised inside a transaction to roll it back with a user-facing message."""
 
@@ -104,7 +115,8 @@ class GMEvents(commands.Cog):
         self.silent_channel_id = gm_ids.get("silent_auction_channel_id") or DEFAULT_EVENT_CHANNEL_ID
         self.silent_role_id = auction_role
         self.raffle_channel_id = gm_ids.get("raffle_channel_id") or DEFAULT_EVENT_CHANNEL_ID
-        self.raffle_role_id = gm_ids.get("raffle_ping_role_id") or auction_role
+        self.raffle_role_id = auction_role
+        self._builders: dict[int, builder.BuilderView] = {}  # one open builder per GM
         self._dirty_raffles: set[int] = set()  # throwaway cache: which embeds need a refresh
 
     # ------------------------------------------------------------------ lifecycle
@@ -112,6 +124,7 @@ class GMEvents(commands.Cog):
     async def cog_load(self):
         async with self.bot.pool.acquire() as conn:
             await conn.execute(SCHEMA)
+            await conn.execute(MIGRATIONS)
         self.bot.add_dynamic_items(*views.DYNAMIC_ITEMS)
         self.close_due.start()
         self.refresh_raffle_embeds.start()
@@ -190,28 +203,240 @@ class GMEvents(commands.Cog):
         except discord.HTTPException:
             pass
 
+    # ============================================================== BUILDER SUPPORT
+
+    def resolve_target(self, kind: str, ping: bool):
+        """``(channel, role, error)`` for an event type, from the same config the commands use."""
+        if kind == "classic":
+            gm_cog = self.bot.get_cog("GameMaster")
+            if gm_cog is None:
+                return None, None, _("The GameMaster cog isn't loaded.")
+            channel_id = gm_cog.auction_channel_id or DEFAULT_EVENT_CHANNEL_ID
+            role_id = gm_cog.auction_ping_role_id
+        elif kind == "silent":
+            channel_id, role_id = self.silent_channel_id, self.silent_role_id
+        else:
+            channel_id, role_id = self.raffle_channel_id, self.raffle_role_id
+        channel = self._channel_for(channel_id)
+        if channel is None:
+            return None, None, _(
+                "The auction channel isn't configured or isn't visible to this cluster."
+            )
+        role = channel.guild.get_role(int(role_id)) if role_id else None
+        if ping and announce.pings_enabled(self.bot) and role is None:
+            return channel, None, _(
+                "The ping role wasn't found. Turn the ping off or set `auction_ping_role_id`."
+            )
+        return channel, role, None
+
+    async def live_status(self) -> dict:
+        gm_cog = self.bot.get_cog("GameMaster")
+        silent = await self.bot.pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM silent_auctions WHERE status IN ('open', 'closing'))"
+        )
+        raffle = await self.bot.pool.fetchval(
+            "SELECT EXISTS (SELECT 1 FROM raffles WHERE status IN ('open', 'drawing'))"
+        )
+        return {
+            "classic": bool(gm_cog is not None and gm_cog.top_auction is not None),
+            "silent": bool(silent),
+            "raffle": bool(raffle),
+        }
+
+    @is_gm()
+    @commands.command(
+        name="gmauctionbuilder", aliases=["gmab", "auctionbuilder"], hidden=True,
+        brief=_("Build and post an auction or raffle"),
+    )
+    @locale_doc
+    async def gmauctionbuilder(self, ctx):
+        _(
+            """Opens an interactive panel to build and post a classic auction, a silent auction
+            or a raffle: pick the type, fill in the details, write your own announcement,
+            preview the exact post, then press Post.
+
+            Only you can use your panel. It is a normal message, so run it in a staff channel.
+            Drafts live in memory only: a bot restart or 15 minutes of inactivity ends the panel.
+            The "How to take part" section is written automatically and can't be edited.
+            Only Game Masters can use this command."""
+        )
+        await builder.BuilderView(self, ctx).start(ctx)
+
+    # ================================================================ OWNER STATUS
+
+    @staticmethod
+    def _chunks(lines: list[str], limit: int = 1900):
+        out, cur = [], ""
+        for line in lines:
+            if len(cur) + len(line) + 1 > limit:
+                out.append(cur)
+                cur = ""
+            cur += line + "\n"
+        if cur:
+            out.append(cur)
+        return out
+
+    @commands.command(
+        name="eventstatus", aliases=["auctionstatus", "aucstatus"], hidden=True,
+        brief=_("Owner only: details of every live auction and raffle"),
+    )
+    @commands.check(lambda ctx: ctx.author.id == STATUS_USER_ID)
+    async def eventstatus(self, ctx):
+        """Owner only. DMs you every live auction/raffle with full details (including sealed bids)."""
+        lines: list[str] = [
+            f"**Event status** (pings {'ON' if announce.pings_enabled(self.bot) else 'OFF'})"
+        ]
+        now = datetime.datetime.now(datetime.timezone.utc)
+
+        gm_cog = self.bot.get_cog("GameMaster")
+        lines.append("\n**Classic auction**")
+        if gm_cog is not None and gm_cog.top_auction is not None:
+            top, amount = gm_cog.top_auction
+            last = getattr(gm_cog, "_classic_last_activity", None)
+            lines.append(f"Item: {gm_cog.current_item}")
+            lines.append(
+                f"Top bid: ${amount:,} by {top} (`{top.id}`)" if top else "Top bid: none yet"
+            )
+            if last:
+                end = last + datetime.timedelta(hours=announce.CLASSIC_IDLE_HOURS)
+                lines.append(f"Last activity: <t:{int(last.timestamp())}:R>, ends <t:{int(end.timestamp())}:R> if no more bids")
+            lines.append(f"Timer task running: {gm_cog.auction_task is not None and not gm_cog.auction_task.done()}")
+        else:
+            lines.append("none")
+
+        lines.append("\n**Silent auction**")
+        row = await self._live_silent()
+        if row:
+            bids = await self.bot.pool.fetch(
+                "SELECT user_id, amount, amount_set_at, refunded FROM silent_auction_bids "
+                "WHERE auction_id = $1 ORDER BY amount DESC, amount_set_at ASC, user_id ASC",
+                row["id"],
+            )
+            held = sum(b["amount"] for b in bids if not b["refunded"])
+            lines.append(
+                f"#{row['id']} {row['item']!r}, status `{row['status']}`, min ${row['min_bid']:,}, "
+                f"ends <t:{int(row['ends_at'].timestamp())}:R>, by <@{row['created_by']}>"
+            )
+            msg_channel = self.bot.get_channel(row["channel_id"])
+            if msg_channel is not None and row["message_id"]:
+                lines.append(f"Message: {msg_channel.get_partial_message(row['message_id']).jump_url}")
+            lines.append(f"Bidders: {len(bids)}, gold held: ${held:,}")
+            for i, b in enumerate(bids[:25], 1):
+                lines.append(
+                    f"{i}. <@{b['user_id']}> `{b['user_id']}` ${b['amount']:,} (set <t:{int(b['amount_set_at'].timestamp())}:R>)"
+                )
+            if len(bids) > 25:
+                lines.append(f"... and {len(bids) - 25} more")
+        else:
+            lines.append("none")
+
+        lines.append("\n**Raffle**")
+        raffle = await self._live_raffle()
+        if raffle:
+            stats = await self.bot.pool.fetchrow(
+                "SELECT COUNT(DISTINCT user_id) AS entrants, COALESCE(SUM(quantity), 0) AS tickets, "
+                "COALESCE(SUM(paid), 0) AS gold FROM raffle_purchases "
+                "WHERE raffle_id = $1 AND NOT refunded",
+                raffle["id"],
+            )
+            top = await self.bot.pool.fetch(
+                "SELECT user_id, SUM(quantity) AS tickets FROM raffle_purchases "
+                "WHERE raffle_id = $1 AND NOT refunded GROUP BY user_id ORDER BY tickets DESC LIMIT 15",
+                raffle["id"],
+            )
+            ends = f"<t:{int(raffle['ends_at'].timestamp())}:R>" if raffle["ends_at"] else "manual draw"
+            lines.append(
+                f"#{raffle['id']} {raffle['prize']!r}, status `{raffle['status']}`, ${raffle['ticket_price']:,}/ticket, "
+                f"cap {raffle['max_per_user'] or 'none'}, ends {ends}, by <@{raffle['created_by']}>"
+            )
+            lines.append(
+                f"Entrants: {stats['entrants']}, tickets: {stats['tickets']}, gold collected: ${stats['gold']:,}"
+            )
+            lines.append(f"Commitment: `{raffle['seed_commitment']}` (seed stays secret until the draw)")
+            for b in top:
+                lines.append(f"<@{b['user_id']}> `{b['user_id']}`: {b['tickets']} tickets")
+        else:
+            lines.append("none")
+
+        try:
+            for chunk in self._chunks(lines):
+                await ctx.author.send(chunk, allowed_mentions=NO_PINGS)
+        except discord.HTTPException:
+            return await ctx.send("I couldn't DM you. Open your DMs; sealed bids are never posted in channels.")
+        if ctx.guild is not None:
+            await ctx.send("Sent to your DMs.")
+
     # ============================================================== SILENT AUCTION
 
-    def _silent_embed(self, item: str, min_bid: int, ends_at) -> discord.Embed:
-        embed = discord.Embed(
-            title=_("🔒 Silent Auction"),
-            description=_("**{item}**").format(item=item),
-            colour=discord.Colour.dark_gold(),
+    def _gm_name(self, user_id) -> str:
+        user = self.bot.get_user(int(user_id)) if user_id else None
+        return user.display_name if user else _("a Game Master")
+
+    def _row_embeds(self, kind: str, row, *, tickets=None, entrants=None):
+        """Rebuild the full post from a stored row (keeps the GM's announcement)."""
+        _content, embeds = announce.build_announcement(
+            kind,
+            name=row["item"] if kind == "silent" else row["prize"],
+            title=row["announcement_title"],
+            message=row["announcement"],
+            gm_name=self._gm_name(row["created_by"]),
+            prefix=self.bot.config.bot.global_prefix,
+            ends_at=row["ends_at"],
+            min_bid=row["min_bid"] if kind == "silent" else None,
+            ticket_price=row["ticket_price"] if kind == "raffle" else None,
+            max_per_user=row["max_per_user"] if kind == "raffle" else None,
+            commitment=row["seed_commitment"] if kind == "raffle" else None,
+            tickets=tickets,
+            entrants=entrants,
         )
-        embed.add_field(name=_("Minimum bid"), value=f"${min_bid:,}")
-        embed.add_field(name=_("Ends"), value=self._ts(ends_at))
-        embed.add_field(
-            name=_("Rules"),
-            value=_(
-                "• Bids are sealed: only you can see your bid.\n"
-                "• You may raise your bid, but not lower or withdraw it.\n"
-                "• The highest bid wins. Ties go to whoever reached that amount first.\n"
-                "• Your bid is held from your balance and refunded if you lose.\n"
-                "• The end time is fixed; there are no extensions."
-            ),
-            inline=False,
+        return embeds
+
+    async def start_silent_auction(
+        self, *, gm, channel, role, item, min_bid, duration, announcement=None,
+        title=None, ping=True, prefix="$",
+    ) -> discord.Message:
+        """The one place a silent auction is started (text command and builder).
+
+        Raises ``EventAlreadyLive`` or ``discord.HTTPException``; never leaves a live row
+        behind when the message could not be sent.
+        """
+        ping = announce.pings_enabled(self.bot) and ping
+        ends_at = datetime.datetime.now(datetime.timezone.utc) + duration
+        try:
+            auction_id = await self.bot.pool.fetchval(
+                "INSERT INTO silent_auctions (item, min_bid, created_by, channel_id, ends_at, "
+                "announcement, announcement_title) VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "RETURNING id",
+                item, min_bid, gm.id, channel.id, ends_at, announcement or None, title or None,
+            )
+        except UniqueViolationError:
+            raise EventAlreadyLive("A silent auction is already live.") from None
+        content, embeds = announce.build_announcement(
+            "silent", name=item, title=title, message=announcement, gm_name=gm.display_name,
+            prefix=prefix, ends_at=ends_at, min_bid=min_bid,
+            role_mention=role.mention if (ping and role is not None) else None,
         )
-        return embed
+        try:
+            message = await channel.send(
+                content, embeds=embeds, view=views.silent_view(auction_id),
+                allowed_mentions=announce.allowed_mentions_for(role, ping),
+            )
+        except Exception:
+            await self.bot.pool.execute(
+                "UPDATE silent_auctions SET status = 'cancelled', closed_at = NOW() WHERE id = $1",
+                auction_id,
+            )
+            raise
+        await self.bot.pool.execute(
+            "UPDATE silent_auctions SET message_id = $2 WHERE id = $1", auction_id, message.id
+        )
+        return message
+
+    def silent_role(self, channel):
+        return channel.guild.get_role(int(self.silent_role_id)) if self.silent_role_id else None
+
+    def raffle_role(self, channel):
+        return channel.guild.get_role(int(self.raffle_role_id)) if self.raffle_role_id else None
 
     async def place_silent_bid(self, user_id: int, auction_id: int, amount: int):
         """Core bid logic, used by the modal. Returns ``(ok, message)``."""
@@ -455,37 +680,16 @@ class GMEvents(commands.Cog):
                     "(`silent_auction_channel_id` or `auction_channel_id`)."
                 )
             )
-        ends_at = datetime.datetime.now(datetime.timezone.utc) + delta
         try:
-            auction_id = await self.bot.pool.fetchval(
-                "INSERT INTO silent_auctions (item, min_bid, created_by, channel_id, ends_at) "
-                "VALUES ($1, $2, $3, $4, $5) RETURNING id",
-                item, min_bid, ctx.author.id, channel.id, ends_at,
+            message = await self.start_silent_auction(
+                gm=ctx.author, channel=channel, role=self.silent_role(channel), item=item,
+                min_bid=min_bid, duration=delta, prefix=ctx.clean_prefix,
             )
-        except UniqueViolationError:
+        except EventAlreadyLive:
             return await ctx.send(_("A silent auction is already live."))
-        role = channel.guild.get_role(int(self.silent_role_id)) if self.silent_role_id else None
-        try:
-            message = await channel.send(
-                role.mention if role else None,
-                embed=self._silent_embed(item, min_bid, ends_at),
-                view=views.silent_view(auction_id),
-                allowed_mentions=discord.AllowedMentions(roles=True),
-            )
         except discord.HTTPException as exc:
-            await self.bot.pool.execute(
-                "UPDATE silent_auctions SET status = 'cancelled', closed_at = NOW() WHERE id = $1",
-                auction_id,
-            )
             return await ctx.send(_("Couldn't post the auction: {error}").format(error=exc))
-        await self.bot.pool.execute(
-            "UPDATE silent_auctions SET message_id = $2 WHERE id = $1", auction_id, message.id
-        )
-        await ctx.send(
-            _("Silent auction #{id} started in {channel}, ending {ends}.").format(
-                id=auction_id, channel=channel.mention, ends=self._ts(ends_at)
-            )
-        )
+        await ctx.send(_("Silent auction started: {link}").format(link=message.jump_url))
 
     @is_gm()
     @gmsilent.command(name="end", hidden=True, brief=_("Close the silent auction now"))
@@ -584,38 +788,48 @@ class GMEvents(commands.Cog):
 
     # ==================================================================== RAFFLE
 
-    def _raffle_embed(self, row, tickets: int = 0, entrants: int = 0) -> discord.Embed:
-        embed = discord.Embed(
-            title=_("🎟️ Raffle"),
-            description=_("**{prize}**").format(prize=row["prize"]),
-            colour=discord.Colour.green(),
+    async def start_raffle(
+        self, *, gm, channel, role, prize, ticket_price, max_per_user, duration,
+        announcement=None, title=None, ping=True, prefix="$",
+    ) -> discord.Message:
+        """The one place a raffle is started. ``duration`` None means GM draws manually."""
+        ping = announce.pings_enabled(self.bot) and ping
+        ends_at = (
+            datetime.datetime.now(datetime.timezone.utc) + duration if duration else None
         )
-        embed.add_field(name=_("Ticket price"), value=f"${row['ticket_price']:,}")
-        embed.add_field(
-            name=_("Max tickets per player"),
-            value=str(row["max_per_user"]) if row["max_per_user"] else _("No limit"),
+        seed_secret = secrets.token_hex(32)
+        try:
+            row = await self.bot.pool.fetchrow(
+                "INSERT INTO raffles (prize, ticket_price, max_per_user, created_by, channel_id, "
+                "ends_at, seed_secret, seed_commitment, announcement, announcement_title) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *",
+                prize, ticket_price, max_per_user or None, gm.id, channel.id, ends_at,
+                seed_secret, logic.commitment(seed_secret), announcement or None, title or None,
+            )
+        except UniqueViolationError:
+            raise EventAlreadyLive("A raffle is already live.") from None
+        content, embeds = announce.build_announcement(
+            "raffle", name=prize, title=title, message=announcement, gm_name=gm.display_name,
+            prefix=prefix, ends_at=ends_at, ticket_price=ticket_price,
+            max_per_user=max_per_user or None, commitment=row["seed_commitment"],
+            role_mention=role.mention if (ping and role is not None) else None,
+            tickets=0, entrants=0,
         )
-        embed.add_field(
-            name=_("Ends"),
-            value=self._ts(row["ends_at"]) if row["ends_at"] else _("When a GM draws"),
+        try:
+            message = await channel.send(
+                content, embeds=embeds, view=views.raffle_view(row["id"]),
+                allowed_mentions=announce.allowed_mentions_for(role, ping),
+            )
+        except Exception:
+            await self.bot.pool.execute(
+                "UPDATE raffles SET status = 'cancelled', drawn_at = NOW() WHERE id = $1",
+                row["id"],
+            )
+            raise
+        await self.bot.pool.execute(
+            "UPDATE raffles SET message_id = $2 WHERE id = $1", row["id"], message.id
         )
-        embed.add_field(
-            name=_("Tickets sold"),
-            value=_("{tickets} tickets, {entrants} players").format(
-                tickets=tickets, entrants=entrants
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name=_("Fairness commitment"),
-            value=_(
-                "`{commitment}`\nAll tickets are shuffled with a secret seed whose SHA-256 is "
-                "shown here. The seed is revealed after the draw so anyone can verify the result."
-            ).format(commitment=row["seed_commitment"]),
-            inline=False,
-        )
-        embed.set_footer(text=_("Ticket gold is not refunded unless the raffle is cancelled."))
-        return embed
+        return message
 
     async def buy_raffle_tickets(self, user_id: int, raffle_id: Optional[int], qty: int):
         """Core purchase logic for the modal and ``$raffle buy``. Returns ``(ok, message)``."""
@@ -839,7 +1053,7 @@ class GMEvents(commands.Cog):
             The prize is not given automatically.
             Only Game Masters can use this command."""
         )
-        ends_at = None
+        delta = None
         if duration.lower() != "manual":
             try:
                 delta = logic.parse_duration(
@@ -847,12 +1061,10 @@ class GMEvents(commands.Cog):
                 )
             except ValueError as exc:
                 return await ctx.send(_(str(exc)))
-            ends_at = datetime.datetime.now(datetime.timezone.utc) + delta
         if ticket_price > logic.MAX_TICKET_PRICE:
             return await ctx.send(_("That ticket price is too large."))
         if max_per_user is not None and not 0 <= max_per_user <= 1_000_000:
             return await ctx.send(_("Invalid per-player ticket limit."))
-        max_per_user = max_per_user or None
         prize = prize.strip()[:200]
         channel = self._channel_for(self.raffle_channel_id)
         if channel is None:
@@ -862,37 +1074,17 @@ class GMEvents(commands.Cog):
                     "(`raffle_channel_id` or `auction_channel_id`)."
                 )
             )
-        seed_secret = secrets.token_hex(32)
         try:
-            row = await self.bot.pool.fetchrow(
-                "INSERT INTO raffles (prize, ticket_price, max_per_user, created_by, channel_id, "
-                "ends_at, seed_secret, seed_commitment) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
-                "RETURNING *",
-                prize, ticket_price, max_per_user, ctx.author.id, channel.id, ends_at,
-                seed_secret, logic.commitment(seed_secret),
+            message = await self.start_raffle(
+                gm=ctx.author, channel=channel, role=self.raffle_role(channel), prize=prize,
+                ticket_price=ticket_price, max_per_user=max_per_user or None, duration=delta,
+                prefix=ctx.clean_prefix,
             )
-        except UniqueViolationError:
+        except EventAlreadyLive:
             return await ctx.send(_("A raffle is already live."))
-        role = channel.guild.get_role(int(self.raffle_role_id)) if self.raffle_role_id else None
-        try:
-            message = await channel.send(
-                role.mention if role else None,
-                embed=self._raffle_embed(row),
-                view=views.raffle_view(row["id"]),
-                allowed_mentions=discord.AllowedMentions(roles=True),
-            )
         except discord.HTTPException as exc:
-            await self.bot.pool.execute(
-                "UPDATE raffles SET status = 'cancelled', drawn_at = NOW() WHERE id = $1",
-                row["id"],
-            )
             return await ctx.send(_("Couldn't post the raffle: {error}").format(error=exc))
-        await self.bot.pool.execute(
-            "UPDATE raffles SET message_id = $2 WHERE id = $1", row["id"], message.id
-        )
-        await ctx.send(
-            _("Raffle #{id} started in {channel}.").format(id=row["id"], channel=channel.mention)
-        )
+        await ctx.send(_("Raffle started: {link}").format(link=message.jump_url))
 
     @is_gm()
     @gmraffle.command(name="draw", hidden=True, brief=_("Draw the raffle now"))
@@ -1020,7 +1212,9 @@ class GMEvents(commands.Cog):
                     raffle_id,
                 )
                 await channel.get_partial_message(row["message_id"]).edit(
-                    embed=self._raffle_embed(row, stats["tickets"], stats["entrants"])
+                    embeds=self._row_embeds(
+                        "raffle", row, tickets=stats["tickets"], entrants=stats["entrants"]
+                    )
                 )
             except discord.HTTPException:
                 pass
