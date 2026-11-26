@@ -15,6 +15,7 @@ import discord
 from discord.ext import commands, tasks
 
 from cogs.shard_communication import user_on_cooldown as user_cooldown
+from classes.alt_tiers import sync_alt_tiers
 from utils.checks import is_gm
 
 log = logging.getLogger(__name__)
@@ -789,7 +790,12 @@ class PatreonCore(commands.Cog):
                     """,
                     ineligible_owner_ids,
                 )
-            return len(changed)
+        # Tiers moved: Legendary Hero perks follow (or leave) linked alts now.
+        try:
+            await sync_alt_tiers(self.bot.pool)
+        except Exception:
+            log.exception("Legendary alt tier sync failed after Patreon sync")
+        return len(changed)
 
     async def _sync_roles(self, guild: discord.Guild, patrons: dict[int, list[str]]) -> tuple[int, int, int]:
         tracked_role_ids = set(self.tier_role_mapping.values())

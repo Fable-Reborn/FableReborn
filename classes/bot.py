@@ -1343,7 +1343,15 @@ class Bot(commands.AutoShardedBot):
         return dict(status)
 
     async def _lookup_supporter_status(self, user_id) -> dict:
-        stored = await self.pool.fetchval('SELECT "tier" FROM profile WHERE "user" = $1;', user_id)
+        # A Legendary Hero's alt borrows tier 4 for perks, not for flair: use its own tier.
+        try:
+            stored = await self.pool.fetchval(
+                'SELECT COALESCE(g.previous_tier, p."tier") FROM profile p '
+                'LEFT JOIN alt_tier_grants g ON g.alt = p."user" WHERE p."user" = $1;',
+                user_id,
+            )
+        except asyncpg.UndefinedTableError:
+            stored = await self.pool.fetchval('SELECT "tier" FROM profile WHERE "user" = $1;', user_id)
         try:
             stored = int(stored or 0)
         except (TypeError, ValueError):

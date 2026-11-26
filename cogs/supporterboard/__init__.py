@@ -15,6 +15,7 @@ import logging
 import discord
 from discord.ext import commands, tasks
 
+from classes import alt_tiers
 from utils.checks import is_gm
 
 from .board import build_board_embeds
@@ -80,6 +81,7 @@ class SupporterBoard(commands.Cog):
             async with self.bot.pool.acquire() as conn:
                 for statement in SCHEMA:
                     await conn.execute(statement)
+                await alt_tiers.ensure_schema(conn)
         except Exception:
             log.exception("Supporter board tables could not be created")
             return
@@ -112,7 +114,12 @@ class SupporterBoard(commands.Cog):
             native_boosters[int(guild_id)] = {member.id for member in guild.premium_subscribers if not member.bot}
         tier_of, boosters = collect_from_members(self.bot, member_roles, native_boosters)
 
-        rows = await self.bot.pool.fetch('SELECT "user", "tier" FROM profile WHERE "tier" >= 2')
+        # A Legendary Hero's alt borrows tier 4; list it at its own tier, not as a donor.
+        rows = await self.bot.pool.fetch(
+            'SELECT p."user", COALESCE(g.previous_tier, p."tier") AS "tier" FROM profile p '
+            'LEFT JOIN alt_tier_grants g ON g.alt = p."user" '
+            'WHERE COALESCE(g.previous_tier, p."tier") >= 2'
+        )
         for row in rows:
             user_id = int(row["user"])
             tier_of[user_id] = max(tier_of.get(user_id, 0), min(int(row["tier"]), 4))

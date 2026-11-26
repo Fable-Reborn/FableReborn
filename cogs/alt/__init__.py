@@ -17,14 +17,19 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
 import copy
+import logging
 
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
+
+from classes import alt_tiers
 
 from classes.converters import MemberWithCharacter
 from classes.enums import DonatorRank
 from utils.checks import has_char, user_is_patron
 from utils.i18n import _
+
+log = logging.getLogger(__name__)
 
 
 class Alt(commands.Cog):
@@ -38,6 +43,25 @@ class Alt(commands.Cog):
             alt_ids = {}
         self.alt_role_id = alt_ids.get("alt_role_id", self.ALT_ROLE_ID)
         self.bot.loop.create_task(self.initialize_tables())
+        self.legendary_alt_sync.start()
+
+    def cog_unload(self):
+        self.legendary_alt_sync.cancel()
+
+    @tasks.loop(hours=1)
+    async def legendary_alt_sync(self):
+        """Legendary Hero perks follow the donator to their linked alt, and leave when they lapse."""
+        try:
+            granted, revoked = await alt_tiers.sync_alt_tiers(self.bot.pool)
+        except Exception:
+            log.exception("Legendary alt tier sync failed")
+            return
+        if granted or revoked:
+            log.info("Legendary alt tiers: granted %s, revoked %s", granted, revoked)
+
+    @legendary_alt_sync.before_loop
+    async def _before_legendary_alt_sync(self):
+        await self.bot.wait_until_ready()
 
     async def initialize_tables(self):
         """Ensure alt link tables exist and are up to date."""
@@ -96,6 +120,7 @@ class Alt(commands.Cog):
                 END $$;
                 """
             )
+            await alt_tiers.ensure_schema(conn)
         await self.sync_alt_roles()
 
     async def _get_support_guild(self) -> discord.Guild | None:
@@ -411,6 +436,8 @@ class AltConfirmView(discord.ui.View):
                 alt_cog = self.bot.get_cog("Alt")
                 if alt_cog:
                     await alt_cog.assign_alt_role_by_id(self.alt_id)
+                    # A Legendary Hero's new alt gets the perks right away.
+                    await alt_cog.legendary_alt_sync()
 
                 main_user = await self.bot.get_user_global(self.main_id)
                 if main_user:
