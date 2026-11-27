@@ -185,6 +185,18 @@ REFINE_QUALITY_BANDS = (
     (96, 9, 3, 3, 2, 0, 24_000, 0.50, 3),
     (99, 10, 4, 3, 2, 1, 36_000, 0.40, 4),
 )
+# Refining and crafting stop at this quality. Anything higher must be rolled
+# from a crate, the way weapon upgrades stop below the best crate rolls.
+# Pieces refined higher before the cap keep their quality.
+REFINE_QUALITY_CAP = 85
+CRAFT_QUALITY_CAP = 85
+# Natural crate rolls at the very top earn a title and a stat bonus on the
+# whole piece. Only the rolled quality counts; refining can never earn one.
+# A fully rolled Legendary discovery always counts as Flawless.
+MASTERWORK_QUALITY = 95
+FLAWLESS_QUALITY = 100
+QUALITY_TIER_BONUS = {"masterwork": Decimal("1.10"), "flawless": Decimal("1.20")}
+QUALITY_TIER_NAME = {"masterwork": "Masterwork", "flawless": "Flawless"}
 # Tempering adds a star, +1 to +7. Materials are TEMPER_STAR_COSTS in economy.py.
 TEMPER_STAR_CHANCE = {1: 0.90, 2: 0.80, 3: 0.70, 4: 0.60, 5: 0.50, 6: 0.40, 7: 0.30}
 TEMPER_STAR_PITY = {1: 1, 2: 2, 3: 2, 4: 3, 5: 3, 6: 4, 7: 5}
@@ -326,7 +338,7 @@ QUALITY_BANDS = (
     (69, "Standard"),
     (84, "Fine"),
     (94, "Exceptional"),
-    (100, "Masterwork"),
+    (100, "Superior"),
 )
 
 
@@ -335,7 +347,29 @@ def quality_band(quality: int) -> str:
     for ceiling, label in QUALITY_BANDS:
         if quality <= ceiling:
             return label
-    return "Masterwork"
+    return "Superior"
+
+
+def quality_tier(rolled_quality, fully_rolled: bool = False) -> str | None:
+    """'flawless', 'masterwork', or None, from the quality the piece was rolled with."""
+    if fully_rolled:
+        return "flawless"
+    if rolled_quality is None:
+        return None
+    rolled_quality = int(rolled_quality)
+    if rolled_quality >= FLAWLESS_QUALITY:
+        return "flawless"
+    if rolled_quality >= MASTERWORK_QUALITY:
+        return "masterwork"
+    return None
+
+
+def item_tier(item) -> str | None:
+    """The roll tier of a stored piece (any mapping with rolled_quality and fully_rolled)."""
+    if not item:
+        return None
+    getter = item.get if hasattr(item, "get") else (lambda key, default=None: item[key] if key in item else default)
+    return quality_tier(getter("rolled_quality", None), bool(getter("fully_rolled", False)))
 
 
 def resolve_slot(name: str) -> str | None:

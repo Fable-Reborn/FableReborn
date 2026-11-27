@@ -7,6 +7,7 @@ from classes.equipment.definitions import (
     ARCHETYPE_BUDGET,
     ARCHETYPES,
     MAX_REFINEMENT,
+    QUALITY_TIER_BONUS,
     RARITIES,
     RARITY_BUDGET,
     REFINEMENT_STEP,
@@ -28,11 +29,13 @@ def contribution(
     quality: int,
     refinement: int = 0,
     slot: str = "chest",
+    tier: str | None = None,
 ) -> tuple[Decimal, Decimal]:
     """Return (weapon bonus fraction, flat armor) before raid multipliers.
 
     Refinement scales the whole piece. It does not move an archetype's
-    offense/defense ratio.
+    offense/defense ratio. `tier` (masterwork/flawless, from the natural roll)
+    multiplies the whole piece too.
     """
     rarity = str(rarity).lower()
     archetype = str(archetype).lower()
@@ -52,6 +55,7 @@ def contribution(
         * quality_scale(quality)
         * (Decimal("1") + REFINEMENT_STEP * Decimal(refinement))
         * SLOT_BUDGET_SHARE[slot]
+        * QUALITY_TIER_BONUS.get(tier or "", Decimal("1"))
     )
     budget = ARCHETYPE_BUDGET[archetype]
     return budget["weapon_pct"] * scale, budget["armor"] * scale

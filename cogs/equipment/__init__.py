@@ -29,6 +29,7 @@ _SUPPORT_MODULES = (
     "classes.equipment.balance_log",
     "classes.equipment.protection",
     "classes.equipment.repository",
+    "classes.equipment.announce",
     "classes.equipment.access",
     "cogs.equipment.layout",
     "cogs.equipment.sheet",
@@ -811,7 +812,7 @@ class Equipment(commands.Cog):
         _(
             """`<equipment_id>` - A piece you are wearing
 
-            Open Thorne's Anvil on that piece. Refining raises quality by 1 for materials and gold, with a chance to fail and pity. The first time binds the piece.
+            Open Thorne's Anvil on that piece. Refining raises quality by 1 for materials and gold, with a chance to fail and pity, up to quality 85. Higher quality only comes from crate rolls. The first time binds the piece.
             """
         )
         await self._open_forge(ctx, equipment_id)

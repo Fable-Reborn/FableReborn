@@ -35,7 +35,9 @@ from classes.equipment.definitions import (
     MODIFIERS,
     OPEN_SLOTS,
     PAPER_DOLL_SLOTS,
+    QUALITY_TIER_NAME,
     SLOT_NOUN,
+    item_tier,
     quality_band,
 )
 from classes.equipment.economy import is_tradable, modifier_adjustments
@@ -56,6 +58,11 @@ RARITY_COLOR = {rarity: (*color, 255) for rarity, color in RARITY_GEM.items()}
 ARCHETYPE_COLOR = {archetype: (*color, 255) for archetype, color in ARCHETYPE_TINT.items()}
 
 QUALITY_TICKS = (0.39, 0.69, 0.84, 0.94)
+# Natural top rolls wear a gold frame; Flawless burns brighter.
+TIER_FRAME = {
+    "masterwork": {"outline": (226, 176, 64), "width": 2.6, "glow": (240, 190, 80), "pill": (176, 128, 30)},
+    "flawless": {"outline": (255, 232, 160), "width": 3.4, "glow": (255, 222, 130), "pill": (214, 160, 40)},
+}
 ATTUNEMENT_TICKS = (0.2, 0.4, 0.6, 0.8)
 
 # Vertical positions inside the page, measured from its top edge.
@@ -215,9 +222,12 @@ def _draw_tile(canvas: Canvas, slot: str, box, item: dict | None, *, focus: bool
     open_slot = slot in OPEN_SLOTS or weapon
     rarity = RARITY_GEM.get((item or {}).get("rarity"), t.trim)
     colors = glow_colors(item.get("modifiers")) if item else []
+    frame = TIER_FRAME.get(item_tier(item) or "") if item and not weapon else None
     canvas.shadow(box, 14, blur=8, dy=5, alpha=130)
-    canvas.glow(box, 14, colors, blur=13, alpha=120)
-    if item:
+    canvas.glow(box, 14, colors + ([frame["glow"]] if frame else []), blur=13, alpha=150 if frame else 120)
+    if item and frame:
+        canvas.panel(box, 14, gradient=t.tile_item, outline=frame["outline"], width=frame["width"])
+    elif item:
         canvas.panel(box, 14, gradient=t.tile_item, outline=mix(rarity, (0, 0, 0), 0.25), width=1.5)
     else:
         canvas.panel(box, 14, gradient=t.tile_empty, outline=t.trim_dim if open_slot else t.tile_edge, width=1.2)
@@ -344,6 +354,9 @@ def draw_piece_detail(canvas: Canvas, box, item: dict | None, m: dict = FULL, *,
     canvas.text(left, y0 + m["name"], canvas.fit(name, "display", size, text_right - left), "display", size, INK)
     px, py = left, y0 + m["pills"]
     px += canvas.pill(px, py, rarity_key or "unknown", fill=rarity_ink) + 8
+    roll_tier = item_tier(item)
+    if roll_tier:
+        px += canvas.pill(px, py, QUALITY_TIER_NAME[roll_tier], fill=TIER_FRAME[roll_tier]["pill"]) + 8
     if item.get("fully_rolled"):
         px += canvas.pill(px, py, "Bound discovery", fill=(150, 100, 20)) + 8
     elif not is_tradable(item):

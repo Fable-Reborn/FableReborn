@@ -6,7 +6,14 @@ import random
 from decimal import Decimal
 
 from classes.equipment.balance_log import log_event
-from classes.equipment.definitions import DEV_DATABASE, OPEN_SLOTS, display_name
+from classes.equipment.definitions import (
+    CRAFT_QUALITY_CAP,
+    DEV_DATABASE,
+    OPEN_SLOTS,
+    display_name,
+    item_tier,
+    quality_tier,
+)
 from classes.equipment.economy import (
     STARTER_RECIPES,
     craft_cost,
@@ -162,6 +169,30 @@ SCHEMA_STATEMENTS = (
     CREATE INDEX IF NOT EXISTS equipment_events_action_created_idx
         ON equipment_events (action, created_at)
     """,
+    # The quality a piece was rolled with. Masterwork and Flawless read this,
+    # never the refined quality. Older pieces, in order of trust:
+    #   1. the quality before their first logged refine;
+    #   2. the quality logged when they were rolled (crate, craft, grant);
+    #   3. pieces from before gear logging (Nov 19): an unbound piece was never
+    #      refined, so its quality is natural. A bound one may have been refined
+    #      before refines were logged, so it is held under Masterwork (94 max).
+    "ALTER TABLE equipment_items ADD COLUMN IF NOT EXISTS rolled_quality INTEGER",
+    """
+    UPDATE equipment_items i
+       SET rolled_quality = COALESCE(
+           (SELECT min((e.payload->>'quality_before')::int)
+              FROM equipment_events e
+             WHERE e.action = 'refine'
+               AND e.equipment_id = i.id
+               AND e.payload ? 'quality_before'),
+           (SELECT min((e.payload->>'quality')::int)
+              FROM equipment_events e
+             WHERE e.action IN ('crate', 'craft', 'grant')
+               AND e.equipment_id = i.id
+               AND e.payload ? 'quality'),
+           CASE WHEN i.bound AND NOT i.fully_rolled THEN LEAST(i.quality, 94) ELSE i.quality END)
+     WHERE i.rolled_quality IS NULL
+    """,
 )
 
 
@@ -179,6 +210,7 @@ async def ensure_schema(conn) -> None:
         await conn.execute("SELECT pg_advisory_xact_lock(hashtext('equipment_schema'))")
         for statement in SCHEMA_STATEMENTS:
             await conn.execute(statement)
+        await _apply_quality_tiers(conn)
         await conn.execute(
             """
             INSERT INTO equipment_settings (key, enabled)
@@ -187,13 +219,54 @@ async def ensure_schema(conn) -> None:
             """,
             dev,
         )
-        pruned = await prune_undiscovered_recipes(conn, apply=True)
-        if pruned["removed"]:
-            LOGGER.info(
-                "Removed %s undiscovered gear recipes on %s",
-                pruned["removed"],
-                await database_name(conn),
+        # One-time cleanup of the old four-slot unlock. It used to run on every
+        # boot, which also deleted real finds from before gear logging (Nov 19)
+        # once their piece was salvaged. It runs once more, then never again.
+        already_pruned = await conn.fetchval(
+            "SELECT 1 FROM equipment_settings WHERE key = 'discovery_prune_done'"
+        )
+        if not already_pruned:
+            pruned = await prune_undiscovered_recipes(conn, apply=True)
+            await conn.execute(
+                "INSERT INTO equipment_settings (key, enabled) VALUES ('discovery_prune_done', TRUE) "
+                "ON CONFLICT (key) DO NOTHING"
             )
+            if pruned["removed"]:
+                LOGGER.info(
+                    "Removed %s undiscovered gear recipes on %s",
+                    pruned["removed"],
+                    await database_name(conn),
+                )
+
+
+async def _apply_quality_tiers(conn) -> int:
+    """Store Masterwork and Flawless stats on every piece that rolled one. Idempotent."""
+    rows = await conn.fetch(
+        """
+        SELECT id, rarity, archetype, quality, refinement, slot, rolled_quality, fully_rolled,
+               offense_value, defense_value
+          FROM equipment_items
+         WHERE fully_rolled OR rolled_quality >= 95
+        """
+    )
+    changed = 0
+    for row in rows:
+        offense, defense = contribution(
+            row["rarity"], row["archetype"], int(row["quality"]), int(row["refinement"] or 0),
+            row["slot"], tier=item_tier(row),
+        )
+        if Decimal(str(row["offense_value"])) == offense and Decimal(str(row["defense_value"])) == defense:
+            continue
+        await conn.execute(
+            "UPDATE equipment_items SET offense_value = $2, defense_value = $3 WHERE id = $1",
+            int(row["id"]),
+            offense,
+            defense,
+        )
+        changed += 1
+    if changed:
+        LOGGER.info("Applied Masterwork/Flawless stats to %s gear pieces", changed)
+    return changed
 
 
 async def feature_enabled(conn) -> bool:
@@ -203,13 +276,10 @@ async def feature_enabled(conn) -> bool:
     return bool(enabled)
 
 
+# A recipe is found only by the player who opened the crate. Owning a piece
+# someone traded, gave, or sold you never counts.
 _FOUND_RECIPE_SQL = """
-SELECT DISTINCT owner_id AS user_id, slot || ':' || archetype || ':' || rarity AS recipe_key
-  FROM equipment_items
- WHERE origin IS DISTINCT FROM 'craft'
-   AND rarity <> 'common'
-UNION
-SELECT DISTINCT user_id, slot || ':' || archetype || ':' || rarity
+SELECT DISTINCT user_id, slot || ':' || archetype || ':' || rarity AS recipe_key
   FROM equipment_events
  WHERE action = 'crate'
    AND slot IS NOT NULL
@@ -559,16 +629,16 @@ async def grant_chest(
     rarity = str(rarity).lower()
     archetype = str(archetype).lower()
     slot = str(slot).lower()
-    offense, defense = contribution(rarity, archetype, quality, 0, slot)
+    offense, defense = contribution(rarity, archetype, quality, 0, slot, tier=quality_tier(quality, fully_rolled))
     name = display_name(rarity, archetype, slot)
     row = await conn.fetchrow(
         """
         INSERT INTO equipment_items (
             owner_id, slot, rarity, archetype, quality,
             offense_value, defense_value, refinement,
-            bound, fully_rolled, origin, name
+            bound, fully_rolled, origin, name, rolled_quality
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11, $5)
         RETURNING *
         """,
         int(owner_id),
@@ -718,16 +788,17 @@ async def create_piece(conn, owner_id: int, piece, *, origin: str) -> dict:
     slot = str(getattr(piece, "slot", None) or "chest").lower()
     if slot not in OPEN_SLOTS:
         slot = "chest"
-    offense, defense = contribution(piece.rarity, piece.archetype, piece.quality, 0, slot)
+    tier = quality_tier(piece.quality, piece.fully_rolled)
+    offense, defense = contribution(piece.rarity, piece.archetype, piece.quality, 0, slot, tier=tier)
     name = display_name(piece.rarity, piece.archetype, slot)
     row = await conn.fetchrow(
         """
         INSERT INTO equipment_items (
             owner_id, slot, rarity, archetype, quality,
             offense_value, defense_value, refinement,
-            bound, fully_rolled, origin, name
+            bound, fully_rolled, origin, name, rolled_quality
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 0, $8, $9, $10, $11, $5)
         RETURNING *
         """,
         int(owner_id),
@@ -987,7 +1058,8 @@ async def craft_chest(conn, owner_id: int, rarity: str, archetype: str, rng=None
         piece = RolledPiece(
             rarity=rarity,
             archetype=archetype,
-            quality=roll_quality(rng, rarity),
+            # Crafting stops at the refine cap; higher quality is rolled from crates.
+            quality=min(roll_quality(rng, rarity), CRAFT_QUALITY_CAP),
             fully_rolled=False,
             slot=slot,
         )
@@ -1077,7 +1149,7 @@ async def temper_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
         success = fails >= step["pity"] or rng.random() < step["chance"]
         stars = next_star if success else current
         offense, defense = contribution(
-            item["rarity"], item["archetype"], int(item["quality"]), stars, item["slot"]
+            item["rarity"], item["archetype"], int(item["quality"]), stars, item["slot"], tier=item_tier(item)
         )
         updated = await conn.fetchrow(
             """
@@ -1146,7 +1218,8 @@ async def refine_piece(conn, owner_id: int, equipment_id: int, rng=None) -> tupl
         success = fails >= step["pity"] or rng.random() < step["chance"]
         quality = int(item["quality"]) + (1 if success else 0)
         offense, defense = contribution(
-            item["rarity"], item["archetype"], quality, int(item["refinement"] or 0), item["slot"]
+            item["rarity"], item["archetype"], quality, int(item["refinement"] or 0), item["slot"],
+            tier=item_tier(item),
         )
         updated = await conn.fetchrow(
             """
@@ -1770,7 +1843,7 @@ async def fetch_market(conn, limit: int = 400) -> list[dict]:
     rows = await conn.fetch(
         """
         SELECT i.id, i.name, i.slot, i.rarity, i.archetype, i.quality, i.refinement,
-               i.offense_value, i.defense_value, i.origin, i.bound, i.fully_rolled,
+               i.offense_value, i.defense_value, i.origin, i.bound, i.fully_rolled, i.rolled_quality,
                m.price, m.seller_id, m.published, m.expires_at
           FROM equipment_market m
           JOIN equipment_items i ON i.id = m.equipment_id

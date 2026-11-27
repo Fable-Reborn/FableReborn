@@ -23,8 +23,10 @@ from classes.equipment.definitions import (
     RARITIES,
     crate_material_cap,
     format_material,
+    QUALITY_TIER_NAME,
     material_tier_index,
     quality_band,
+    item_tier,
 )
 
 
@@ -139,6 +141,12 @@ def summarize_rewards(rewards: list[dict]) -> str:
     if discoveries:
         label = "bound discovery" if discoveries == 1 else "bound discoveries"
         parts.append(f"including {discoveries} {label}")
+    masterworks = sum(1 for item in pieces if item_tier(item) == "masterwork")
+    flawless = sum(1 for item in pieces if item_tier(item) == "flawless" and not item.get("fully_rolled"))
+    if masterworks:
+        parts.append(f"✦ {masterworks} Masterwork")
+    if flawless:
+        parts.append(f"✦ {flawless} Flawless")
     lines = ["Armory: " + ", ".join(parts)]
     if pieces:
         qualities = [int(item["quality"]) for item in pieces]
@@ -167,6 +175,9 @@ def describe_reward(reward: dict) -> str:
     lines = []
     if item:
         band = quality_band(int(item["quality"]))
+        tier = item_tier(item)
+        if tier:
+            band = f"✦ {QUALITY_TIER_NAME[tier]} · {band}"
         if item.get("fully_rolled"):
             lines.append(
                 f"**Bound discovery:** {item['name']} · {band} {item['quality']} · "

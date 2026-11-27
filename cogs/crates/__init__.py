@@ -46,6 +46,7 @@ from classes.classes import from_string as class_from_string
 from classes.equipment.access import require_menu_actor
 from classes.equipment.generation import describe_reward, summarize_rewards
 from classes.equipment.definitions import ARMORY_DAILY_ROLLS
+from classes.equipment.announce import announce_top_rolls
 from classes.equipment.repository import apply_crate_opening, armory_rolls_left
 
 log = logging.getLogger(__name__)
@@ -872,6 +873,10 @@ class Crates(commands.Cog):
                             )
                             if reward:
                                 armor_rewards.append(reward)
+
+                    if armor_rewards:
+                        # Natural 95+ and Flawless pulls go to the bot logs.
+                        await announce_top_rolls(self.bot, ctx.author, rarity, armor_rewards)
 
                     if amount == 1:
                         embed = discord.Embed(

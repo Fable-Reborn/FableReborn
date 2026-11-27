@@ -270,6 +270,11 @@ def build_extra_sections(rows: list, snapshot: dict | None = None) -> list[str]:
                 f"min {min(samples)}, max {max(samples)}"
             )
         lines.append(f"- Fully rolled discoveries: {fully_rolled}")
+        top = {rarity: sum(1 for q in samples if q >= 95) for rarity, samples in crate_quality.items()}
+        perfect = sum(1 for samples in crate_quality.values() for q in samples if q >= 100)
+        top_text = ", ".join(f"{rarity} {top[rarity]}" for rarity in TIERS if top.get(rarity))
+        lines.append(f"- Natural 95+ (Masterwork or better): {sum(top.values())}" + (f" ({top_text})" if top_text else ""))
+        lines.append(f"- Natural 100 (Flawless): {perfect}")
     else:
         lines.append("- No crate pieces.")
     craft_targets = ", ".join(f"{rarity} {expected_quality_mean(rarity):.1f}" for rarity in TIERS)

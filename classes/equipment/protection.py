@@ -21,6 +21,7 @@ SKIP_LABELS = {
     "listed": "listed in the gear shop",
     "tempered": "tempered",
     "discovery": "fully rolled discoveries",
+    "masterwork": "Masterwork or Flawless",
     "missing": "no longer yours",
 }
 
@@ -36,6 +37,10 @@ def mass_salvage_skip_reason(row, *, equipped: bool, listed: bool) -> str | None
         return "tempered"
     if row.get("fully_rolled"):
         return "discovery"
+    from classes.equipment.definitions import item_tier
+
+    if item_tier(row):
+        return "masterwork"
     return None
 
 

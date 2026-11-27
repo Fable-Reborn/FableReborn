@@ -174,9 +174,11 @@ def temper_step(archetype: str, next_star: int) -> dict:
 
 
 def refine_step(archetype: str, quality: int) -> dict | None:
-    """One quality refine attempt, or None at quality 100."""
+    """One quality refine attempt, or None at the refine cap (85)."""
+    from classes.equipment.definitions import REFINE_QUALITY_CAP
+
     quality = int(quality)
-    if quality >= 100:
+    if quality >= REFINE_QUALITY_CAP:
         return None
     for ceiling, common, uncommon, rare, magic, legendary, gold, chance, pity in REFINE_QUALITY_BANDS:
         if quality <= ceiling:

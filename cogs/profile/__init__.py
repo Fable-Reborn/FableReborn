@@ -5544,7 +5544,12 @@ class Profile(commands.Cog):
             )
 
     def _armory_item_name(self, item) -> str:
+        from classes.equipment.definitions import QUALITY_TIER_NAME, item_tier
+
         marks = []
+        tier = item_tier(item) if item.get("armory_kind") == "armor" else None
+        if tier:
+            marks.append(f"✦ **{QUALITY_TIER_NAME[tier]}**")
         if item.get("bound"):
             marks.append("(bound)")
         if item.get("locked"):
@@ -5562,6 +5567,10 @@ class Profile(commands.Cog):
         ward = self._format_stat_value(item.get("defense_value"))
         quality = int(item.get("value") or 0)
         band = quality_band(quality)
+        from classes.equipment.definitions import QUALITY_TIER_NAME, item_tier
+
+        if roll_tier := item_tier(item):
+            band = f"{band} · ✦ {QUALITY_TIER_NAME[roll_tier]} (natural {int(item.get('rolled_quality') or quality)})"
         refinement = int(item.get("refinement") or 0)
         return (
             f"Damage: `{blessing}%`\n"
@@ -5581,6 +5590,10 @@ class Profile(commands.Cog):
         ward = self._format_stat_value(item.get("defense_value"))
         quality = int(item.get("value") or 0)
         band = quality_band(quality)
+        from classes.equipment.definitions import QUALITY_TIER_NAME, item_tier
+
+        if roll_tier := item_tier(item):
+            band = f"{band} · ✦ {QUALITY_TIER_NAME[roll_tier]} (natural {int(item.get('rolled_quality') or quality)})"
         refinement = int(item.get("refinement") or 0)
         discovery = "\nSignature: *Bound discovery*" if item.get("fully_rolled") else ""
         piece = item.get("type") or "Armor"
@@ -5621,6 +5634,7 @@ class Profile(commands.Cog):
             "refinement": int(item.get("refinement") or 0),
             "attunement": int(item.get("attunement") or 0),
             "value": int(item.get("quality") or 0),
+            "rolled_quality": item.get("rolled_quality"),
             "sort_stat": defense + offense * 100,
             "signature": None,
         }
@@ -5673,7 +5687,7 @@ class Profile(commands.Cog):
         rows = await self.bot.pool.fetch(
             """
             SELECT i.id, i.name, i.rarity, i.archetype, i.slot, i.quality,
-                   i.refinement, i.fully_rolled, i.locked,
+                   i.refinement, i.fully_rolled, i.locked, i.rolled_quality,
                    (l.equipment_id IS NOT NULL) AS equipped,
                    (m.equipment_id IS NOT NULL) AS listed
               FROM equipment_items i

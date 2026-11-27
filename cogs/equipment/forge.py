@@ -16,8 +16,11 @@ from classes.equipment.definitions import (
     MODIFIER_LINES,
     MODIFIERS,
     PAPER_DOLL_SLOTS,
+    QUALITY_TIER_NAME,
+    REFINE_QUALITY_CAP,
     SLOT_NOUN,
     format_material,
+    item_tier,
     quality_band,
 )
 from classes.equipment.economy import inscribe_step, refine_step, temper_step
@@ -194,7 +197,8 @@ class ForgeView(discord.ui.View):
         enchants = ", ".join(MODIFIERS[m]["name"] for m in self._current_enchants() if m in MODIFIERS) or "None"
         lock = "🔒 Bound" if piece["bound"] else "🔓 Tradable"
         lines = {
-            "quality": f"Quality {quality} · {quality_band(quality)}",
+            "quality": f"Quality {quality} · {quality_band(quality)}"
+            + (f" · ✦ {QUALITY_TIER_NAME[tier]}" if (tier := item_tier(piece)) else ""),
             "temper": f"Temper +{stars} {_stars(stars)}",
             "enchant": f"Enchant {enchants}",
         }
@@ -230,7 +234,11 @@ class ForgeView(discord.ui.View):
 
         step = refine_step(archetype, quality)
         if step is None:
-            embed.add_field(name="⚒️ Refine", value="Quality 100. Nothing left to refine.", inline=False)
+            if quality >= 100:
+                note = "Quality 100. Nothing left to refine."
+            else:
+                note = f"Refining stops at {REFINE_QUALITY_CAP}. Higher quality only comes from a crate roll."
+            embed.add_field(name="⚒️ Refine", value=note, inline=False)
         else:
             embed.add_field(
                 name=f"⚒️ Refine → {quality + 1}",
@@ -356,7 +364,13 @@ class ForgeView(discord.ui.View):
         if status == "missing":
             return "NOT ON THE ANVIL", f"{name} is no longer worn.", "\"You've taken that off. Wear it and bring it back.\""
         if status == "maxed" and action == "refine":
-            return "QUALITY 100", f"{name} cannot be refined further.", "\"It's as fine as steel gets. Quality 100.\""
+            if int(self.piece["quality"]) >= 100:
+                return "QUALITY 100", f"{name} cannot be refined further.", "\"It's as fine as steel gets. Quality 100.\""
+            return (
+                f"REFINED TO {REFINE_QUALITY_CAP}",
+                f"Refining stops at {REFINE_QUALITY_CAP}. Higher quality only comes from a crate roll.",
+                "\"My hammer has done all it can. Anything finer, the crates decide.\"",
+            )
         if status == "maxed" and int(self.piece["refinement"] or 0) >= MAX_REFINEMENT:
             return "TEMPERED +7", f"{name} holds every star.", "\"Seven stars. That's all the steel will hold.\""
         if status == "maxed":

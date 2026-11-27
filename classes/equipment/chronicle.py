@@ -62,6 +62,9 @@ NICHE_BOTTOM = (8, 20, 34)
 PAGE_RULE = (*BRONZE_INK, 150)
 STEEL = (184, 192, 204)
 ASTRAL = (150, 214, 255)
+# Temper stars +6 and +7 (opened by full attunement) turn purple once lit.
+TEMPER_PURPLE = (176, 112, 255)
+TEMPER_PURPLE_EDGE = (96, 46, 160)
 
 # Bright on leather.
 RARITY_GEM = {
@@ -810,7 +813,12 @@ class Canvas:
         hollow = self.t.trim_dim if dark else INK_FAINT
         for index in range(top):
             cx = x + r + index * step + (6 if index >= base else 0)
-            if index < base:
+            if base <= index < refinement:
+                # The stars past the base five (+6 and +7, opened by full attunement)
+                # burn purple once tempered on. Unlit they look as before. Weapon
+                # starforge rows use base=top, so they never turn purple.
+                self.star(cx, cy, r, fill=TEMPER_PURPLE, outline=TEMPER_PURPLE_EDGE, width=1)
+            elif index < base:
                 if index < refinement:
                     self.star(cx, cy, r, fill=self.t.trim, outline=mix(self.t.trim_deep, (0, 0, 0), 0.25), width=1)
                 else:

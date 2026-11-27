@@ -6,6 +6,7 @@ import discord
 from classes.equipment.access import require_menu_actor
 from classes.equipment.definitions import (
     ARCHETYPE_NOUN,
+    CRAFT_QUALITY_CAP,
     MATERIAL_LINES,
     MAX_REFINEMENT,
     OPEN_SLOTS,
@@ -59,15 +60,15 @@ def _craft_preview(recipe: dict) -> str:
     archetype = recipe["archetype"]
     slot = recipe["slot"]
     forged_low = contribution(rarity, archetype, 1, 0, slot)
-    forged_high = contribution(rarity, archetype, 100, 0, slot)
-    finished = contribution(rarity, archetype, 100, MAX_REFINEMENT, slot)
+    forged_high = contribution(rarity, archetype, CRAFT_QUALITY_CAP, 0, slot)
+    finished = contribution(rarity, archetype, CRAFT_QUALITY_CAP, MAX_REFINEMENT, slot)
     slot_name = SLOT_NOUN.get(slot, slot)
     return (
         f"**{rarity.title()} {slot_name}**\n"
         f"Forged · Blessing {_range(_blessing(forged_low[0]), _blessing(forged_high[0]))} · "
         f"Ward {_range(_ward(forged_low[1]), _ward(forged_high[1]))}\n"
-        f"At 100 / +{MAX_REFINEMENT} · Blessing {_blessing(finished[0])} · Ward {_ward(finished[1])}\n"
-        "Quality rolls 1–100. Temper later. No crafted enchantments."
+        f"At {CRAFT_QUALITY_CAP} / +{MAX_REFINEMENT} · Blessing {_blessing(finished[0])} · Ward {_ward(finished[1])}\n"
+        f"Crafted quality rolls 1–{CRAFT_QUALITY_CAP}. Higher only from crates. Temper later. No crafted enchantments."
     )
 
 
