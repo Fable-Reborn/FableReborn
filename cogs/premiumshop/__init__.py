@@ -22,6 +22,7 @@ import discord
 
 from discord.ext import commands
 
+from classes import alt_tiers
 from utils.checks import has_char, is_gm, user_is_patron
 from utils.i18n import _, locale_doc
 from classes.converters import IntGreaterThan
@@ -1468,9 +1469,15 @@ class PremiumShop(commands.Cog):
                 tier = 0
             current_dragoncoins = profile['dragoncoins'] or 0
 
-        if tier < 1 and await user_is_patron(self.bot, ctx.author, "basic"):
+        # A linked alt borrowing Legendary from its main redeems at its own tier:
+        # dragon coins buy tradable crates, so the borrowed 4 would double the main's.
+        alt_own = await alt_tiers.own_tier(self.bot, ctx.author.id)
+        if alt_own is not None:
+            tier = alt_own
+        elif tier < 1 and await user_is_patron(self.bot, ctx.author, "basic"):
             tier = 1
-        
+        tier = min(tier, 4)
+
         # Define tier rewards
         tier_rewards = {
             1: 350,
@@ -1481,17 +1488,22 @@ class PremiumShop(commands.Cog):
         
         if tier not in tier_rewards:
             await self.bot.reset_cooldown(ctx)
+            if alt_own is not None:
+                return await ctx.send(_(
+                    "Your Legendary perks are shared from your main account, and dragon coin "
+                    "rewards are not shared. Your main can redeem them."
+                ))
             return await ctx.send(_("You need to be at least Tier 1 to redeem dragon coins."))
-        
+
         coins_to_add = tier_rewards[tier]
-        new_total = current_dragoncoins + coins_to_add
-        
-        # Update dragon coins in database
+
+        # Add in one step so coins spent meanwhile are never written back.
         async with self.bot.pool.acquire() as conn:
-            await conn.execute(
-                'UPDATE profile SET dragoncoins = $1 WHERE "user" = $2;',
-                new_total, ctx.author.id
+            new_total = await conn.fetchval(
+                'UPDATE profile SET dragoncoins = COALESCE(dragoncoins, 0) + $1 WHERE "user" = $2 RETURNING dragoncoins;',
+                coins_to_add, ctx.author.id
             )
+        current_dragoncoins = int(new_total or 0) - coins_to_add
         
         # Create success embed
         embed = discord.Embed(

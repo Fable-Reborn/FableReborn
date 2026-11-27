@@ -70,6 +70,28 @@ async def ensure_schema(conn) -> None:
     await conn.execute(SCHEMA)
 
 
+async def own_tier(bot, user_id: int) -> int | None:
+    """An alt's own tier while it borrows Legendary from its main, else None.
+
+    Rewards that can be passed back to the main (dragon coins buy tradable
+    crates) use this instead of the borrowed 4. It still counts anything the
+    alt paid for itself: its tier before the grant, its own donor role, or its
+    own server boost (tier 1).
+    """
+    import asyncpg
+
+    try:
+        previous = await bot.pool.fetchval(
+            "SELECT previous_tier FROM alt_tier_grants WHERE alt = $1", int(user_id)
+        )
+    except asyncpg.UndefinedTableError:
+        return None
+    if previous is None:
+        return None
+    status = await bot.get_supporter_status(int(user_id))
+    return max(int(previous or 0), int(status.get("tier") or 0), 1 if status.get("booster") else 0)
+
+
 MAINS_BELOW_LEGENDARY_SQL = """
 SELECT l.main
   FROM alt_links l
