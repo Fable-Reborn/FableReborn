@@ -33,6 +33,7 @@ EXTRA_COGS = (
     "cogs.rebuild",      # rebuilding Draslin after The Tiamat Sacrament
     "cogs.statcalc",     # slider calculator for raid attack, defense, and health
     "cogs.wish",         # birthday wishes: $wish, staff approval, $wish redeem, the card
+    "cogs.getwell",      # get well wishes: $getwell, staff approval, $getwell redeem, the card ($gmgetwell)
     "cogs.equipment",    # armory. Stays closed until a GM runs `$gear switch on`
     "cogs.supporterboard",  # Hall of Supporters: $supporters setup #channel, refreshed hourly
     "cogs.gm_events",    # GM silent (sealed-bid) auctions and raffles: $gmsilent, $gmraffle, $raffle buy
