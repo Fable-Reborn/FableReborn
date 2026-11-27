@@ -70,6 +70,36 @@ async def ensure_schema(conn) -> None:
     await conn.execute(SCHEMA)
 
 
+MAINS_BELOW_LEGENDARY_SQL = """
+SELECT l.main
+  FROM alt_links l
+  JOIN profile p ON p."user" = l.main
+ WHERE COALESCE(p."tier", 0) < $1
+"""
+
+
+async def refresh_main_tiers(bot) -> list[int]:
+    """Save the real tier of every main that is not saved as Legendary yet.
+
+    A Legendary Hero whose tier comes from a Discord role (Ko-fi, or a Patreon
+    role the Patreon sync has not written yet) only gets tier 4 saved when they
+    run a donor command. Until then their alt would get nothing. This checks
+    their roles now and saves the tier, the same way a donor command would.
+    Returns the mains that are now Legendary.
+    """
+    rows = await bot.pool.fetch(MAINS_BELOW_LEGENDARY_SQL, LEGENDARY)
+    promoted = []
+    for row in rows:
+        main = int(row["main"])
+        try:
+            tier = int(await bot.get_effective_donator_tier(main, sync_profile=True) or 0)
+        except Exception:
+            continue
+        if tier >= LEGENDARY:
+            promoted.append(main)
+    return promoted
+
+
 async def sync_alt_tiers(pool) -> tuple[list[int], list[int]]:
     """(granted alt ids, revoked alt ids). Safe to run from every cluster at once."""
     async with pool.acquire() as conn:

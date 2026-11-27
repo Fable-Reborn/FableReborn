@@ -26,7 +26,7 @@ from classes import alt_tiers
 
 from classes.converters import MemberWithCharacter
 from classes.enums import DonatorRank
-from utils.checks import has_char, user_is_patron
+from utils.checks import has_char, is_gm, user_is_patron
 from utils.i18n import _
 
 log = logging.getLogger(__name__)
@@ -51,6 +51,15 @@ class Alt(commands.Cog):
     @tasks.loop(hours=1)
     async def legendary_alt_sync(self):
         """Legendary Hero perks follow the donator to their linked alt, and leave when they lapse."""
+        # Only the cluster holding the support server checks mains' roles, so
+        # Discord is asked once, not once per cluster (clusters count from 1).
+        if await self._get_support_guild() is not None:
+            try:
+                promoted = await alt_tiers.refresh_main_tiers(self.bot)
+                if promoted:
+                    log.info("Legendary mains found by role: %s", promoted)
+            except Exception:
+                log.exception("Checking alt mains' donator tiers failed")
         try:
             granted, revoked = await alt_tiers.sync_alt_tiers(self.bot.pool)
         except Exception:
@@ -310,6 +319,40 @@ class Alt(commands.Cog):
                     )
         new_ctx.alt_invoker_id = ctx.author.id
         await ctx.bot.invoke(new_ctx)
+
+    @is_gm()
+    @alt.command(name="perks", hidden=True)
+    async def alt_perks(self, ctx, user: discord.User):
+        """GM: check (and fix now) whether a main's Legendary Hero perks reach their alt."""
+        link = await self.bot.pool.fetchrow(
+            "SELECT main, alt FROM alt_links WHERE main = $1 OR alt = $1", user.id
+        )
+        if link is None:
+            return await ctx.send(f"{user} has no alt link.", allowed_mentions=discord.AllowedMentions.none())
+        main, alt = int(link["main"]), int(link["alt"])
+        saved_before = await self.bot.pool.fetchval('SELECT "tier" FROM profile WHERE "user" = $1', main)
+        try:
+            live = int(await self.bot.get_effective_donator_tier(main, sync_profile=True) or 0)
+        except Exception as exc:
+            live = f"lookup failed ({type(exc).__name__})"
+        granted, revoked = await alt_tiers.sync_alt_tiers(self.bot.pool)
+        alt_tier = await self.bot.pool.fetchval('SELECT "tier" FROM profile WHERE "user" = $1', alt)
+        grant = await self.bot.pool.fetchrow(
+            "SELECT previous_tier, granted_at FROM alt_tier_grants WHERE alt = $1", alt
+        )
+        if grant:
+            verdict = f"✅ Alt has Legendary perks (its own tier {grant['previous_tier']} comes back if the main lapses)."
+        elif isinstance(live, int) and live >= alt_tiers.LEGENDARY:
+            verdict = "⚠️ Main is Legendary but the alt has no grant. Does the alt have a character?"
+        else:
+            verdict = "Main is not Legendary Hero, so the alt gets no shared perks."
+        await ctx.send(
+            f"**Main** <@{main}>: saved tier {saved_before or 0} → live tier {live}\n"
+            f"**Alt** <@{alt}>: tier {alt_tier if alt_tier is not None else 'no character'}\n"
+            f"{verdict}"
+            + (f"\nThis run granted {len(granted)} and revoked {len(revoked)} across all links." if granted or revoked else ""),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
     @alt.command(name="register", brief=_("Register an alt account"))
     @has_char()

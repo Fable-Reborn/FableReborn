@@ -91,5 +91,51 @@ class CollectTests(unittest.TestCase):
         self.assertEqual({4: [1, 2]}, grouped)
 
 
+class LinkedAltTests(unittest.IsolatedAsyncioTestCase):
+    """An alt is listed only for what it bought itself, never for perks borrowed from its main."""
+
+    async def collect(self, profile_rows, member_roles):
+        from types import SimpleNamespace
+
+        from cogs.supporterboard import SupporterBoard
+
+        async def fetch(sql, *args):
+            if "supporter_board_hidden" in sql:
+                return []
+            if "FROM profile" in sql:
+                # The board asks for each player's own tier: previous_tier when the
+                # alt is borrowing Legendary, else the saved tier.
+                self.assertIn("COALESCE(g.previous_tier", sql)
+                return profile_rows
+            raise AssertionError(sql)
+
+        bot = DummyConfigBot()
+        bot.pool = SimpleNamespace(fetch=fetch)
+        guild = SimpleNamespace(
+            members=[SimpleNamespace(id=uid, bot=False, roles=[SimpleNamespace(id=r) for r in roles]) for uid, roles in member_roles.items()],
+            premium_subscribers=[],
+        )
+        bot.get_guild = lambda guild_id: guild if int(guild_id) == SUPPORT_GUILD_ID else None
+        bot._get_patreon_tier_lookup_guild_ids = lambda: [SUPPORT_GUILD_ID]
+        cog = SupporterBoard.__new__(SupporterBoard)
+        cog.bot = bot
+        tiers, boosters = await cog._collect()
+        return {uid for ids in tiers.values() for uid in ids}, set(boosters)
+
+    async def test_alt_borrowing_legendary_is_not_listed(self):
+        # The query already swapped the borrowed 4 for the alt's own tier 0, so no row.
+        tiered, boosters = await self.collect([], {2: set()})
+        self.assertNotIn(2, tiered | boosters)
+
+    async def test_alt_that_bought_its_own_tier_or_boost_is_listed(self):
+        tiered, boosters = await self.collect(
+            [{"user": 2, "tier": 2}],  # own Warrior key, kept as previous_tier
+            {3: {BOOSTER_ROLE_ID}, 4: {333}},  # an alt boosting, an alt with its own gold role
+        )
+        self.assertIn(2, tiered)
+        self.assertIn(3, boosters)
+        self.assertIn(4, tiered)
+
+
 if __name__ == "__main__":
     unittest.main()

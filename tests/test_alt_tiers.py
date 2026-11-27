@@ -70,11 +70,39 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('COALESCE(p."tier", 0) = $1', alt_tiers.REVOKE_SQL)
 
 
+class RefreshMainsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_role_only_legendary_mains_are_found_and_saved(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        async def fetch(sql, *args):
+            assert args == (4,)
+            return [{"main": 1}, {"main": 2}, {"main": 3}]
+
+        tiers = {1: 4, 2: 2}
+
+        async def effective(user_id, *, sync_profile=False):
+            assert sync_profile is True  # saves the role tier, like a donor command
+            if user_id == 3:
+                raise RuntimeError("discord down")
+            return tiers[user_id]
+
+        bot = SimpleNamespace(pool=SimpleNamespace(fetch=fetch), get_effective_donator_tier=AsyncMock(side_effect=effective))
+        self.assertEqual([1], await alt_tiers.refresh_main_tiers(bot))
+        self.assertEqual(3, bot.get_effective_donator_tier.await_count)
+
+
 class WiringTests(unittest.TestCase):
     def test_alt_cog_runs_the_sync_hourly(self):
         import cogs.alt as alt
 
         self.assertEqual(1, alt.Alt.legendary_alt_sync.hours)
+
+    def test_gm_can_check_one_link(self):
+        import cogs.alt as alt
+
+        self.assertEqual("perks", alt.Alt.alt_perks.name)
+        self.assertTrue(alt.Alt.alt_perks.hidden)
 
 
 if __name__ == "__main__":
